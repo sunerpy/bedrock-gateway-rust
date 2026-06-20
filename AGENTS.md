@@ -133,7 +133,7 @@ The surface is **stateless**: `store` and `previous_response_id` are accepted an
 
 - Built-in server tools (`web_search`, `file_search`, `code_interpreter`, `mcp`, `computer`, `image_generation`) → 400.
 - `encrypted_content` is not round-tripped.
-- No `function_call_arguments.delta` stream events (codex-leniency driven).
+- `function_call_arguments.delta/.done` stream events are accepted by the schema for SDK/client compatibility, but the Bedrock stream state machine does not emit them (codex reconstructs calls from `response.output_item.done`).
 - `input_file` parts → 400 (no Bedrock document-block mapping).
 
 #### Cache placement contract
@@ -315,7 +315,7 @@ When you add a new translation path, add a golden fixture alongside the implemen
 | `reasoning_content`                        | Exposed as a top-level response field               | Never serialized to the wire (`#[serde(skip_serializing)]`); reasoning rendered as `<think>...</think>` inline in `content` |
 | Responses `store` / `previous_response_id` | N/A (surface did not exist)                         | Accepted and silently ignored — this surface is stateless                                                                   |
 | Responses stream `[DONE]` sentinel         | N/A                                                 | Not emitted — the Responses stream terminates with a `response.completed` event                                             |
-| Responses `function_call_arguments.delta`  | N/A                                                 | Not emitted (codex does not require it; omitting it keeps the event set minimal)                                            |
+| Responses `function_call_arguments.delta`  | N/A                                                 | Schema accepts `delta` / `done` for compatibility, but the state machine does not emit them; codex reconstructs calls from `response.output_item.done` |
 | Responses built-in server tools            | N/A                                                 | Rejected with 400 (`web_search`, `file_search`, `code_interpreter`, `mcp`, `computer`, `image_generation`)                  |
 
 ---
@@ -484,7 +484,7 @@ HTTP 框架选用 **axum**（tokio + tower + tower-http）。曾评估替换为 
 
 - 内置服务端工具（`web_search`、`file_search`、`code_interpreter`、`mcp`、`computer`、`image_generation`）→ 400。
 - `encrypted_content` 不做透传。
-- 无 `function_call_arguments.delta` 流事件（codex 宽容性决策）。
+- 协议类型接受 `function_call_arguments.delta/.done` 流事件以兼容 SDK/客户端，但 Bedrock 流状态机不主动发送；codex 通过 `response.output_item.done` 还原调用。
 - `input_file` 部分 → 400（暂无 Bedrock 文档块映射）。
 
 #### 缓存放置契约
@@ -666,7 +666,7 @@ BEDROCK_INTEGRATION=1 AWS_PROFILE=us cargo test -- --ignored
 | `reasoning_content` 字段                   | 作为响应的顶层字段暴露                       | 永不序列化到协议层（`#[serde(skip_serializing)]`）；推理内容以 `<think>...</think>` 内联在 `content` 中呈现 |
 | Responses `store` / `previous_response_id` | N/A（接口不存在）                            | 接受但静默忽略 — 该接口无状态                                                                               |
 | Responses 流 `[DONE]` 哨兵                 | N/A                                          | 不发送 — Responses 流以 `response.completed` 事件结束                                                       |
-| Responses `function_call_arguments.delta`  | N/A                                          | 不发送（codex 不要求；省略保持事件集最小化）                                                                |
+| Responses `function_call_arguments.delta`  | N/A                                          | 协议类型接受 `delta` / `done` 以兼容客户端，但状态机不主动发送；codex 通过 `response.output_item.done` 还原调用 |
 | Responses 内置服务端工具                   | N/A                                          | 返回 400（`web_search`、`file_search`、`code_interpreter`、`mcp`、`computer`、`image_generation`）          |
 
 ---

@@ -14,7 +14,7 @@
       "id": "msg_x",
       "status": "completed",
       "role": "assistant",
-      "content": [{ "type": "output_text", "text": "The answer is 4." }]
+      "content": [{ "type": "output_text", "text": "The answer is 4.", "annotations": [] }]
     }
   ],
   "usage": {

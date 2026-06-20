@@ -9,7 +9,7 @@
       "id": "msg_x",
       "status": "completed",
       "role": "assistant",
-      "content": [{ "type": "output_text", "text": "Hello from Responses." }]
+      "content": [{ "type": "output_text", "text": "Hello from Responses.", "annotations": [] }]
     }
   ],
   "usage": {

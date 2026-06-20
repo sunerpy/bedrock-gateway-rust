@@ -376,7 +376,7 @@ mod tests {
                 role: "assistant".to_string(),
                 content: vec![OutputContentPart::OutputText {
                     text: "mock reply".to_string(),
-                    annotations: None,
+                    annotations: Vec::new(),
                     logprobs: None,
                 }],
             }],
@@ -468,6 +468,7 @@ mod tests {
         match &resp.output[0] {
             ResponseOutputItem::Message { content, .. } => match &content[0] {
                 OutputContentPart::OutputText { text, .. } => assert_eq!(text, "mock reply"),
+                other => panic!("expected output_text part, got {other:?}"),
             },
             other => panic!("expected message output item, got {other:?}"),
         }

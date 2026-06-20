@@ -1,0 +1,33 @@
+event: response.created
+data: {"response":{"created_at":1781944240,"id":"resp_18babcd86d8d9c40","max_output_tokens":128,"model":"global.anthropic.claude-sonnet-4-5-20250929-v1:0","object":"response","output":[],"status":"in_progress","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}},"sequence_number":0,"type":"response.created"}
+
+event: response.in_progress
+data: {"response":{"created_at":1781944240,"id":"resp_18babcd86d8d9c40","max_output_tokens":128,"model":"global.anthropic.claude-sonnet-4-5-20250929-v1:0","object":"response","output":[],"status":"in_progress","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}},"sequence_number":1,"type":"response.in_progress"}
+
+event: response.output_item.added
+data: {"item":{"content":[],"id":"msg_18babcd86d8d9c40","role":"assistant","status":"in_progress","type":"message"},"output_index":0,"sequence_number":2,"type":"response.output_item.added"}
+
+event: response.content_part.added
+data: {"content_index":0,"item_id":"msg_18babcd86d8d9c40","output_index":0,"part":{"text":"","type":"output_text"},"sequence_number":3,"type":"response.content_part.added"}
+
+event: response.output_text.delta
+data: {"content_index":0,"delta":"1,","item_id":"msg_18babcd86d8d9c40","output_index":0,"sequence_number":4,"type":"response.output_text.delta"}
+
+event: response.output_text.delta
+data: {"content_index":0,"delta":" 2, 3, 4","item_id":"msg_18babcd86d8d9c40","output_index":0,"sequence_number":5,"type":"response.output_text.delta"}
+
+event: response.output_text.delta
+data: {"content_index":0,"delta":", 5","item_id":"msg_18babcd86d8d9c40","output_index":0,"sequence_number":6,"type":"response.output_text.delta"}
+
+event: response.output_text.done
+data: {"content_index":0,"item_id":"msg_18babcd86d8d9c40","output_index":0,"sequence_number":7,"text":"1, 2, 3, 4, 5","type":"response.output_text.done"}
+
+event: response.content_part.done
+data: {"content_index":0,"item_id":"msg_18babcd86d8d9c40","output_index":0,"part":{"text":"1, 2, 3, 4, 5","type":"output_text"},"sequence_number":8,"type":"response.content_part.done"}
+
+event: response.output_item.done
+data: {"item":{"content":[{"text":"1, 2, 3, 4, 5","type":"output_text"}],"id":"msg_18babcd86d8d9c40","role":"assistant","status":"completed","type":"message"},"output_index":0,"sequence_number":9,"type":"response.output_item.done"}
+
+event: response.completed
+data: {"response":{"created_at":1781944240,"id":"resp_18babcd86d8d9c40","max_output_tokens":128,"model":"global.anthropic.claude-sonnet-4-5-20250929-v1:0","object":"response","output":[{"content":[{"text":"1, 2, 3, 4, 5","type":"output_text"}],"id":"msg_18babcd86d8d9c40","role":"assistant","status":"completed","type":"message"}],"status":"completed","usage":{"input_tokens":14,"input_tokens_details":{"cached_tokens":0},"output_tokens":17,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":31}},"sequence_number":10,"type":"response.completed"}
+

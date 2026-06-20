@@ -70,6 +70,10 @@ use crate::openai::responses_schema::{
     OutputContentPart, ResponseOutputItem, ResponseStreamEvent, ResponsesRequest, ResponsesResponse,
 };
 
+/// The single summary index used for the reasoning summary family. The gateway
+/// emits one summary part (index 0) carrying the full reasoning text.
+const REASONING_SUMMARY_INDEX: u32 = 0;
+
 /// Per-block tool-call bookkeeping, keyed by Bedrock `contentBlockIndex`.
 ///
 /// Captures the `toolUseId`/`name` at `contentBlockStart`, accumulates the
@@ -279,7 +283,7 @@ impl ResponsesStreamState {
                     };
                     let seq = self.next_seq();
                     out.push(ResponseStreamEvent::OutputItemAdded {
-                        item: function_call_item(&accum),
+                        item: function_call_item(&accum, None),
                         output_index,
                         sequence_number: seq,
                     });
@@ -361,6 +365,14 @@ impl ResponsesStreamState {
                     delta: text.clone(),
                     sequence_number: seq,
                 });
+                let seq = self.next_seq();
+                out.push(ResponseStreamEvent::ReasoningSummaryTextDelta {
+                    item_id: self.reasoning_item_id(),
+                    output_index: self.reasoning_output_index,
+                    summary_index: REASONING_SUMMARY_INDEX,
+                    delta: text.clone(),
+                    sequence_number: seq,
+                });
             }
 
             // Tool input fragment → accumulate; the item.done is emitted on
@@ -378,6 +390,13 @@ impl ResponsesStreamState {
     }
 
     /// Open the reasoning output item (added) if not already open.
+    ///
+    /// Emits BOTH reasoning families: the `output_item.added` (reasoning) frame
+    /// that opencode's native parser keys off, AND the
+    /// `reasoning_summary_part.added` frame the vercel ai-sdk Responses parser
+    /// requires (ai-sdk does not recognize `reasoning_text.*` and would
+    /// otherwise drop reasoning to `unknown_chunk`). Both share `summary_index`
+    /// 0 and the same `item_id`.
     fn ensure_reasoning_item(&mut self, out: &mut Vec<ResponseStreamEvent>) {
         if self.reasoning_open {
             return;
@@ -395,6 +414,13 @@ impl ResponsesStreamState {
             output_index: self.reasoning_output_index,
             sequence_number: seq,
         });
+        let seq = self.next_seq();
+        out.push(ResponseStreamEvent::ReasoningSummaryPartAdded {
+            item_id: self.reasoning_item_id(),
+            output_index: self.reasoning_output_index,
+            summary_index: REASONING_SUMMARY_INDEX,
+            sequence_number: seq,
+        });
     }
 
     /// Close the reasoning item if open: `reasoning_text.done` →
@@ -410,6 +436,21 @@ impl ResponsesStreamState {
             output_index: self.reasoning_output_index,
             content_index: 0,
             text: self.reasoning_text.clone(),
+            sequence_number: seq,
+        });
+        let seq = self.next_seq();
+        out.push(ResponseStreamEvent::ReasoningSummaryTextDone {
+            item_id: self.reasoning_item_id(),
+            output_index: self.reasoning_output_index,
+            summary_index: REASONING_SUMMARY_INDEX,
+            text: self.reasoning_text.clone(),
+            sequence_number: seq,
+        });
+        let seq = self.next_seq();
+        out.push(ResponseStreamEvent::ReasoningSummaryPartDone {
+            item_id: self.reasoning_item_id(),
+            output_index: self.reasoning_output_index,
+            summary_index: REASONING_SUMMARY_INDEX,
             sequence_number: seq,
         });
         let seq = self.next_seq();
@@ -452,7 +493,7 @@ impl ResponsesStreamState {
             content_index: 0,
             part: OutputContentPart::OutputText {
                 text: String::new(),
-                annotations: None,
+                annotations: Vec::new(),
                 logprobs: None,
             },
             sequence_number: seq,
@@ -476,7 +517,7 @@ impl ResponsesStreamState {
         });
         let part = OutputContentPart::OutputText {
             text: self.message_text.clone(),
-            annotations: None,
+            annotations: Vec::new(),
             logprobs: None,
         };
         let seq = self.next_seq();
@@ -509,7 +550,7 @@ impl ResponsesStreamState {
         let accum = self.tools[pos].1.clone();
         let seq = self.next_seq();
         out.push(ResponseStreamEvent::OutputItemDone {
-            item: function_call_item(&accum),
+            item: function_call_item(&accum, Some("completed")),
             output_index: accum.output_index,
             sequence_number: seq,
         });
@@ -642,8 +683,11 @@ impl ResponsesStreamState {
 
 /// Build a [`ResponseOutputItem::FunctionCall`] from a tool accumulator,
 /// ensuring the `arguments` are a JSON-parseable string (defaulting to `{}` when
-/// nothing was streamed, mirroring the non-stream mapper).
-fn function_call_item(accum: &ToolAccum) -> ResponseOutputItem {
+/// nothing was streamed, mirroring the non-stream mapper). `status` is `None` on
+/// `output_item.added` (ai-sdk's added-chunk schema has no status) and
+/// `Some("completed")` on `output_item.done` (ai-sdk's done-chunk schema
+/// REQUIRES `status: z.literal("completed")`).
+fn function_call_item(accum: &ToolAccum, status: Option<&str>) -> ResponseOutputItem {
     let arguments = if accum.arguments.trim().is_empty() {
         "{}".to_string()
     } else {
@@ -654,6 +698,7 @@ fn function_call_item(accum: &ToolAccum) -> ResponseOutputItem {
         call_id: accum.call_id.clone(),
         name: accum.name.clone(),
         arguments,
+        status: status.map(str::to_string),
     }
 }
 
@@ -985,6 +1030,7 @@ mod tests {
                 match &response.output[0] {
                     ResponseOutputItem::Message { content, .. } => match &content[0] {
                         OutputContentPart::OutputText { text, .. } => assert_eq!(text, "Hello"),
+                        other => panic!("expected output_text part, got {other:?}"),
                     },
                     other => panic!("expected message item, got {other:?}"),
                 }
@@ -1023,29 +1069,39 @@ mod tests {
         assert_monotonic_from_zero(&events);
         assert_no_done_no_argdelta(&events);
 
-        // output_item.added carries a function_call item with the call_id/name.
+        // output_item.added carries a function_call item with the call_id/name
+        // and status "in_progress".
         match &events[2] {
             ResponseStreamEvent::OutputItemAdded { item, .. } => match item {
-                ResponseOutputItem::FunctionCall { call_id, name, .. } => {
+                ResponseOutputItem::FunctionCall {
+                    call_id,
+                    name,
+                    status,
+                    ..
+                } => {
                     assert_eq!(call_id, "call-1");
                     assert_eq!(name, "get_weather");
+                    assert_eq!(status.as_deref(), None);
                 }
                 other => panic!("expected function_call item, got {other:?}"),
             },
             other => panic!("expected output_item.added, got {other:?}"),
         }
 
-        // output_item.done carries the COMPLETE, JSON-parseable arguments.
+        // output_item.done carries the COMPLETE, JSON-parseable arguments and the
+        // status "completed" that @ai-sdk/openai's stream schema REQUIRES.
         match &events[3] {
             ResponseStreamEvent::OutputItemDone { item, .. } => match item {
                 ResponseOutputItem::FunctionCall {
                     call_id,
                     name,
                     arguments,
+                    status,
                     ..
                 } => {
                     assert_eq!(call_id, "call-1");
                     assert_eq!(name, "get_weather");
+                    assert_eq!(status.as_deref(), Some("completed"));
                     let parsed: Value =
                         serde_json::from_str(arguments).expect("arguments must be JSON-parseable");
                     assert_eq!(parsed, json!({ "city": "Paris" }));
@@ -1054,6 +1110,11 @@ mod tests {
             },
             other => panic!("expected output_item.done, got {other:?}"),
         }
+
+        // The serialized output_item.done JSON must literally carry
+        // "status":"completed" (ai-sdk validates the wire string, not the enum).
+        let done_json = serde_json::to_value(&events[3]).unwrap();
+        assert_eq!(done_json["item"]["status"], "completed");
 
         // The final completed Response carries the function_call output item.
         match events.last().unwrap() {
@@ -1071,7 +1132,60 @@ mod tests {
         }
     }
 
-    // -- Test 3: reasoning stream → reasoning item BEFORE message item -------
+    /// REGRESSION (@ai-sdk/openai streaming tool calls): the streamed
+    /// `output_item.done` function_call item MUST serialize `"status":"completed"`
+    /// (ai-sdk's done-chunk schema pins `status: z.literal("completed")`), while
+    /// the `output_item.added` function_call item MUST NOT carry a `status` field
+    /// (ai-sdk's added-chunk schema has none). Without the done-side status the
+    /// chunk degrades to `unknown_chunk` and the tool call is never reconstructed.
+    #[test]
+    fn tool_use_stream_done_item_serializes_status_completed() {
+        let events = drive(&[
+            ev_message_start(),
+            ev_tool_start(0, "call-1", "get_weather"),
+            ev_tool_input(0, "{\"city\":\"Tokyo\"}"),
+            ev_block_stop(0),
+            ev_message_stop(StopReason::ToolUse),
+            ev_metadata(12, 6, 18),
+        ]);
+
+        let added = events
+            .iter()
+            .find(|e| matches!(e, ResponseStreamEvent::OutputItemAdded { .. }))
+            .expect("an output_item.added event");
+        let added_item = &serde_json::to_value(added).unwrap()["item"];
+        assert_eq!(added_item["type"], "function_call");
+        assert!(
+            added_item.get("status").is_none(),
+            "output_item.added function_call MUST NOT carry status: {added_item}"
+        );
+
+        let done = events
+            .iter()
+            .find(|e| matches!(e, ResponseStreamEvent::OutputItemDone { item, .. } if matches!(item, ResponseOutputItem::FunctionCall { .. })))
+            .expect("an output_item.done function_call event");
+        let done_item = &serde_json::to_value(done).unwrap()["item"];
+        assert_eq!(done_item["type"], "function_call");
+        assert_eq!(
+            done_item["status"], "completed",
+            "output_item.done function_call MUST serialize status:completed: {done_item}"
+        );
+        // The other fields remain unchanged.
+        assert_eq!(done_item["call_id"], "call-1");
+        assert_eq!(done_item["name"], "get_weather");
+        assert_eq!(done_item["id"], "fc_call-1");
+        assert_eq!(done_item["arguments"], "{\"city\":\"Tokyo\"}");
+
+        // The final completed Response's function_call output item is the
+        // non-stream assembly and MUST stay status-free (unchanged contract).
+        let completed = events.last().unwrap();
+        let completed_item = &serde_json::to_value(completed).unwrap()["response"]["output"][0];
+        assert_eq!(completed_item["type"], "function_call");
+        assert!(
+            completed_item.get("status").is_none(),
+            "completed function_call output item MUST NOT carry status: {completed_item}"
+        );
+    }
 
     #[test]
     fn reasoning_stream_emits_reasoning_item_before_message() {
@@ -1092,9 +1206,14 @@ mod tests {
                 "response.in_progress",
                 // reasoning item FIRST.
                 "response.output_item.added",
+                "response.reasoning_summary_part.added",
                 "response.reasoning_text.delta",
+                "response.reasoning_summary_text.delta",
                 "response.reasoning_text.delta",
+                "response.reasoning_summary_text.delta",
                 "response.reasoning_text.done",
+                "response.reasoning_summary_text.done",
+                "response.reasoning_summary_part.done",
                 "response.output_item.done",
                 // then the message item.
                 "response.output_item.added",
@@ -1124,13 +1243,20 @@ mod tests {
             }
             other => panic!("expected reasoning output_item.added, got {other:?}"),
         }
-        // Reasoning deltas carry the fragments.
-        match &events[3] {
+        // Reasoning text delta carries the first fragment.
+        match &events[4] {
             ResponseStreamEvent::ReasoningTextDelta { delta, .. } => assert_eq!(delta, "let me "),
             other => panic!("expected reasoning_text.delta, got {other:?}"),
         }
-        // reasoning_text.done carries the coalesced reasoning text.
+        // The paired summary delta carries the SAME fragment.
         match &events[5] {
+            ResponseStreamEvent::ReasoningSummaryTextDelta { delta, .. } => {
+                assert_eq!(delta, "let me ")
+            }
+            other => panic!("expected reasoning_summary_text.delta, got {other:?}"),
+        }
+        // reasoning_text.done carries the coalesced reasoning text.
+        match &events[8] {
             ResponseStreamEvent::ReasoningTextDone { text, .. } => assert_eq!(text, "let me think"),
             other => panic!("expected reasoning_text.done, got {other:?}"),
         }
@@ -1150,6 +1276,96 @@ mod tests {
             }
             other => panic!("expected completed, got {other:?}"),
         }
+    }
+
+    // -- dual reasoning emission: text family + ai-sdk summary family --------
+
+    /// A reasoning stream emits BOTH reasoning families so opencode (which keys
+    /// off `reasoning_text.*`) AND the vercel ai-sdk Responses parser (which
+    /// keys off `reasoning_summary_text.*`) each render reasoning live. Every
+    /// `reasoning_text.delta` is paired with a `reasoning_summary_text.delta`
+    /// carrying the identical fragment, all sharing one `item_id`, with
+    /// strictly monotonic `sequence_number`s across the combined set.
+    #[test]
+    fn reasoning_emits_both_text_and_summary_families() {
+        let events = drive(&[
+            ev_message_start(),
+            ev_reasoning_text("alpha", 0),
+            ev_reasoning_text("beta", 0),
+            ev_message_stop(StopReason::EndTurn),
+            ev_metadata(4, 2, 6),
+        ]);
+
+        let mut text_deltas: Vec<String> = Vec::new();
+        let mut summary_deltas: Vec<String> = Vec::new();
+        let mut reasoning_item_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut saw_summary_part_added = false;
+        let mut saw_summary_part_done = false;
+        let mut saw_summary_text_done = false;
+
+        for ev in &events {
+            match ev {
+                ResponseStreamEvent::ReasoningTextDelta { delta, item_id, .. } => {
+                    text_deltas.push(delta.clone());
+                    reasoning_item_ids.insert(item_id.clone());
+                }
+                ResponseStreamEvent::ReasoningSummaryTextDelta {
+                    delta,
+                    item_id,
+                    summary_index,
+                    ..
+                } => {
+                    summary_deltas.push(delta.clone());
+                    reasoning_item_ids.insert(item_id.clone());
+                    assert_eq!(*summary_index, 0, "summary_index must be 0");
+                }
+                ResponseStreamEvent::ReasoningSummaryPartAdded {
+                    item_id,
+                    summary_index,
+                    ..
+                } => {
+                    saw_summary_part_added = true;
+                    reasoning_item_ids.insert(item_id.clone());
+                    assert_eq!(*summary_index, 0);
+                }
+                ResponseStreamEvent::ReasoningSummaryPartDone {
+                    item_id,
+                    summary_index,
+                    ..
+                } => {
+                    saw_summary_part_done = true;
+                    reasoning_item_ids.insert(item_id.clone());
+                    assert_eq!(*summary_index, 0);
+                }
+                ResponseStreamEvent::ReasoningSummaryTextDone { text, item_id, .. } => {
+                    saw_summary_text_done = true;
+                    reasoning_item_ids.insert(item_id.clone());
+                    assert_eq!(text, "alphabeta");
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(text_deltas, vec!["alpha", "beta"]);
+        assert_eq!(
+            summary_deltas, text_deltas,
+            "summary deltas must mirror the text deltas exactly"
+        );
+        assert!(
+            saw_summary_part_added,
+            "missing reasoning_summary_part.added"
+        );
+        assert!(saw_summary_part_done, "missing reasoning_summary_part.done");
+        assert!(saw_summary_text_done, "missing reasoning_summary_text.done");
+        assert_eq!(
+            reasoning_item_ids.len(),
+            1,
+            "both reasoning families must share one item_id, got {reasoning_item_ids:?}"
+        );
+
+        assert_monotonic_from_zero(&events);
+        assert_no_done_no_argdelta(&events);
     }
 
     // -- mid-stream error → response.failed, no completed --------------------
@@ -1243,6 +1459,85 @@ mod tests {
             .code(code)
             .message(message)
             .build()
+    }
+
+    // -- content-filter stop reason → incomplete status ----------------------
+
+    /// A `content_filtered` stop reason maps the final completed Response to
+    /// `status == "incomplete"` with `incomplete_details.reason ==
+    /// "content_filter"` (reusing the non-stream mapper). The stream still
+    /// terminates on `response.completed` — there is NO separate refusal stream
+    /// event from the Bedrock state machine.
+    #[test]
+    fn content_filter_stop_reason_yields_incomplete_completed() {
+        let events = drive(&[
+            ev_message_start(),
+            ev_text("partial", 0),
+            ev_message_stop(StopReason::ContentFiltered),
+            ev_metadata(5, 1, 6),
+        ]);
+
+        // Terminates on response.completed (the lifecycle envelope), not a
+        // refusal event.
+        match events.last().expect("completed") {
+            ResponseStreamEvent::Completed { response, .. } => {
+                assert_eq!(response.status, "incomplete");
+                let details = response
+                    .incomplete_details
+                    .as_ref()
+                    .expect("incomplete_details present");
+                assert_eq!(details["reason"], "content_filter");
+            }
+            other => panic!("expected response.completed last, got {other:?}"),
+        }
+        assert_no_done_no_argdelta(&events);
+    }
+
+    // -- refusal stream events are NEVER emitted by the state machine ---------
+
+    /// NEGATIVE LOCK: the Bedrock state machine NEVER emits
+    /// `response.refusal.delta` / `response.refusal.done` events. The refusal
+    /// stream-event variants exist in the schema for SDK/client compatibility
+    /// only (a content filter surfaces as an `incomplete` completed Response,
+    /// not a refusal stream event). This guards against a future change that
+    /// would start emitting refusal events and break the codex/ai-sdk contract.
+    #[test]
+    fn state_machine_never_emits_refusal_stream_events() {
+        let cases: Vec<Vec<ConverseStreamOutput>> = vec![
+            // text path
+            vec![
+                ev_message_start(),
+                ev_text("hi", 0),
+                ev_message_stop(StopReason::EndTurn),
+                ev_metadata(1, 1, 2),
+            ],
+            // content-filtered path
+            vec![
+                ev_message_start(),
+                ev_text("x", 0),
+                ev_message_stop(StopReason::ContentFiltered),
+                ev_metadata(1, 1, 2),
+            ],
+            // tool path
+            vec![
+                ev_message_start(),
+                ev_tool_start(0, "c1", "f"),
+                ev_tool_input(0, "{}"),
+                ev_block_stop(0),
+                ev_message_stop(StopReason::ToolUse),
+                ev_metadata(1, 1, 2),
+            ],
+        ];
+        for events in cases {
+            let driven = drive(&events);
+            for ev in &driven {
+                let s = serde_json::to_string(ev).unwrap();
+                assert!(
+                    !s.contains("response.refusal"),
+                    "state machine unexpectedly emitted a refusal event: {s}"
+                );
+            }
+        }
     }
 
     // -- finish() is idempotent ----------------------------------------------

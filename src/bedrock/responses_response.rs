@@ -132,6 +132,7 @@ pub fn from_converse_output_to_responses(
                 call_id,
                 name,
                 arguments,
+                status: None,
             });
         }
     } else {
@@ -148,7 +149,7 @@ pub fn from_converse_output_to_responses(
             role: "assistant".to_string(),
             content: vec![OutputContentPart::OutputText {
                 text,
-                annotations: None,
+                annotations: Vec::new(),
                 logprobs: None,
             }],
         });
@@ -293,6 +294,7 @@ mod tests {
                 assert_eq!(content.len(), 1);
                 match &content[0] {
                     OutputContentPart::OutputText { text, .. } => assert_eq!(text, "Hello"),
+                    other => panic!("expected output_text part, got {other:?}"),
                 }
             }
             other => panic!("expected message item, got {other:?}"),
@@ -314,6 +316,39 @@ mod tests {
             "output_text wire key present"
         );
         assert!(resp.id.starts_with("resp_"));
+    }
+
+    /// REGRESSION (@ai-sdk/openai non-stream `generateText`): `output_text`
+    /// MUST serialize `annotations` as a present array (`[]` when empty).
+    /// ai-sdk declares `annotations: z.array(...)` without `.nullish()`, so an
+    /// absent field fails validation ("Invalid JSON response").
+    #[test]
+    fn output_text_serializes_annotations_as_empty_array() {
+        let output = json!({
+            "output": { "message": { "role": "assistant", "content": [{ "text": "pong" }] } },
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 1, "outputTokens": 1, "totalTokens": 2 }
+        });
+        let resp =
+            from_converse_output_to_responses(&output, &req(), "m", "resp_ann").expect("map text");
+        let v = serde_json::to_value(&resp).expect("serialize");
+
+        let part = &v["output"][0]["content"][0];
+        assert_eq!(part["type"], "output_text");
+        assert_eq!(part["text"], "pong");
+        assert!(
+            part.get("annotations").is_some(),
+            "annotations key absent — ai-sdk would reject: {part}"
+        );
+        assert_eq!(
+            part["annotations"],
+            json!([]),
+            "annotations must serialize as an empty array: {part}"
+        );
+        assert!(
+            part["annotations"].is_array(),
+            "annotations must be an array"
+        );
     }
 
     // -- Test 2: tool_use → function_call item with call_id/name/arguments ----
@@ -382,6 +417,7 @@ mod tests {
                     // Reasoning is NOT rendered inline as <think>.
                     assert!(!text.contains("<think>"));
                 }
+                other => panic!("expected output_text part, got {other:?}"),
             },
             other => panic!("expected message item second, got {other:?}"),
         }
@@ -488,5 +524,34 @@ mod tests {
         let err = from_converse_output_to_responses(&output, &req(), "m", "resp_e")
             .expect_err("should error");
         assert!(matches!(err, AppError::Internal(_)));
+    }
+
+    #[test]
+    fn output_text_part_always_serializes_annotations_as_empty_array() {
+        let output = json!({
+            "output": { "message": { "role": "assistant", "content": [{ "text": "pong" }] } },
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 1, "outputTokens": 1, "totalTokens": 2 }
+        });
+        let resp =
+            from_converse_output_to_responses(&output, &req(), "m", "resp_ann").expect("map text");
+        let v = serde_json::to_value(&resp).expect("serialize");
+        let part = &v["output"][0]["content"][0];
+        assert_eq!(part["type"], "output_text");
+        assert_eq!(part["text"], "pong");
+        assert!(
+            part.get("annotations").is_some(),
+            "annotations key must always be present: {part}"
+        );
+        assert_eq!(
+            part["annotations"],
+            json!([]),
+            "empty annotations must serialize as []: {part}"
+        );
+        let s = serde_json::to_string(&resp).expect("string");
+        assert!(
+            s.contains("\"annotations\":[]"),
+            "serialized JSON must contain annotations:[] : {s}"
+        );
     }
 }

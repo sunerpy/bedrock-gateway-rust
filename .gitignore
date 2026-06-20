@@ -178,3 +178,6 @@ legacy/
 # Environment and evidence
 .env
 .omo/evidence/
+
+# Local-only proxy build (not for publish)
+Dockerfile.local

@@ -68,8 +68,8 @@ use crate::bedrock::translate::{parse_image_data_uri, ImageResolver};
 use crate::domain::ModelCapabilities;
 use crate::error::AppError;
 use crate::openai::responses_schema::{
-    ResponseContentPart, ResponseInputItem, ResponsesContent, ResponsesInput, ResponsesRequest,
-    ResponsesRole, ResponsesTool,
+    FunctionCallOutputValue, ResponseContentPart, ResponseInputItem, ResponsesContent,
+    ResponsesInput, ResponsesRequest, ResponsesRole, ResponsesTool,
 };
 use crate::openai::schema::ReasoningEffort;
 
@@ -212,16 +212,21 @@ async fn parse_input_items(
             }
             // function_call_output → user toolResult turn (reusing tools.rs).
             ResponseInputItem::FunctionCallOutput { call_id, output } => {
-                let turn = tool_message_to_tool_result_turn(call_id, output);
-                let content = turn
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
+                let content =
+                    parse_function_call_output(call_id, output, model_id, resolver).await?;
                 turns.push(Turn {
                     role: "user".to_string(),
                     content,
                 });
+            }
+            // item_reference → DROP. The gateway is stateless and cannot resolve
+            // OpenAI-hosted stored items; accepting and ignoring is safer than
+            // failing opencode continuation payloads that contain references.
+            ResponseInputItem::ItemReference { .. } => continue,
+            ResponseInputItem::Other { item_type, .. } => {
+                return Err(AppError::BadRequest(format!(
+                    "Responses input item type '{item_type}' is not supported"
+                )));
             }
             // reasoning → DROP (Strategy A). Bedrock has no equivalent for the
             // Responses `encrypted_content` blob and there is no thinking
@@ -233,6 +238,34 @@ async fn parse_input_items(
         }
     }
     Ok(turns)
+}
+
+async fn parse_function_call_output(
+    call_id: &str,
+    output: &FunctionCallOutputValue,
+    model_id: &str,
+    resolver: &dyn ImageResolver,
+) -> Result<Vec<Value>, AppError> {
+    match output {
+        FunctionCallOutputValue::Text(text) => {
+            let turn = tool_message_to_tool_result_turn(call_id, text);
+            Ok(turn
+                .get("content")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default())
+        }
+        FunctionCallOutputValue::Parts(parts) => {
+            let content = ResponsesContent::Parts(parts.clone());
+            let blocks = parse_message_content(&content, model_id, resolver).await?;
+            Ok(vec![json!({
+                "toolResult": {
+                    "toolUseId": call_id,
+                    "content": blocks,
+                }
+            })])
+        }
+    }
 }
 
 /// Append system/developer message content as `{"text": ...}` system blocks.
@@ -600,6 +633,42 @@ mod tests {
             msgs[2]["content"][0]["toolResult"]["content"][0]["text"],
             "42"
         );
+    }
+
+    #[tokio::test]
+    async fn structured_function_call_output_yields_ordered_tool_result_content() {
+        let req = req_from(json!({
+            "model": "m",
+            "input": [
+                { "type": "function_call", "call_id": "c1", "name": "screenshot", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "c1", "output": [
+                    { "type": "input_text", "text": "Image read successfully" },
+                    { "type": "input_image", "image_url": "data:image/png;base64,AAECAw==" }
+                ]}
+            ]
+        }));
+        let out = parse(&req).await.expect("parse structured tool output");
+        let msgs = out.messages.as_array().expect("messages");
+        assert_eq!(msgs.len(), 2);
+        let tool_result = &msgs[1]["content"][0]["toolResult"];
+        assert_eq!(tool_result["toolUseId"], "c1");
+        assert_eq!(tool_result["content"][0]["text"], "Image read successfully");
+        assert_eq!(tool_result["content"][1]["image"]["format"], "png");
+    }
+
+    #[tokio::test]
+    async fn item_reference_is_accepted_and_ignored_for_stateless_gateway() {
+        let req = req_from(json!({
+            "model": "m",
+            "input": [
+                { "type": "item_reference", "id": "rs_stored_1" },
+                { "role": "user", "content": "continue" }
+            ]
+        }));
+        let out = parse(&req).await.expect("item_reference must not reject");
+        let msgs = out.messages.as_array().expect("messages");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["content"][0]["text"], "continue");
     }
 
     // -- Test 2: instructions present → a Bedrock system block ----------------

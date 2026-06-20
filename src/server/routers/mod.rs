@@ -36,12 +36,13 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::middleware;
-use axum::response::sse::{Event, Sse};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -59,6 +60,35 @@ const OPENAI_MODEL_HEADER: &str = "openai-model";
 
 /// Request header a client may use to supply its own correlation id.
 const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// Anti-buffering header. Without `X-Accel-Buffering: no`, nginx/ALB/CloudFront
+/// buffer the SSE body until the connection closes, so the client renders
+/// nothing live and the full message only appears on session refetch.
+const ACCEL_BUFFERING_HEADER: &str = "x-accel-buffering";
+
+/// SSE keep-alive ping interval (seconds). Periodic `:` comment lines keep the
+/// connection alive on slow models and force an early flush through proxies.
+const SSE_KEEPALIVE_SECS: u64 = 15;
+
+/// Inject the SSE anti-buffering headers onto a streaming response.
+/// `X-Accel-Buffering: no` disables proxy response buffering; `no-transform`
+/// forbids intermediaries from buffering/altering the body for re-compression.
+fn with_sse_headers(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(
+        ACCEL_BUFFERING_HEADER,
+        axum::http::HeaderValue::from_static("no"),
+    );
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-cache, no-transform"),
+    );
+    response
+}
+
+fn sse_keep_alive() -> KeepAlive {
+    KeepAlive::new().interval(Duration::from_secs(SSE_KEEPALIVE_SECS))
+}
 
 /// Resolve the per-request correlation id: reuse the client's `x-request-id`
 /// header when present and non-empty, otherwise self-generate one.
@@ -193,7 +223,11 @@ fn sse_response(chat_stream: crate::domain::ChatStream) -> Response {
             Ok(Event::default().data("[DONE]"))
         }));
 
-    Sse::new(event_stream).into_response()
+    with_sse_headers(
+        Sse::new(event_stream)
+            .keep_alive(sse_keep_alive())
+            .into_response(),
+    )
 }
 
 /// Serialize an [`AppError`] into the OpenAI error-envelope JSON string used as
@@ -318,7 +352,11 @@ fn responses_sse_response(stream: crate::domain::ResponsesStream) -> Response {
             }
         }
     });
-    Sse::new(event_stream).into_response()
+    with_sse_headers(
+        Sse::new(event_stream)
+            .keep_alive(sse_keep_alive())
+            .into_response(),
+    )
 }
 
 /// Convert one [`ResponseStreamEvent`] into an SSE [`Event`] with the correct
@@ -654,7 +692,7 @@ mod tests {
                 role: "assistant".to_string(),
                 content: vec![OutputContentPart::OutputText {
                     text: "mock reply".to_string(),
-                    annotations: None,
+                    annotations: Vec::new(),
                     logprobs: None,
                 }],
             }],
@@ -812,6 +850,59 @@ mod tests {
         assert!(text.contains("chat.completion.chunk"));
         assert!(text.contains("data: [DONE]"));
         assert!(text.contains("hello"));
+    }
+
+    /// Both SSE surfaces (chat + responses) MUST carry the anti-buffering
+    /// headers so ALB/CloudFront/nginx flush the stream live instead of
+    /// buffering the body until completion. `X-Accel-Buffering: no` defeats
+    /// proxy response buffering; `Cache-Control: no-cache` (with `no-transform`)
+    /// forbids intermediaries from re-buffering for compression.
+    #[tokio::test]
+    async fn sse_responses_carry_anti_buffering_headers() {
+        for (uri, body) in [
+            (
+                "/api/v1/chat/completions",
+                r#"{"model":"anthropic.claude-3-sonnet-v1:0","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
+            ),
+            (
+                "/api/v1/responses",
+                r#"{"model":"anthropic.claude-3-sonnet-v1:0","input":"hi","stream":true}"#,
+            ),
+        ] {
+            let req = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(AUTHORIZATION, auth())
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap();
+            let resp = app().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+
+            let ct = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default();
+            assert!(ct.contains("text/event-stream"), "{uri}: got {ct}");
+
+            let accel = resp
+                .headers()
+                .get(ACCEL_BUFFERING_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default();
+            assert_eq!(accel, "no", "{uri}: missing X-Accel-Buffering: no");
+
+            let cache_control = resp
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default();
+            assert!(
+                cache_control.contains("no-cache"),
+                "{uri}: Cache-Control missing no-cache, got {cache_control}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1056,6 +1147,20 @@ mod tests {
         assert_eq!(value["error"]["type"], "invalid_request_error");
         assert_eq!(value["error"]["code"], "bad_request");
         assert!(value.get("detail").is_none());
+    }
+
+    #[tokio::test]
+    async fn documented_responses_subresources_are_not_accidentally_routed() {
+        for (method, uri) in [
+            ("GET", "/api/v1/responses/resp_123"),
+            ("DELETE", "/api/v1/responses/resp_123"),
+            ("POST", "/api/v1/responses/resp_123/cancel"),
+            ("POST", "/api/v1/responses/compact"),
+            ("GET", "/api/v1/responses/resp_123/input_items"),
+        ] {
+            let (status, _bytes, _ct) = send(app(), method, uri, Some(&auth()), None).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri}");
+        }
     }
 
     // ---- prefix normalization ----------------------------------------------

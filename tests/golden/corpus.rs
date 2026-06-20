@@ -29,7 +29,7 @@ use bedrock_gateway_rust::bedrock::translate::{to_converse_args, ConverseExtras,
 use bedrock_gateway_rust::bedrock::{cache, reasoning, response, tools};
 use bedrock_gateway_rust::config::ModelCapabilityConfig;
 use bedrock_gateway_rust::domain::{EmbeddingBodyCodec, ModelCapabilities};
-use bedrock_gateway_rust::openai::responses_schema::ResponsesRequest;
+use bedrock_gateway_rust::openai::responses_schema::{ResponseStreamEvent, ResponsesRequest};
 use bedrock_gateway_rust::openai::schema::ChatRequest;
 use bedrock_gateway_rust::openai::schema::{EmbeddingData, EmbeddingsRequest, EncodingFormat};
 
@@ -789,8 +789,9 @@ fn responses_response_reasoning() {
 //   * EXACT event-`type` ordering across the full lifecycle,
 //   * `sequence_number` monotonic from 0 with no gaps,
 //   * NO `[DONE]` sentinel anywhere (the Responses protocol has none),
-//   * NO `function_call_arguments.delta`/`.done` events (out of scope; codex
-//     reconstructs from the item add/done pair),
+//   * NO state-machine-emitted `function_call_arguments.delta`/`.done` events
+//     (schema accepts them for compatibility; codex reconstructs from the item
+//     add/done pair),
 //   * `response.completed` carries the FULL final Response (output[] + usage).
 //
 // Volatile `created_at` is ignored per-event; `reasoning_tokens` is added to the
@@ -1089,5 +1090,224 @@ fn negative_responses_stream_arg_delta_absent_from_machine() {
     assert!(
         result.is_err(),
         "comparator MUST reject an injected function_call_arguments.delta event"
+    );
+}
+
+// ===========================================================================
+// Captured real-stream replay — fixtures seeded from live opencode/codex SSE
+// ===========================================================================
+//
+// These fixtures are REAL `POST /responses` streams captured from a running
+// gateway (under `responses_sse_capture/*.sse`), in OpenAI Responses
+// `event: <type>\ndata: <json>` SSE framing. They are the empirical ground
+// truth for the wire shape opencode / ai-sdk / codex actually consume.
+//
+// For each captured stream this asserts:
+//   * the SSE `event:` name EQUALS the payload's `type` (framing parity — codex
+//     keys off the event name, ai-sdk off the payload type; they MUST agree),
+//   * every `data:` payload deserializes through the gateway's
+//     `ResponseStreamEvent` enum (no silent wire drift),
+//   * `sequence_number` is monotonic from 0 with no gaps,
+//   * NO `[DONE]` sentinel anywhere (the Responses protocol has none),
+//   * the stream terminates on `response.completed`,
+//   * the exact event-`type` ordering matches the documented lifecycle.
+
+/// One parsed frame of a captured Responses SSE stream: the `event:` name and
+/// the decoded `data:` JSON payload.
+struct CapturedFrame {
+    event_name: String,
+    payload: Value,
+}
+
+/// Parse a captured `event: <type>\ndata: <json>` SSE body into ordered frames.
+/// A `data: [DONE]` line is preserved as a frame with a `done` sentinel payload
+/// so the no-`[DONE]` invariant can be asserted (it must never appear).
+fn parse_captured_sse(body: &str) -> Vec<CapturedFrame> {
+    let mut frames = Vec::new();
+    let mut pending_event: Option<String> = None;
+    for raw in body.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix("event:") {
+            pending_event = Some(name.trim().to_string());
+            continue;
+        }
+        if let Some(data) = line.strip_prefix("data:") {
+            let data = data.trim();
+            if data == "[DONE]" {
+                frames.push(CapturedFrame {
+                    event_name: pending_event.take().unwrap_or_default(),
+                    payload: Value::String("[DONE]".to_string()),
+                });
+                continue;
+            }
+            let payload: Value = serde_json::from_str(data)
+                .unwrap_or_else(|e| panic!("captured SSE data line is not JSON: {e}\n{data}"));
+            frames.push(CapturedFrame {
+                event_name: pending_event.take().unwrap_or_default(),
+                payload,
+            });
+        }
+    }
+    frames
+}
+
+/// Validate a captured Responses SSE stream against the wire contract and the
+/// expected event-type ordering.
+fn assert_captured_stream(file: &str, expected_order: &[&str]) {
+    let body = load_text(format!("responses_sse_capture/{file}"));
+    let frames = parse_captured_sse(&body);
+    assert!(!frames.is_empty(), "{file}: no SSE frames parsed");
+
+    let mut order: Vec<String> = Vec::new();
+    for (i, frame) in frames.iter().enumerate() {
+        // No [DONE] sentinel — ever.
+        assert_ne!(
+            frame.payload,
+            Value::String("[DONE]".to_string()),
+            "{file}: [DONE] sentinel must never appear in a Responses stream"
+        );
+
+        let payload_type = frame
+            .payload
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{file}: frame[{i}] payload missing `type`"));
+
+        // SSE event name must equal the payload type (framing parity).
+        assert_eq!(
+            frame.event_name, payload_type,
+            "{file}: frame[{i}] SSE event name `{}` != payload type `{payload_type}`",
+            frame.event_name
+        );
+
+        // Every payload must deserialize through the gateway's event enum.
+        let event: ResponseStreamEvent = serde_json::from_value(frame.payload.clone())
+            .unwrap_or_else(|e| panic!("{file}: frame[{i}] (`{payload_type}`) failed to deserialize through ResponseStreamEvent: {e}"));
+        // And re-serialize to the same type tag (no drift).
+        let back = serde_json::to_value(&event).expect("re-serialize");
+        assert_eq!(
+            back["type"], payload_type,
+            "{file}: frame[{i}] round-trip changed the type tag"
+        );
+
+        // sequence_number monotonic from 0, no gaps.
+        let actual_seq = frame
+            .payload
+            .get("sequence_number")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| panic!("{file}: frame[{i}] missing sequence_number"));
+        assert_eq!(
+            actual_seq, i as u64,
+            "{file}: frame[{i}] sequence_number not monotonic-from-0"
+        );
+
+        order.push(payload_type.to_string());
+    }
+
+    // Exact event-type ordering.
+    let actual_order: Vec<&str> = order.iter().map(String::as_str).collect();
+    assert_eq!(
+        actual_order, expected_order,
+        "{file}: event-type ordering mismatch"
+    );
+
+    // Terminates on response.completed.
+    assert_eq!(
+        order.last().map(String::as_str),
+        Some("response.completed"),
+        "{file}: stream must terminate on response.completed"
+    );
+}
+
+#[test]
+fn captured_text_stream_matches_contract() {
+    assert_captured_stream(
+        "text_stream.sse",
+        &[
+            "response.created",
+            "response.in_progress",
+            "response.output_item.added",
+            "response.content_part.added",
+            "response.output_text.delta",
+            "response.output_text.delta",
+            "response.output_text.delta",
+            "response.output_text.done",
+            "response.content_part.done",
+            "response.output_item.done",
+            "response.completed",
+        ],
+    );
+}
+
+#[test]
+fn captured_tool_stream_matches_contract() {
+    // Tool lifecycle: the function_call item is framed by add+done with the full
+    // JSON arguments on `.done`; NO function_call_arguments.delta is emitted
+    // (codex reconstructs the call from the add/done pair).
+    assert_captured_stream(
+        "tool_stream.sse",
+        &[
+            "response.created",
+            "response.in_progress",
+            "response.output_item.added",
+            "response.output_item.done",
+            "response.completed",
+        ],
+    );
+    let body = load_text("responses_sse_capture/tool_stream.sse");
+    assert!(
+        !body.contains("function_call_arguments"),
+        "captured tool stream must NOT contain function_call_arguments events"
+    );
+}
+
+#[test]
+fn captured_reasoning_stream_matches_contract() {
+    // Reasoning item (added → reasoning_text.delta* → reasoning_text.done →
+    // done) BEFORE the message item, then the message lifecycle, then completed.
+    // Reasoning is a STRUCTURED item — never `<think>` on this surface.
+    let body = load_text("responses_sse_capture/reasoning_stream.sse");
+    assert!(
+        !body.contains("<think>"),
+        "reasoning must be a structured item on the Responses surface, never <think>"
+    );
+
+    let frames = parse_captured_sse(&body);
+    let order: Vec<&str> = frames
+        .iter()
+        .map(|f| f.payload["type"].as_str().unwrap())
+        .collect();
+    // Reasoning item frames come BEFORE the message item frames.
+    let first_reasoning = order
+        .iter()
+        .position(|t| *t == "response.reasoning_text.delta")
+        .expect("reasoning delta present");
+    let first_message_text = order
+        .iter()
+        .position(|t| *t == "response.output_text.delta")
+        .expect("message text delta present");
+    assert!(
+        first_reasoning < first_message_text,
+        "reasoning_text.delta must precede output_text.delta"
+    );
+
+    // Full per-frame contract validation (framing parity, monotonic seq, no
+    // [DONE], ends on completed) without pinning the long delta-by-delta order.
+    for (i, frame) in frames.iter().enumerate() {
+        let payload_type = frame.payload["type"].as_str().unwrap();
+        assert_eq!(frame.event_name, payload_type, "frame[{i}] framing parity");
+        let event: ResponseStreamEvent = serde_json::from_value(frame.payload.clone())
+            .unwrap_or_else(|e| panic!("frame[{i}] (`{payload_type}`) deserialize: {e}"));
+        let _ = serde_json::to_value(&event).unwrap();
+        let actual_seq = frame.payload["sequence_number"].as_u64().unwrap();
+        assert_eq!(actual_seq, i as u64, "frame[{i}] sequence_number monotonic");
+    }
+    assert_eq!(
+        order.last(),
+        Some(&"response.completed"),
+        "reasoning stream terminates on response.completed"
     );
 }

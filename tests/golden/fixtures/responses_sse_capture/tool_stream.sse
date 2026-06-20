@@ -1,0 +1,15 @@
+event: response.created
+data: {"response":{"created_at":1781944169,"id":"resp_18babcc7e998cf25","max_output_tokens":256,"model":"global.anthropic.claude-sonnet-4-5-20250929-v1:0","object":"response","output":[],"status":"in_progress","tools":[{"description":"get weather","name":"get_weather","parameters":{"properties":{"city":{"type":"string"}},"required":["city"],"type":"object"},"type":"function"}],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}},"sequence_number":0,"type":"response.created"}
+
+event: response.in_progress
+data: {"response":{"created_at":1781944169,"id":"resp_18babcc7e998cf25","max_output_tokens":256,"model":"global.anthropic.claude-sonnet-4-5-20250929-v1:0","object":"response","output":[],"status":"in_progress","tools":[{"description":"get weather","name":"get_weather","parameters":{"properties":{"city":{"type":"string"}},"required":["city"],"type":"object"},"type":"function"}],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}},"sequence_number":1,"type":"response.in_progress"}
+
+event: response.output_item.added
+data: {"item":{"arguments":"{}","call_id":"tooluse_RFXHrfQDie4StKcBtwr0Gv","id":"fc_tooluse_RFXHrfQDie4StKcBtwr0Gv","name":"get_weather","type":"function_call"},"output_index":0,"sequence_number":2,"type":"response.output_item.added"}
+
+event: response.output_item.done
+data: {"item":{"arguments":"{\"city\": \"Paris\"}","call_id":"tooluse_RFXHrfQDie4StKcBtwr0Gv","id":"fc_tooluse_RFXHrfQDie4StKcBtwr0Gv","name":"get_weather","status":"completed","type":"function_call"},"output_index":0,"sequence_number":3,"type":"response.output_item.done"}
+
+event: response.completed
+data: {"response":{"created_at":1781944169,"id":"resp_18babcc7e998cf25","max_output_tokens":256,"model":"global.anthropic.claude-sonnet-4-5-20250929-v1:0","object":"response","output":[{"arguments":"{\"city\":\"Paris\"}","call_id":"tooluse_RFXHrfQDie4StKcBtwr0Gv","id":"fc_tooluse_RFXHrfQDie4StKcBtwr0Gv","name":"get_weather","type":"function_call"}],"status":"completed","tools":[{"description":"get weather","name":"get_weather","parameters":{"properties":{"city":{"type":"string"}},"required":["city"],"type":"object"},"type":"function"}],"usage":{"input_tokens":560,"input_tokens_details":{"cached_tokens":0},"output_tokens":53,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":613}},"sequence_number":4,"type":"response.completed"}
+
