@@ -1,0 +1,57 @@
+# cargo-audit configuration
+# Read automatically by `cargo audit` and the `rustsec/audit-check` GitHub Action
+# (the action shells out to cargo-audit, which honors `.cargo/audit.toml`).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Documented advisory ignores — rustls-webpki 0.101.7
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Reviewed: 2026-06-20
+#
+# WHY THESE ARE IGNORED (not a version bump):
+#
+# The vulnerable `rustls-webpki 0.101.7` is NOT a direct dependency. It is dragged
+# in transitively by the AWS SDK:
+#
+#     rustls-webpki 0.101.7
+#       └── rustls 0.21.12
+#             └── aws-smithy-http-client 1.1.13  (feature: legacy-rustls-ring)
+#                   └── aws-smithy-runtime 1.11.3  (feature: connector-hyper-0-14-x / tls-rustls)
+#                         └── aws-config / aws-sdk-* → bedrock-gateway-rust
+#
+# `rustls 0.21.12` hard-pins `rustls-webpki = "^0.101"`, so it CANNOT advance to a
+# patched 0.103.13+ within semver. `cargo update -p rustls-webpki` is a no-op for
+# this reason. The legacy 0.21 TLS path is enabled by the AWS SDK's default
+# `connector-hyper-0-14-x` feature and cannot be removed without disabling
+# default-features on every aws-sdk-* crate (which would break the SDK's default
+# HTTPS connector). The current AWS SDK release line still carries this legacy
+# chain; a future SDK bump is expected to drop it. The modern, non-vulnerable
+# `rustls-webpki 0.103.13` is ALSO present in the tree (via rustls 0.23) and is
+# what the default HTTPS connector actually uses.
+#
+# WHY NON-EXPLOITABLE FOR THIS SERVICE:
+#
+# This gateway is an OUTBOUND TLS CLIENT only — it connects to AWS / Bedrock
+# endpoints and validates AWS's own server certificates. It never parses
+# untrusted certificate revocation lists and never asserts URI/wildcard name
+# constraints against attacker-supplied certs.
+#
+#   * RUSTSEC-2026-0104 — reachable panic in CRL parsing.
+#       "Applications that do not use CRLs are not affected." This service uses no
+#       CRLs. Not reachable.
+#   * RUSTSEC-2026-0098 — URI name-constraints incorrectly accepted.
+#       Reachable only after signature verification AND requires CA misissuance.
+#       Not applicable to validating AWS's well-formed server certs.
+#   * RUSTSEC-2026-0099 — name-constraints accepted for wildcard-name certs.
+#       Same precondition: post-signature, requires misissuance. Not applicable.
+#
+# REMOVAL CRITERIA: drop these ignores once an AWS SDK release no longer pulls
+# rustls 0.21 / rustls-webpki 0.101.x (re-run `cargo tree -i rustls-webpki` after
+# any aws-config / aws-sdk bump).
+
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0098", # rustls-webpki 0.101.7: URI name-constraint bypass — needs CA misissuance; outbound client, N/A
+    "RUSTSEC-2026-0099", # rustls-webpki 0.101.7: wildcard name-constraint bypass — needs CA misissuance; outbound client, N/A
+    "RUSTSEC-2026-0104", # rustls-webpki 0.101.7: CRL-parse DoS panic — this service uses no CRLs; not reachable
+]

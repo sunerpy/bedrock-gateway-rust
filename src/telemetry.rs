@@ -331,6 +331,6 @@ mod tests {
     #[test]
     fn service_fields_are_populated() {
         assert_eq!(SERVICE_NAME, "bedrock-gateway");
-        assert!(!SERVICE_VERSION.is_empty());
+        assert_eq!(SERVICE_VERSION, env!("CARGO_PKG_VERSION"));
     }
 }

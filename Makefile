@@ -11,7 +11,7 @@ COMMIT_ID = $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 RUST_FILES = $(shell find . -name "*.rs" -not -path "./target/*")
 TOML_FILES = $(shell find . -name "*.toml" -not -path "./target/*")
 
-.PHONY: all build build-binaries build-local docker-build docker-release fmt lint test run clean help
+.PHONY: all build build-binaries build-local docker-build docker-release fmt lint test run clean help hooks setup-hooks
 
 all: fmt lint build
 
@@ -112,6 +112,15 @@ run: build
 	@echo "Running $(PROJECT_NAME)..."
 	API_KEY=testkey ./$(DIST_DIR)/$(PROJECT_NAME)
 
+# 一次性启用版本化的 git 钩子（克隆后执行一次即可）。
+# 将 core.hooksPath 指向 .githooks，从而启用推送前门禁（pre-push）。
+# 仅在 push 时校验 fmt + clippy + test，commit 不受影响。
+hooks setup-hooks:
+	@echo "Enabling version-controlled git hooks (core.hooksPath -> .githooks)..."
+	git config core.hooksPath .githooks
+	@echo "✅ Done. The pre-push gate is now active (fmt + clippy + test on push)."
+	@echo "   Plain 'git commit' stays unblocked; only 'git push' is gated."
+
 clean:
 	@echo "Cleaning..."
 	cargo clean
@@ -140,6 +149,7 @@ help:
 	@echo ""
 	@echo "Utilities:"
 	@echo "  run              - Build and run binary (API_KEY=testkey)"
+	@echo "  hooks            - Enable pre-push git hook (run once after clone)"
 	@echo "  clean            - Remove build artifacts and dist/"
 	@echo "  help             - Show this help message"
 	@echo ""

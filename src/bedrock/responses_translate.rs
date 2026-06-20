@@ -51,27 +51,38 @@
 //! - `include` (e.g.
 //!   `["reasoning.encrypted_content"]`) → **accept & IGNORE** (emit nothing
 //!   extra; Strategy A).
-//! - built-in server tools in `tools[]` (any tool type other than `function`,
-//!   i.e. `file_search` / `web_search` / `code_interpreter` / `mcp` /
-//!   `computer` / `image_generation`) → **400** ([`AppError::BadRequest`]).
-//!   Because [`ResponsesTool`] only models the `function` variant, an unknown
-//!   tool type fails deserialization at the wire boundary; this parser
-//!   additionally guards by re-checking any captured `extra` tool entries.
+//! - tools in `tools[]`             → **FILTER, never 400**. User-defined
+//!   `function` / `namespace` / `custom` tools are kept (a `namespace` is
+//!   flattened — see [`build_responses_tool_specs`]); hosted server tools with
+//!   no Bedrock equivalent (`web_search` / `image_generation` /
+//!   `code_interpreter` / `tool_search` / `mcp` / `computer` and any unknown
+//!   type, all deserialized to [`ResponsesTool::Unknown`]) are SILENTLY
+//!   DROPPED. codex unconditionally includes some hosted tools; a 400 there
+//!   would kill the whole session including the user's real function tools.
 //! - unsatisfiable `text.format` (a malformed / unsupported structured-output
 //!   schema) → **400**. A well-formed `json_schema` that can pass through to
 //!   Bedrock is accepted.
 
 use serde_json::{json, Value};
 
-use crate::bedrock::tools::{should_split_same_role_merge, tool_message_to_tool_result_turn};
+use crate::bedrock::tools::{
+    convert_tool_spec, should_split_same_role_merge, tool_message_to_tool_result_turn,
+};
 use crate::bedrock::translate::{parse_image_data_uri, ImageResolver};
 use crate::domain::ModelCapabilities;
 use crate::error::AppError;
 use crate::openai::responses_schema::{
     FunctionCallOutputValue, ResponseContentPart, ResponseInputItem, ResponsesContent,
-    ResponsesInput, ResponsesRequest, ResponsesRole, ResponsesTool,
+    ResponsesInput, ResponsesNamespaceInner, ResponsesRequest, ResponsesRole, ResponsesTool,
 };
-use crate::openai::schema::ReasoningEffort;
+use crate::openai::schema::{Function, ReasoningEffort};
+
+/// Delimiter joining a namespace name to an inner tool name when a `namespace`
+/// tool is flattened into the Bedrock `toolConfig` (`{ns}__{fn}`). A
+/// protocol-shaping constant, not model knowledge: it keeps tools from
+/// different namespaces from colliding and is echoed back verbatim by the
+/// client on the stateless round-trip.
+pub const NAMESPACE_DELIMITER: &str = "__";
 
 /// The parsed Responses input in the shape the Bedrock Converse call consumes.
 ///
@@ -123,7 +134,8 @@ pub async fn to_responses_converse_input(
 
     // 1) Stateless rejection matrix. `store` / `previous_response_id` / `include`
     //    are intentionally NOT inspected here: they are accepted and ignored.
-    reject_builtin_tools(req)?;
+    //    Tools are FILTERED (hosted/unknown dropped) at toolConfig-build time,
+    //    never rejected here — see `build_responses_tool_specs`.
     reject_unsatisfiable_text_format(req)?;
 
     // 2) System blocks: `instructions` first (prepended), then any system /
@@ -191,6 +203,18 @@ async fn parse_input_items(
             // function_call → assistant toolUse turn (reusing the Bedrock-side
             // toolUse block shape). `arguments` is a JSON string parsed into the
             // `input` object, matching the chat path (tools.rs).
+            //
+            // NAME ROUND-TRIP INVARIANT (stateless surface): `name` is passed
+            // through UNCHANGED. When a tool came from a flattened `namespace`,
+            // the gateway already sent Bedrock the prefixed name `ns__fn`, so
+            // Bedrock returned (and the client received) that same prefixed name
+            // as the response's `function_call.name`. The client echoes it back
+            // here verbatim, so forwarding it unchanged to Bedrock preserves the
+            // toolUseId↔name correlation. Stripping the `ns__` prefix here would
+            // break that correlation — DO NOT strip it. (codex's function_call
+            // item may also carry a separate `namespace` field; the schema does
+            // not model it, so serde drops it — accept & ignore, the prefixed
+            // name already encodes the namespace.)
             ResponseInputItem::FunctionCall {
                 call_id,
                 name,
@@ -211,6 +235,10 @@ async fn parse_input_items(
                 });
             }
             // function_call_output → user toolResult turn (reusing tools.rs).
+            // `call_id` is passed through UNCHANGED — same round-trip invariant
+            // as function_call above: it correlates to the (possibly prefixed)
+            // toolUseId the client already received, so it must echo back
+            // verbatim. Do not rewrite it.
             ResponseInputItem::FunctionCallOutput { call_id, output } => {
                 let content =
                     parse_function_call_output(call_id, output, model_id, resolver).await?;
@@ -414,37 +442,87 @@ fn reframe_turns(turns: Vec<Turn>) -> Value {
     )
 }
 
-/// Reject any built-in server tool in `tools[]` (a 400).
+/// Build the Bedrock `toolSpec` blocks from a Responses request's `tools[]`,
+/// FILTERING (never rejecting) along the way.
 ///
-/// [`ResponsesTool`] only models the `function` variant, so a built-in tool type
-/// (`web_search`, `file_search`, `code_interpreter`, `mcp`, `computer`,
-/// `image_generation`, …) fails to deserialize at the wire boundary. This guard
-/// additionally rejects any tool-shaped entry captured in `extra` (defensive —
-/// in case a future schema change loosens deserialization). The modeled
-/// `function` tools are always accepted.
-fn reject_builtin_tools(req: &ResponsesRequest) -> Result<(), AppError> {
-    // Modeled tools are all `function` by construction; nothing to reject.
-    if let Some(tools) = &req.tools {
-        for tool in tools {
-            match tool {
-                ResponsesTool::Function { .. } => {}
+/// - `function` → one `toolSpec` keeping its bare name.
+/// - `custom`   → one `toolSpec` (name + description; the `format` grammar has
+///   no Bedrock slot and is dropped).
+/// - `namespace` → FLATTENED: one `toolSpec` per inner tool, with each inner
+///   name prefixed `{namespace_name}__{inner_name}` (see [`NAMESPACE_DELIMITER`])
+///   so tools from different namespaces never collide. A nested `custom` is
+///   flattened the same way as a nested `function`.
+/// - `Unknown` (hosted server tools — `web_search`, `image_generation`,
+///   `code_interpreter`, `tool_search`, `mcp`, `computer`, and any future type)
+///   → SILENTLY DROPPED. These have no Bedrock equivalent; dropping (instead of
+///   a 400) keeps codex sessions alive when they unconditionally include a
+///   hosted tool alongside the user's real function tools.
+///
+/// Returns the (possibly empty) `toolSpec` vector. The caller wraps it in
+/// `{"tools": [...]}` and applies `tool_choice` / cache decoration.
+#[must_use]
+pub fn build_responses_tool_specs(req: &ResponsesRequest) -> Vec<Value> {
+    let Some(tools) = &req.tools else {
+        return Vec::new();
+    };
+    let mut specs: Vec<Value> = Vec::new();
+    for tool in tools {
+        match tool {
+            ResponsesTool::Function {
+                name,
+                description,
+                parameters,
+                ..
+            } => {
+                specs.push(function_tool_spec(name, description.as_deref(), parameters));
             }
-        }
-    }
-
-    // Defensive: a built-in tool array smuggled through `extra["tools"]`.
-    if let Some(Value::Array(extra_tools)) = req.extra.get("tools") {
-        for tool in extra_tools {
-            if let Some(ty) = tool.get("type").and_then(Value::as_str) {
-                if ty != "function" {
-                    return Err(AppError::BadRequest(format!(
-                        "built-in server tool '{ty}' is not supported; only function tools are accepted"
-                    )));
+            ResponsesTool::Custom {
+                name, description, ..
+            } => {
+                specs.push(function_tool_spec(name, description.as_deref(), &None));
+            }
+            ResponsesTool::Namespace {
+                name: ns_name,
+                tools: inner,
+                ..
+            } => {
+                for item in inner {
+                    let (inner_name, inner_desc, inner_params) = match item {
+                        ResponsesNamespaceInner::Function {
+                            name,
+                            description,
+                            parameters,
+                            ..
+                        } => (name, description.as_deref(), parameters.clone()),
+                        ResponsesNamespaceInner::Custom {
+                            name, description, ..
+                        } => (name, description.as_deref(), None),
+                    };
+                    let prefixed = format!("{ns_name}{NAMESPACE_DELIMITER}{inner_name}");
+                    specs.push(function_tool_spec(&prefixed, inner_desc, &inner_params));
                 }
             }
+            // Hosted / unknown server tools: no Bedrock equivalent → drop.
+            ResponsesTool::Unknown => {}
         }
     }
-    Ok(())
+    specs
+}
+
+/// Shape one Bedrock `toolSpec` from a (possibly prefixed) name + optional
+/// description + optional JSON-schema parameters, reusing the chat path's
+/// [`convert_tool_spec`] so the Bedrock toolSpec shaping is defined in exactly
+/// one place. A missing `parameters` defaults to an empty object schema (the
+/// same default the chat path applies for parameter-less tools).
+fn function_tool_spec(name: &str, description: Option<&str>, parameters: &Option<Value>) -> Value {
+    let func = Function {
+        name: name.to_string(),
+        description: description.map(str::to_string),
+        parameters: parameters
+            .clone()
+            .unwrap_or_else(|| json!({ "type": "object", "properties": {} })),
+    };
+    convert_tool_spec(&func)
 }
 
 /// Reject an unsatisfiable `text.format` (a 400).
@@ -739,32 +817,35 @@ mod tests {
         assert!(parse(&req).await.is_ok());
     }
 
-    // -- Test 4: built-in tool → 400; malformed text.format → 400 -------------
+    // -- Test 4: hosted tools are DROPPED (not 400); malformed text.format → 400
 
     #[tokio::test]
-    async fn builtin_server_tool_is_bad_request() {
-        // A web_search tool type fails to deserialize into ResponsesTool, which
-        // surfaces as a 400 at the wire boundary. Verify the request does not
-        // deserialize into a function tool.
-        let raw = json!({
+    async fn hosted_server_tool_is_dropped_not_rejected() {
+        // A web_search tool now deserializes to ResponsesTool::Unknown and is
+        // silently dropped — the request must parse (no 400) so codex sessions
+        // that bundle a hosted tool survive.
+        let req = req_from(json!({
             "model": "m",
             "input": "hi",
             "tools": [{ "type": "web_search" }]
-        });
-        let parsed: Result<ResponsesRequest, _> = serde_json::from_value(raw);
-        assert!(
-            parsed.is_err(),
-            "built-in server tool type must not deserialize as a function tool"
-        );
-
-        // And the defensive guard rejects a built-in tool smuggled via `extra`.
-        let mut req = req_from(json!({ "model": "m", "input": "hi" }));
-        req.extra
-            .insert("tools".to_string(), json!([{ "type": "code_interpreter" }]));
-        let err = parse(&req)
+        }));
+        let out = parse(&req)
             .await
-            .expect_err("built-in tool must be rejected");
-        assert!(matches!(err, AppError::BadRequest(_)));
+            .expect("hosted tool must be dropped, not rejected");
+        let msgs = out.messages.as_array().expect("messages");
+        assert_eq!(msgs.len(), 1);
+        // No toolSpec produced from a lone hosted tool.
+        assert!(build_responses_tool_specs(&req).is_empty());
+
+        // A hosted tool smuggled via `extra["tools"]` is also ignored now (no
+        // 400): the defensive guard was removed along with the rejection path.
+        let mut req2 = req_from(json!({ "model": "m", "input": "hi" }));
+        req2.extra
+            .insert("tools".to_string(), json!([{ "type": "code_interpreter" }]));
+        assert!(
+            parse(&req2).await.is_ok(),
+            "extra-smuggled hosted tool must not 400"
+        );
     }
 
     #[tokio::test]
@@ -775,6 +856,80 @@ mod tests {
             "tools": [{ "type": "function", "name": "f", "parameters": {"type": "object"} }]
         }));
         assert!(parse(&req).await.is_ok());
+        // A top-level function keeps its BARE name in the toolSpec.
+        let specs = build_responses_tool_specs(&req);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0]["toolSpec"]["name"], "f");
+    }
+
+    #[tokio::test]
+    async fn namespace_tool_is_flattened_with_prefixed_names_and_hosted_dropped() {
+        // tools: [namespace{multi_agent_v1, tools:[function spawn_agent]}, web_search]
+        // → exactly ONE toolSpec named "multi_agent_v1__spawn_agent"; web_search
+        // is dropped (not present, no error).
+        let req = req_from(json!({
+            "model": "m",
+            "input": "hi",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "multi_agent_v1",
+                    "description": "agent tools",
+                    "tools": [
+                        { "type": "function", "name": "spawn_agent",
+                          "description": "spawn", "strict": false,
+                          "parameters": { "type": "object", "properties": {} } }
+                    ]
+                },
+                { "type": "web_search" }
+            ]
+        }));
+        // Parse must succeed (no 400 on the hosted web_search).
+        assert!(parse(&req).await.is_ok());
+
+        let specs = build_responses_tool_specs(&req);
+        assert_eq!(
+            specs.len(),
+            1,
+            "exactly one flattened toolSpec, web_search dropped"
+        );
+        assert_eq!(specs[0]["toolSpec"]["name"], "multi_agent_v1__spawn_agent");
+        assert_eq!(specs[0]["toolSpec"]["description"], "spawn");
+        assert!(specs[0]["toolSpec"]["inputSchema"]["json"].is_object());
+    }
+
+    #[tokio::test]
+    async fn multiple_namespaces_do_not_collide() {
+        let req = req_from(json!({
+            "model": "m",
+            "input": "hi",
+            "tools": [
+                { "type": "namespace", "name": "ns_a", "description": "a",
+                  "tools": [{ "type": "function", "name": "run" }] },
+                { "type": "namespace", "name": "ns_b", "description": "b",
+                  "tools": [{ "type": "function", "name": "run" }] }
+            ]
+        }));
+        let specs = build_responses_tool_specs(&req);
+        let names: Vec<&str> = specs
+            .iter()
+            .map(|s| s["toolSpec"]["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"ns_a__run"));
+        assert!(names.contains(&"ns_b__run"));
+    }
+
+    #[tokio::test]
+    async fn custom_tool_becomes_toolspec() {
+        let req = req_from(json!({
+            "model": "m",
+            "input": "hi",
+            "tools": [{ "type": "custom", "name": "c", "description": "free-form" }]
+        }));
+        let specs = build_responses_tool_specs(&req);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0]["toolSpec"]["name"], "c");
+        assert_eq!(specs[0]["toolSpec"]["description"], "free-form");
     }
 
     #[tokio::test]

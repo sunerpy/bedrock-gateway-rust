@@ -100,9 +100,21 @@ pub struct TextConfig {
 /// Responses uses a FLATTENED function shape:
 /// `{"type":"function","name":...,"description":...,"parameters":...,"strict":...}`
 /// — NOT the chat schema's nested `{"function":{...}}` form.
+///
+/// This enum models the official OpenAI Responses API tool superset (not just
+/// what codex emits): the flattened `function` tool, the `namespace` tool
+/// container (a named group of inner tools — openai-python
+/// `namespace_tool_param.py`), the `custom` tool, and an [`Unknown`] catch-all
+/// for ANY other / hosted / future tool type so the wire boundary NEVER 400s on
+/// an unrecognized `type`. The translation layer (`responses_translate.rs`)
+/// decides which variants are kept (flattened into Bedrock `toolConfig`) and
+/// which are silently dropped — deserialization itself is total.
+///
+/// [`Unknown`]: ResponsesTool::Unknown
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ResponsesTool {
+    /// A user-defined function tool (FLATTENED Responses shape). Always kept.
     #[serde(rename = "function")]
     Function {
         name: String,
@@ -112,6 +124,66 @@ pub enum ResponsesTool {
         parameters: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         strict: Option<bool>,
+    },
+    /// A namespace tool container: a named group of inner tools. The gateway
+    /// FLATTENS each inner tool into the Bedrock `toolConfig`, prefixing the
+    /// inner name as `{namespace_name}__{inner_name}` so different namespaces
+    /// can't collide. `tools` is the array key (NOT `functions`); all fields
+    /// are required per the codex serializer / openai-python superset.
+    #[serde(rename = "namespace")]
+    Namespace {
+        name: String,
+        description: String,
+        tools: Vec<ResponsesNamespaceInner>,
+    },
+    /// A custom (free-form / grammar) tool. Accepted and modeled; treated as a
+    /// user-defined tool the gateway maps to a Bedrock `toolSpec` using its
+    /// `name` + `description` (the `format` is acknowledged but not mapped —
+    /// Bedrock has no free-form-tool grammar slot).
+    #[serde(rename = "custom")]
+    Custom {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<Value>,
+    },
+    /// Any other tool type (hosted server tools — `web_search`,
+    /// `image_generation`, `code_interpreter`, `tool_search`, `mcp`,
+    /// `computer`, … — plus any future type). Deserializes WITHOUT error so the
+    /// wire boundary never 400s; the translation layer silently drops these
+    /// (they have no Bedrock equivalent).
+    #[serde(other)]
+    Unknown,
+}
+
+/// An inner tool inside a [`ResponsesTool::Namespace`] container.
+///
+/// codex 0.140.0 only emits `function`, but the OpenAI SDK superset also allows
+/// `custom`, so both are modeled for forward-compatibility. The nested
+/// `Function` variant reuses the SAME field shape as the top-level
+/// [`ResponsesTool::Function`] (name, optional description / parameters /
+/// strict).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ResponsesNamespaceInner {
+    #[serde(rename = "function")]
+    Function {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parameters: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+    #[serde(rename = "custom")]
+    Custom {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<Value>,
     },
 }
 
@@ -2338,15 +2410,14 @@ mod tests {
         assert!(back.get("function").is_none(), "must be flattened");
     }
 
-    /// NEGATIVE: every documented HOSTED tool type (file_search, web_search,
-    /// computer_use_preview, code_interpreter, image_generation, mcp,
-    /// local_shell, shell, custom, …) FAILS to deserialize into the
-    /// `function`-only `ResponsesTool` enum — this is the wire-boundary half of
-    /// the "hosted request tools → 400" divergence. The translation layer adds a
-    /// defensive guard for tools smuggled via `extra` (locked in
-    /// responses_translate.rs::builtin_server_tool_is_bad_request).
+    /// Every HOSTED / unknown tool type now deserializes into the
+    /// [`ResponsesTool::Unknown`] catch-all WITHOUT error — the wire boundary
+    /// never 400s on an unrecognized `type`. (Behavior change: these previously
+    /// failed deserialization to force a 400; the translation layer now silently
+    /// DROPS them so codex sessions that include hosted tools survive. See
+    /// responses_translate.rs::filter_and_flatten_tools.)
     #[test]
-    fn hosted_request_tools_do_not_deserialize_negative() {
+    fn hosted_request_tools_deserialize_to_unknown() {
         let hosted = [
             "file_search",
             "web_search",
@@ -2359,19 +2430,84 @@ mod tests {
             "mcp",
             "local_shell",
             "shell",
-            "custom",
-            "namespace",
             "tool_search",
             "apply_patch",
         ];
         for ty in hosted {
-            let result: Result<Vec<ResponsesTool>, _> =
-                serde_json::from_value(json!([{"type": ty}]));
+            let tools: Vec<ResponsesTool> = serde_json::from_value(json!([{"type": ty}]))
+                .unwrap_or_else(|e| panic!("hosted tool `{ty}` must deserialize to Unknown: {e}"));
+            assert_eq!(tools.len(), 1);
             assert!(
-                result.is_err(),
-                "hosted tool `{ty}` must NOT deserialize as a function tool (locks 400 divergence)"
+                matches!(tools[0], ResponsesTool::Unknown),
+                "hosted tool `{ty}` must map to ResponsesTool::Unknown"
             );
         }
+    }
+
+    /// A `namespace` tool container with nested `function`(s) deserializes; the
+    /// array key is `tools` (not `functions`) and the inner element keeps the
+    /// flattened function shape.
+    #[test]
+    fn namespace_tool_with_nested_functions_deserializes() {
+        let tools: Vec<ResponsesTool> = serde_json::from_value(json!([{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "description": "agent tools",
+            "tools": [
+                {"type":"function","name":"spawn_agent","description":"d","strict":false,
+                 "parameters":{"type":"object","properties":{}}}
+            ]
+        }]))
+        .unwrap();
+        assert_eq!(tools.len(), 1);
+        let ResponsesTool::Namespace {
+            name,
+            description,
+            tools: inner,
+        } = &tools[0]
+        else {
+            panic!("expected a namespace tool");
+        };
+        assert_eq!(name, "multi_agent_v1");
+        assert_eq!(description, "agent tools");
+        assert_eq!(inner.len(), 1);
+        let ResponsesNamespaceInner::Function { name, .. } = &inner[0] else {
+            panic!("expected a nested function");
+        };
+        assert_eq!(name, "spawn_agent");
+    }
+
+    /// A namespace may carry a nested `custom` inner tool (SDK superset).
+    #[test]
+    fn namespace_tool_with_nested_custom_deserializes() {
+        let tools: Vec<ResponsesTool> = serde_json::from_value(json!([{
+            "type": "namespace",
+            "name": "ns",
+            "description": "d",
+            "tools": [{"type":"custom","name":"grammar_tool"}]
+        }]))
+        .unwrap();
+        let ResponsesTool::Namespace { tools: inner, .. } = &tools[0] else {
+            panic!("expected namespace");
+        };
+        assert!(matches!(inner[0], ResponsesNamespaceInner::Custom { .. }));
+    }
+
+    /// A top-level `custom` tool deserializes (accepted, modeled).
+    #[test]
+    fn custom_tool_deserializes() {
+        let tools: Vec<ResponsesTool> = serde_json::from_value(json!([{
+            "type": "custom",
+            "name": "my_custom",
+            "description": "free-form",
+            "format": {"type":"grammar","syntax":"lark","definition":"start: ..."}
+        }]))
+        .unwrap();
+        assert_eq!(tools.len(), 1);
+        let ResponsesTool::Custom { name, .. } = &tools[0] else {
+            panic!("expected a custom tool");
+        };
+        assert_eq!(name, "my_custom");
     }
 
     /// `tool_choice` accepts every documented form: the string modes
