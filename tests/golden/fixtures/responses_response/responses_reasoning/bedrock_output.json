@@ -1,0 +1,19 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        { "reasoningContent": { "reasoningText": { "text": "think step by step" } } },
+        { "text": "The answer is 4." }
+      ]
+    }
+  },
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 10,
+    "outputTokens": 5,
+    "totalTokens": 26,
+    "cacheReadInputTokens": 4,
+    "cacheWriteInputTokens": 7
+  }
+}

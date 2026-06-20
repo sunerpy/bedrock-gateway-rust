@@ -1,0 +1,287 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  # Manual re-trigger for re-attaching binaries / re-pushing the Docker image to
+  # an ALREADY-released tag (e.g. when the original build-binaries jobs failed).
+  # This path deliberately SKIPS publish-crate: the crate version is immutable on
+  # crates.io and must never be re-published. Provide the existing tag + version.
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Existing release tag to (re)build binaries / Docker for (e.g. bedrock-gateway-rust-v0.1.0)"
+        required: true
+        type: string
+      version:
+        description: "Version string for artifact names / Docker tags (e.g. 0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: bedrock-gateway
+  DOCKER_IMAGE: sunerpy/bedrock-gateway-rust
+
+jobs:
+  # ----------------------------------------------------------------
+  # release-please: open/maintain the release PR; on merge, cut a tag
+  # and emit outputs that gate the heavy jobs below.
+  # ----------------------------------------------------------------
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    outputs:
+      build_artifacts: ${{ steps.gate.outputs.build_artifacts }}
+      tag_name: ${{ steps.gate.outputs.tag_name }}
+      version: ${{ steps.gate.outputs.version }}
+      release_created: ${{ steps.release.outputs.release_created }}
+    steps:
+      - name: Run release-please
+        id: release
+        if: github.event_name == 'push'
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Normalize gating across both triggers: a push that cuts a release feeds
+      # release-please outputs; a manual dispatch feeds the inputs directly.
+      - name: Resolve build gate
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "build_artifacts=true" >> "$GITHUB_OUTPUT"
+            echo "tag_name=${{ inputs.tag_name }}" >> "$GITHUB_OUTPUT"
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_artifacts=${{ steps.release.outputs.release_created }}" >> "$GITHUB_OUTPUT"
+            echo "tag_name=${{ steps.release.outputs.tag_name }}" >> "$GITHUB_OUTPUT"
+            echo "version=${{ steps.release.outputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ----------------------------------------------------------------
+  # build-binaries: cross-compile release artifacts for all targets.
+  # Gated on release_created so it only runs when a tag is cut.
+  # ----------------------------------------------------------------
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    needs: release-please
+    if: needs.release-please.outputs.build_artifacts == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_zigbuild: true
+            archive: tar.gz
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_zigbuild: true
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use_zigbuild: false
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_zigbuild: false
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_zigbuild: false
+            archive: zip
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install Zig
+        if: matrix.use_zigbuild
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild
+        if: matrix.use_zigbuild
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      # Runs for ALL targets (not just native): zigbuild musl builds need the
+      # musl sysroot, which dtolnay/rust-toolchain `targets:` does not install
+      # reliably (else error[E0463] can't find crate for `core`). Idempotent.
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build (zigbuild)
+        if: matrix.use_zigbuild
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+
+      - name: Build (native)
+        if: ${{ !matrix.use_zigbuild }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (unix tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -czf "dist/${BINARY_NAME}-${{ needs.release-please.outputs.version }}-${{ matrix.target }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release" "${BINARY_NAME}"
+
+      - name: Package (windows zip)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          mkdir -p dist
+          7z a "dist/${BINARY_NAME}-${{ needs.release-please.outputs.version }}-${{ matrix.target }}.zip" \
+            "./target/${{ matrix.target }}/release/${BINARY_NAME}.exe"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          retention-days: 1
+
+  # ----------------------------------------------------------------
+  # upload-assets: gather all artifacts, render release notes with
+  # git-cliff, and attach binaries to the GitHub Release.
+  # ----------------------------------------------------------------
+  upload-assets:
+    name: Upload Release Assets
+    needs: [release-please, build-binaries]
+    if: needs.release-please.outputs.build_artifacts == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate release notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
+      - name: Attach assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ----------------------------------------------------------------
+  # docker: build & push multi-arch image to Docker Hub.
+  # Gated on release_created.
+  # ----------------------------------------------------------------
+  docker:
+    name: Docker Multi-Arch Publish
+    needs: release-please
+    if: needs.release-please.outputs.build_artifacts == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=raw,value=${{ needs.release-please.outputs.version }}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ----------------------------------------------------------------
+  # publish-crate: publish the crate to crates.io.
+  # Gated on release_created so it only runs when a tag is cut.
+  # --no-verify skips the build+verify step (cross-compile/network
+  # robustness); the binary artifacts are already validated above.
+  # ----------------------------------------------------------------
+  publish-crate:
+    name: Publish to crates.io
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --no-verify

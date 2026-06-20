@@ -1,0 +1,10 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [{ "text": "Truncated out" }]
+    }
+  },
+  "stopReason": "max_tokens",
+  "usage": { "inputTokens": 4, "outputTokens": 16, "totalTokens": 20 }
+}

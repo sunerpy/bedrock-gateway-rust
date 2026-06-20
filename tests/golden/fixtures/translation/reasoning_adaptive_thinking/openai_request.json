@@ -1,0 +1,6 @@
+{
+  "model": "global.anthropic.claude-opus-4-8-20251101-v1:0",
+  "messages": [{ "role": "user", "content": "think hard" }],
+  "max_tokens": 2048,
+  "reasoning_effort": "high"
+}

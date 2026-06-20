@@ -1,0 +1,24 @@
+# Cross-Region Routing Table
+# ===========================
+#
+# Maps an incoming model id to an alternate AWS region and (optionally) a
+# rewritten model id, for models that cannot run in the gateway's home region.
+# Conceptually: model id -> { region, rewritten_model_id }.
+#
+# How the gateway uses it:
+#   Before each chat request, the gateway looks up the resolved model id here. If
+#   a route matches, the request is sent to that route's `region` using the
+#   `rewritten_model_id` (e.g. a region-prefixed cross-region inference profile)
+#   instead of the original id. With no match, the request stays on the home
+#   region with its id unchanged.
+#
+# EMPTY BY DEFAULT: with no [[route]] entries below, every model uses the
+# home-region client unchanged. Add an entry ONLY when a model is unreachable
+# from the home region and a profile in another region works.
+#
+# Format — uncomment and fill in to add a route:
+#
+# [[route]]
+# model_id = "vendor.some-model-v1:0"        # incoming model id to match
+# region = "eu-central-1"                     # region to send this model's requests to
+# rewritten_model_id = "eu.vendor.some-model-v1:0"  # model id used in that region

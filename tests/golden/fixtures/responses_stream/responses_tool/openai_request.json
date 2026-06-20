@@ -1,0 +1,5 @@
+{
+  "model": "incoming-model-id",
+  "input": "Weather in Paris?",
+  "stream": true
+}

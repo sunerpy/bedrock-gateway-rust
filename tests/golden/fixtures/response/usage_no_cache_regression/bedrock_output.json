@@ -1,0 +1,14 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [{ "text": "No cache reply." }]
+    }
+  },
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 42,
+    "outputTokens": 7,
+    "totalTokens": 49
+  }
+}

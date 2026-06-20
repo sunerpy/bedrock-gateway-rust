@@ -1,0 +1,9 @@
+{
+  "model": "incoming-model-id",
+  "input": "Say hello.",
+  "instructions": "Be brief.",
+  "temperature": 0.5,
+  "top_p": 0.875,
+  "max_output_tokens": 256,
+  "parallel_tool_calls": true
+}
