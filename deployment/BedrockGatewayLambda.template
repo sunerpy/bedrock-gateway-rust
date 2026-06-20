@@ -1,0 +1,179 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Bedrock Access Gateway (Rust) - OpenAI-compatible RESTful APIs for Amazon
+  Bedrock, deployed as a Lambda container-image function fronted by a Lambda
+  Function URL with response streaming (SSE). The container ships the
+  AWS Lambda Web Adapter (LWA) extension and runs the unmodified bedrock-gateway
+  axum server. See docs/deploy/lambda.md and deployment/lambda/Dockerfile.
+
+Parameters:
+  ApiKeySecretArn:
+    Type: String
+    AllowedPattern: ^arn:aws[a-zA-Z-]*:secretsmanager:.*$
+    Description: >-
+      The Secrets Manager secret ARN whose api_key field stores the API key used
+      to authenticate requests to the gateway. Read by the Lambda execution role
+      via secretsmanager:GetSecretValue (scoped to this ARN only).
+
+  ContainerImageUri:
+    Type: String
+    Description: >-
+      The ECR image URI for the Lambda function, built from
+      deployment/lambda/Dockerfile (e.g.
+      123456789012.dkr.ecr.us-east-1.amazonaws.com/bedrock-gateway-lambda:latest).
+
+  DefaultModelId:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) The default Bedrock model ID used when a client request does not
+      specify one. Leave blank to use the gateway built-in default. Ensure the
+      model ID is available (and on-demand callable, or an inference profile) in
+      the deployment region.
+
+  DefaultEmbeddingModelId:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) The default embedding model ID. Leave blank to use the gateway
+      built-in default (cohere.embed-multilingual-v3).
+
+  EnablePromptCaching:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >-
+      Auto-inject prompt cache points for Claude and Nova models. On by default.
+
+  LogLevel:
+    Type: String
+    Default: info
+    AllowedValues:
+      - trace
+      - debug
+      - info
+      - warn
+      - error
+    Description: Log verbosity for the gateway.
+
+Conditions:
+  HasDefaultModelId: !Not [!Equals [!Ref DefaultModelId, ""]]
+  HasDefaultEmbeddingModelId: !Not [!Equals [!Ref DefaultEmbeddingModelId, ""]]
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # IAM execution role for the Lambda function (assumed by lambda.amazonaws.com)
+  # ---------------------------------------------------------------------------
+  BedrockGatewayFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: lambda.amazonaws.com
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+
+  # Least-privilege inline policy: Bedrock invoke/list + the single API-key secret
+  BedrockGatewayFunctionPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: BedrockGatewayFunctionPolicy
+      Roles:
+        - !Ref BedrockGatewayFunctionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Model discovery APIs are account/region scoped (no resource ARN).
+          - Sid: BedrockListModels
+            Effect: Allow
+            Action:
+              - bedrock:ListFoundationModels
+              - bedrock:ListInferenceProfiles
+            Resource: "*"
+          # Inference is scoped to foundation models + inference profiles.
+          - Sid: BedrockInvokeModel
+            Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+              - bedrock:InvokeModelWithResponseStream
+            Resource:
+              - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/*"
+              - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*"
+              - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:application-inference-profile/*"
+          # Read ONLY the API-key secret passed in as a parameter (no wildcard).
+          - Sid: ReadApiKeySecret
+            Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+            Resource: !Ref ApiKeySecretArn
+
+  # ---------------------------------------------------------------------------
+  # Lambda function (container image + LWA). Streaming enabled via env + URL.
+  # ---------------------------------------------------------------------------
+  BedrockGatewayFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - BedrockGatewayFunctionPolicy
+    Properties:
+      Description: Bedrock Access Gateway (Rust) handler with response streaming via LWA
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ContainerImageUri
+      Role: !GetAtt BedrockGatewayFunctionRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      Environment:
+        Variables:
+          # Application settings (bare standard env names the gateway reads).
+          API_KEY_SECRET_ARN: !Ref ApiKeySecretArn
+          API_ROUTE_PREFIX: /api/v1
+          LOG_LEVEL: !Ref LogLevel
+          ENABLE_PROMPT_CACHING: !Ref EnablePromptCaching
+          DEFAULT_MODEL: !If [HasDefaultModelId, !Ref DefaultModelId, !Ref "AWS::NoValue"]
+          DEFAULT_EMBEDDING_MODEL: !If [HasDefaultEmbeddingModelId, !Ref DefaultEmbeddingModelId, !Ref "AWS::NoValue"]
+          # NOTE: AWS_REGION is a reserved Lambda runtime variable and is
+          # injected automatically by Lambda (set to the function's region).
+          # The gateway and AWS SDK credential chain read it from the
+          # environment natively, so it must NOT be declared here (CloudFormation
+          # rejects reserved env vars: cfn-lint E3663).
+          # Lambda Web Adapter (LWA) settings for SSE / streaming.
+          AWS_LWA_INVOKE_MODE: response_stream
+          AWS_LWA_PORT: "8080"
+          PORT: "8080"
+
+  # ---------------------------------------------------------------------------
+  # Function URL with response streaming (public; gateway enforces API key auth)
+  # ---------------------------------------------------------------------------
+  BedrockGatewayUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt BedrockGatewayFunction.Arn
+      AuthType: NONE
+      InvokeMode: RESPONSE_STREAM
+
+  # Permission allowing public invocation of the Function URL.
+  BedrockGatewayUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BedrockGatewayFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+Outputs:
+  APIBaseUrl:
+    Description: Gateway API Base URL (OPENAI_API_BASE / OPENAI_BASE_URL)
+    # FunctionUrl ends with "/", so this yields https://<id>.lambda-url.<region>.on.aws/api/v1
+    Value: !Sub "${BedrockGatewayUrl.FunctionUrl}api/v1"
+  FunctionUrl:
+    Description: Raw Lambda Function URL
+    Value: !GetAtt BedrockGatewayUrl.FunctionUrl
+  LambdaFunctionArn:
+    Description: Lambda Function ARN
+    Value: !GetAtt BedrockGatewayFunction.Arn

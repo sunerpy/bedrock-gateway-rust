@@ -1,0 +1,20 @@
+{
+  "model": "anthropic.claude-3-sonnet-v1:0",
+  "messages": [{ "role": "user", "content": "weather in SF?" }],
+  "max_tokens": 2048,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the weather for a city",
+        "parameters": {
+          "type": "object",
+          "properties": { "city": { "type": "string" } },
+          "required": ["city"]
+        }
+      }
+    }
+  ],
+  "tool_choice": "auto"
+}

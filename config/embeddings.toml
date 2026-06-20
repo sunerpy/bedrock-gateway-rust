@@ -1,0 +1,53 @@
+# Embedding Model Registry
+# =========================
+#
+# Declares which Bedrock embedding models the gateway exposes on the
+# /embeddings endpoint and how to talk to each one. Keeping this in TOML means
+# adding or tuning an embedding model is a config-only edit — no recompile.
+#
+# How the gateway uses it:
+#   When an embeddings request arrives, the gateway looks up the requested
+#   model_id here, then uses its `family` to pick the body codec that encodes
+#   the request and decodes the response — each family has a different on-wire
+#   request/response JSON shape:
+#     "cohere" – Cohere embedding request/response format
+#     "titan"  – Amazon Titan embedding request/response format
+#     "nova"   – Amazon Nova multimodal embedding request/response format
+#
+# How to add an embedding model:
+#   Append a [[model]] table with model_id, display_name, and family.
+#
+# Fields:
+#   model_id     – exact Bedrock embedding model id (string; may contain ':')
+#   display_name – human-friendly name shown in the model catalog
+#   family       – which body codec to use: "cohere" | "titan" | "nova"
+#
+#   NOTE: `model_id` is a string field (NOT a bare TOML key) so ids containing a
+#   colon — e.g. "amazon.titan-embed-text-v2:0" — round-trip cleanly.
+
+[[model]]
+model_id = "cohere.embed-multilingual-v3"
+display_name = "Cohere Embed Multilingual"
+family = "cohere"
+
+[[model]]
+model_id = "cohere.embed-english-v3"
+display_name = "Cohere Embed English"
+family = "cohere"
+
+[[model]]
+model_id = "amazon.titan-embed-text-v1"
+display_name = "Titan Embeddings G1 - Text"
+family = "titan"
+
+[[model]]
+model_id = "amazon.titan-embed-text-v2:0"
+display_name = "Titan Embeddings G2 - Text"
+family = "titan"
+
+# "amazon.titan-embed-image-v1" is intentionally not registered (not exposed).
+
+[[model]]
+model_id = "amazon.nova-2-multimodal-embeddings-v1:0"
+display_name = "Nova Multimodal Embeddings V2"
+family = "nova"

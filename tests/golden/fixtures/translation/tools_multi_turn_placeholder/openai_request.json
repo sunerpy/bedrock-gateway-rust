@@ -1,0 +1,19 @@
+{
+  "model": "anthropic.claude-3-sonnet-v1:0",
+  "messages": [
+    { "role": "user", "content": "weather in SF?" },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": { "name": "get_weather", "arguments": "{\"city\":\"SF\"}" }
+        }
+      ]
+    },
+    { "role": "tool", "tool_call_id": "call_1", "content": "72F sunny" }
+  ],
+  "max_tokens": 2048
+}

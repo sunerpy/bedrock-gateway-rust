@@ -1,0 +1,5 @@
+{
+  "model": "incoming-model-id",
+  "input": "Say hello.",
+  "stream": true
+}

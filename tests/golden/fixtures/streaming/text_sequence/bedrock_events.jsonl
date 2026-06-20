@@ -1,0 +1,6 @@
+{"messageStart": {"role": "assistant"}}
+{"contentBlockDelta": {"text": "Hello", "contentBlockIndex": 0}}
+{"contentBlockDelta": {"text": " world", "contentBlockIndex": 0}}
+{"contentBlockStop": {"contentBlockIndex": 0}}
+{"messageStop": {"stopReason": "end_turn"}}
+{"metadata": {"usage": {"inputTokens": 8, "outputTokens": 2, "totalTokens": 10}}}

@@ -1,0 +1,10 @@
+{
+  "modelId": "global.anthropic.claude-opus-4-8-20251101-v1:0",
+  "messages": [{ "role": "user", "content": [{ "text": "think hard" }] }],
+  "system": [],
+  "inferenceConfig": { "maxTokens": 2048 },
+  "additionalModelRequestFields": {
+    "thinking": { "type": "adaptive" },
+    "output_config": { "effort": "high" }
+  }
+}

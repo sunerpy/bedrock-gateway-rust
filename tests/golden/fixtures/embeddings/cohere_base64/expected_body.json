@@ -1,0 +1,5 @@
+{
+  "texts": ["hello world"],
+  "input_type": "search_document",
+  "truncate": "END"
+}

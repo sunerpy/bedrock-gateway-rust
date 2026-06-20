@@ -1,0 +1,15 @@
+{
+  "id": "chatcmpl-x",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "anthropic.claude-3-sonnet-v1:0",
+  "system_fingerprint": "fp",
+  "choices": [
+    {
+      "index": 0,
+      "message": { "role": "assistant", "content": "" },
+      "finish_reason": "content_filter"
+    }
+  ],
+  "usage": { "prompt_tokens": 7, "completion_tokens": 0, "total_tokens": 7 }
+}

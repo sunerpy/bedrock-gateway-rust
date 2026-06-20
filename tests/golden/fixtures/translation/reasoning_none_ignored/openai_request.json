@@ -1,0 +1,6 @@
+{
+  "model": "qwen.qwen3-32b-v1:0",
+  "messages": [{ "role": "user", "content": "hi" }],
+  "max_tokens": 2048,
+  "reasoning_effort": "high"
+}

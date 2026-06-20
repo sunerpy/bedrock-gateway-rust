@@ -1,0 +1,59 @@
+[package]
+name = "bedrock-gateway-rust"
+version = "0.1.0"
+edition = "2021"
+description = "A 100% Rust, OpenAI-compatible API gateway for AWS Bedrock — drop-in, single-binary, blazingly fast."
+license = "MIT-0"
+repository = "https://github.com/sunerpy/bedrock-gateway-rust"
+homepage = "https://github.com/sunerpy/bedrock-gateway-rust"
+documentation = "https://github.com/sunerpy/bedrock-gateway-rust"
+readme = "README.md"
+keywords = ["bedrock", "openai", "gateway", "aws", "llm"]
+categories = ["api-bindings", "web-programming::http-server"]
+
+[[bin]]
+name = "bedrock-gateway"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "timeout"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-stream = "0.3"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-bedrockruntime = "1.135"
+aws-sdk-bedrock = "1"
+aws-sdk-secretsmanager = "1"
+aws-sdk-ssm = "1"
+aws-smithy-types = "1"
+aws-smithy-runtime-api = { version = "1", features = ["client", "http-auth"] }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiktoken-rs = "0.12"
+thiserror = "2"
+anyhow = "1"
+config = "0.15"
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+base64 = "0.22"
+
+[dev-dependencies]
+insta = { version = "1", features = ["json"] }
+
+# Release profile tuned for minimal binary / image size. This service is
+# IO-bound (a Bedrock proxy), so trading CPU speed for a smaller artifact is the
+# right call: smaller binary → smaller distroless image → faster cold pulls.
+# panic = "abort" affects RELEASE builds only; `cargo test` uses the test profile
+# (default unwind), so the `catch_unwind` assertions in tests/golden still work.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

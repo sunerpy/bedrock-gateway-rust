@@ -1,0 +1,5 @@
+{
+  "model": "amazon.titan-embed-text-v2:0",
+  "input": "embed me",
+  "encoding_format": "float"
+}

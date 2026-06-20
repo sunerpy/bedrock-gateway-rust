@@ -1,0 +1,19 @@
+{
+  "modelId": "anthropic.claude-3-sonnet-v1:0",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        { "text": "look" },
+        {
+          "image": {
+            "format": "png",
+            "source": { "bytes": [104, 105] }
+          }
+        }
+      ]
+    }
+  ],
+  "system": [],
+  "inferenceConfig": { "maxTokens": 2048 }
+}

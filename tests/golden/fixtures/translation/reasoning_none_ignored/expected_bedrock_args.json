@@ -1,0 +1,6 @@
+{
+  "modelId": "qwen.qwen3-32b-v1:0",
+  "messages": [{ "role": "user", "content": [{ "text": "hi" }] }],
+  "system": [],
+  "inferenceConfig": { "maxTokens": 2048 }
+}

@@ -1,0 +1,4 @@
+data: {"id": "chatcmpl-placeholder", "object": "chat.completion.chunk", "created": 1700000000, "model": "anthropic.claude-3-sonnet-20240229-v1:0", "choices": [{"index": 0, "delta": {"role": "assistant"}}]}
+data: {"id": "chatcmpl-placeholder", "object": "chat.completion.chunk", "created": 1700000000, "model": "anthropic.claude-3-sonnet-20240229-v1:0", "choices": [{"index": 0, "delta": {"content": "Hi"}}]}
+data: {"id": "chatcmpl-placeholder", "object": "chat.completion.chunk", "created": 1700000000, "model": "anthropic.claude-3-sonnet-20240229-v1:0", "choices": [{"index": 0, "finish_reason": "stop", "delta": {}}]}
+data: [DONE]

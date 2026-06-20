@@ -1,0 +1,24 @@
+{
+  "modelId": "anthropic.claude-3-sonnet-v1:0",
+  "messages": [{ "role": "user", "content": [{ "text": "weather in SF?" }] }],
+  "system": [],
+  "inferenceConfig": { "maxTokens": 2048 },
+  "toolConfig": {
+    "tools": [
+      {
+        "toolSpec": {
+          "name": "get_weather",
+          "description": "Get the weather for a city",
+          "inputSchema": {
+            "json": {
+              "type": "object",
+              "properties": { "city": { "type": "string" } },
+              "required": ["city"]
+            }
+          }
+        }
+      }
+    ],
+    "toolChoice": { "auto": {} }
+  }
+}
