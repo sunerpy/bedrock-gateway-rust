@@ -38,7 +38,9 @@ use crate::bedrock::provider::{
 };
 use crate::bedrock::responses_response::from_converse_output_to_responses;
 use crate::bedrock::responses_stream::converse_stream_to_openai_responses;
-use crate::bedrock::responses_translate::{reasoning_outcome, to_responses_converse_input};
+use crate::bedrock::responses_translate::{
+    build_responses_tool_specs, reasoning_outcome, to_responses_converse_input,
+};
 use crate::bedrock::translate::ImageResolver;
 use crate::bedrock::{cache, provider};
 use crate::config::{AppSettings, RegionRoutingConfig};
@@ -47,7 +49,7 @@ use crate::domain::{
     RouteOverride,
 };
 use crate::error::AppError;
-use crate::openai::responses_schema::{ResponsesRequest, ResponsesResponse, ResponsesTool};
+use crate::openai::responses_schema::{ResponsesRequest, ResponsesResponse};
 
 /// Concrete [`ResponsesProvider`] backed by Amazon Bedrock Converse.
 ///
@@ -333,39 +335,19 @@ struct AssembledConverse {
     cache_points_injected: bool,
 }
 
-/// Build a Bedrock `toolConfig` JSON object from the Responses request's
-/// flattened-function tools, mirroring the `{"tools": [{"toolSpec": ...}]}`
-/// shape the chat path produces. Returns `None` when no tools are present.
+/// Build a Bedrock `toolConfig` JSON object from the Responses request's tools,
+/// reusing the filter-and-flatten logic in
+/// [`crate::bedrock::responses_translate::build_responses_tool_specs`]
+/// (user-defined `function` / `custom` / flattened `namespace` tools kept;
+/// hosted/unknown server tools silently dropped). Returns `None` when the
+/// request carries no tools that survive filtering — so a request whose only
+/// tools are hosted (e.g. codex sending `web_search` alone) produces no
+/// `toolConfig` rather than an empty one.
 fn build_responses_tool_config(req: &ResponsesRequest) -> Option<Value> {
-    let tools = req.tools.as_ref()?;
-    if tools.is_empty() {
+    let specs = build_responses_tool_specs(req);
+    if specs.is_empty() {
         return None;
     }
-    let specs: Vec<Value> = tools
-        .iter()
-        .map(|tool| {
-            let ResponsesTool::Function {
-                name,
-                description,
-                parameters,
-                ..
-            } = tool;
-            let description = match description {
-                Some(d) => Value::String(d.clone()),
-                None => Value::Null,
-            };
-            let parameters = parameters
-                .clone()
-                .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
-            json!({
-                "toolSpec": {
-                    "name": name,
-                    "description": description,
-                    "inputSchema": { "json": parameters },
-                }
-            })
-        })
-        .collect();
     Some(json!({ "tools": specs }))
 }
 
@@ -453,7 +435,7 @@ impl ResponsesProvider for BedrockResponsesProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::openai::responses_schema::ResponsesInput;
+    use crate::openai::responses_schema::{ResponsesInput, ResponsesTool};
     use std::collections::HashMap;
 
     fn base_request() -> ResponsesRequest {

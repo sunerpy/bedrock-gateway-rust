@@ -129,9 +129,13 @@ This service is IO-bound (Bedrock proxy); actix-web offers no measurable through
 
 The surface is **stateless**: `store` and `previous_response_id` are accepted and silently ignored (codex sends `store: false`). It reuses the same Converse call layer and the shared `compute_token_usage` helper from `src/bedrock/tokens.rs`. codex requires this surface (`wire_api = "responses"` only).
 
-**Limits / rejection matrix:**
+**Tool support / rejection matrix:**
 
-- Built-in server tools (`web_search`, `file_search`, `code_interpreter`, `mcp`, `computer`, `image_generation`) → 400.
+- User-defined tools are SUPPORTED and translated to Bedrock `toolConfig`:
+  - `function` (flattened Responses shape) → one `toolSpec` keeping its bare name.
+  - `custom` → one `toolSpec` (name + description; the `format` grammar has no Bedrock slot and is dropped).
+  - `namespace` (a named container of inner tools) → FLATTENED: one `toolSpec` per inner tool, with each inner name prefixed `{namespace_name}__{inner_name}` (double-underscore delimiter) so different namespaces can't collide. Inner `function` and `custom` tools are both supported. The prefixed name round-trips UNCHANGED on subsequent `function_call` / `function_call_output` items (the client echoes back exactly what it received — do not strip the prefix).
+- Hosted OpenAI server tools with no Bedrock equivalent (`web_search`, `file_search`, `code_interpreter`, `tool_search`, `mcp`, `computer`, `image_generation`) and ANY unrecognized/future tool type are now **SILENTLY DROPPED** (skipped from `toolConfig`, never a 400). codex unconditionally bundles some hosted tools; a 400 there would kill the whole session including the user's real function tools. The `ResponsesTool` enum carries a `#[serde(other)] Unknown` catch-all so an unrecognized tool `type` NEVER fails deserialization at the wire boundary.
 - `encrypted_content` is not round-tripped.
 - `function_call_arguments.delta/.done` stream events are accepted by the schema for SDK/client compatibility, but the Bedrock stream state machine does not emit them (codex reconstructs calls from `response.output_item.done`).
 - `input_file` parts → 400 (no Bedrock document-block mapping).
@@ -316,7 +320,8 @@ When you add a new translation path, add a golden fixture alongside the implemen
 | Responses `store` / `previous_response_id` | N/A (surface did not exist)                         | Accepted and silently ignored — this surface is stateless                                                                   |
 | Responses stream `[DONE]` sentinel         | N/A                                                 | Not emitted — the Responses stream terminates with a `response.completed` event                                             |
 | Responses `function_call_arguments.delta`  | N/A                                                 | Schema accepts `delta` / `done` for compatibility, but the state machine does not emit them; codex reconstructs calls from `response.output_item.done` |
-| Responses built-in server tools            | N/A                                                 | Rejected with 400 (`web_search`, `file_search`, `code_interpreter`, `mcp`, `computer`, `image_generation`)                  |
+| Responses `namespace` / `custom` tools     | N/A                                                 | SUPPORTED — `custom` → one `toolSpec`; `namespace` is FLATTENED into one `toolSpec` per inner tool with `{ns}__{fn}` prefixed names (round-tripped unchanged) |
+| Responses hosted server tools              | N/A                                                 | SILENTLY DROPPED (`web_search` / `file_search` / `code_interpreter` / `tool_search` / `mcp` / `computer` / `image_generation` + any unknown type) — never a 400, so codex sessions bundling hosted tools survive; `ResponsesTool` has a `#[serde(other)] Unknown` catch-all |
 
 ---
 
@@ -480,9 +485,13 @@ HTTP 框架选用 **axum**（tokio + tower + tower-http）。曾评估替换为 
 
 该接口**无状态**：`store` 和 `previous_response_id` 接受但静默忽略（codex 发送 `store: false`）。它复用同一 Converse 调用层以及 `src/bedrock/tokens.rs` 中的共享 `compute_token_usage` helper。codex 仅支持此接口（`wire_api = "responses"`）。
 
-**限制 / 拒绝矩阵：**
+**工具支持 / 拒绝矩阵：**
 
-- 内置服务端工具（`web_search`、`file_search`、`code_interpreter`、`mcp`、`computer`、`image_generation`）→ 400。
+- 用户定义的工具均**支持**，翻译为 Bedrock `toolConfig`：
+  - `function`（扁平化 Responses 形态）→ 一个 `toolSpec`，保留其裸名称。
+  - `custom` → 一个 `toolSpec`（name + description；`format` 语法在 Bedrock 无对应槽位，丢弃）。
+  - `namespace`（命名的内部工具容器）→ **扁平化**：每个内部工具生成一个 `toolSpec`，内部名称统一加前缀 `{namespace_name}__{inner_name}`（双下划线分隔符），以保证不同 namespace 之间不冲突。内部的 `function` 与 `custom` 均支持。该带前缀的名称在后续 `function_call` / `function_call_output` 项上**原样回传**（客户端回显它收到的内容 —— 不要剥除前缀）。
+- 无 Bedrock 对应的内置服务端工具（`web_search`、`file_search`、`code_interpreter`、`tool_search`、`mcp`、`computer`、`image_generation`）以及**任何**未识别 / 未来的工具类型，现在一律**静默丢弃**（从 `toolConfig` 跳过，绝不返回 400）。codex 会无条件捆绑部分内置工具；此处返回 400 会连同用户的真实 function 工具一起断掉整个会话。`ResponsesTool` 枚举带有 `#[serde(other)] Unknown` 兜底变体，因此未识别的工具 `type` 在协议边界**永不**反序列化失败。
 - `encrypted_content` 不做透传。
 - 协议类型接受 `function_call_arguments.delta/.done` 流事件以兼容 SDK/客户端，但 Bedrock 流状态机不主动发送；codex 通过 `response.output_item.done` 还原调用。
 - `input_file` 部分 → 400（暂无 Bedrock 文档块映射）。
@@ -667,7 +676,8 @@ BEDROCK_INTEGRATION=1 AWS_PROFILE=us cargo test -- --ignored
 | Responses `store` / `previous_response_id` | N/A（接口不存在）                            | 接受但静默忽略 — 该接口无状态                                                                               |
 | Responses 流 `[DONE]` 哨兵                 | N/A                                          | 不发送 — Responses 流以 `response.completed` 事件结束                                                       |
 | Responses `function_call_arguments.delta`  | N/A                                          | 协议类型接受 `delta` / `done` 以兼容客户端，但状态机不主动发送；codex 通过 `response.output_item.done` 还原调用 |
-| Responses 内置服务端工具                   | N/A                                          | 返回 400（`web_search`、`file_search`、`code_interpreter`、`mcp`、`computer`、`image_generation`）          |
+| Responses `namespace` / `custom` 工具      | N/A                                          | 支持 —— `custom` → 一个 `toolSpec`；`namespace` 扁平化为每个内部工具一个 `toolSpec`，名称加前缀 `{ns}__{fn}`（原样回传）          |
+| Responses 内置服务端工具                   | N/A                                          | 静默丢弃（`web_search` / `file_search` / `code_interpreter` / `tool_search` / `mcp` / `computer` / `image_generation` 及任何未知类型）—— 绝不返回 400，捆绑内置工具的 codex 会话得以存活；`ResponsesTool` 带 `#[serde(other)] Unknown` 兜底 |
 
 ---
 
