@@ -1,0 +1,7 @@
+{
+  "model": "global.anthropic.claude-sonnet-4-5-20250101-v1:0",
+  "messages": [{ "role": "user", "content": "hi" }],
+  "max_tokens": 2048,
+  "temperature": 0.5,
+  "top_p": 0.9
+}

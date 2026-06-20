@@ -1,0 +1,5 @@
+{
+  "model": "incoming-model-id",
+  "input": "What is 2 plus 2?",
+  "reasoning": { "effort": "medium" }
+}

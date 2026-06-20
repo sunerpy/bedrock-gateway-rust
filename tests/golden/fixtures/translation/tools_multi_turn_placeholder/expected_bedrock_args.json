@@ -1,0 +1,42 @@
+{
+  "modelId": "anthropic.claude-3-sonnet-v1:0",
+  "messages": [
+    { "role": "user", "content": [{ "text": "weather in SF?" }] },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "toolUse": {
+            "toolUseId": "call_1",
+            "name": "get_weather",
+            "input": { "city": "SF" }
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "toolResult": {
+            "toolUseId": "call_1",
+            "content": [{ "text": "72F sunny" }]
+          }
+        }
+      ]
+    }
+  ],
+  "system": [],
+  "inferenceConfig": { "maxTokens": 2048 },
+  "toolConfig": {
+    "tools": [
+      {
+        "toolSpec": {
+          "name": "_placeholder",
+          "description": "Placeholder tool to satisfy Bedrock API requirements for multi-turn tool conversations",
+          "inputSchema": { "json": { "type": "object", "properties": {} } }
+        }
+      }
+    ]
+  }
+}

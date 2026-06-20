@@ -1,0 +1,7 @@
+data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
+data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[{"index":0,"delta":{"content":"<think>let me think"}}]}
+data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[{"index":0,"delta":{"content":" more"}}]}
+data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[{"index":0,"delta":{"content":"</think>the answer"}}]}
+data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[{"index":0,"finish_reason":"stop","delta":{}}]}
+data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"completion_tokens_details":{"reasoning_tokens":3,"audio_tokens":0}}}
+data: [DONE]

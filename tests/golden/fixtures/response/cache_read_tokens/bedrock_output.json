@@ -1,0 +1,16 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [{ "text": "Cached reply." }]
+    }
+  },
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 5,
+    "outputTokens": 4,
+    "totalTokens": 3081,
+    "cacheReadInputTokens": 1024,
+    "cacheWriteInputTokens": 2048
+  }
+}

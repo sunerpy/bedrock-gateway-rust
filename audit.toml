@@ -1,0 +1,13 @@
+# cargo-audit configuration.
+#
+# The advisories below all target rustls-webpki 0.101.7, which is pulled in ONLY
+# via aws-smithy-http-client's optional `legacy-rustls` feature (rustls 0.21.x).
+# This project does NOT enable that feature: the active TLS path is
+# `default-https-client` → `rustls-aws-lc` → rustls 0.23.x + rustls-webpki 0.103.x
+# (a patched, unaffected version). The 0.101.7 copy is locked in Cargo.lock as a
+# transitive of an unused feature and is never compiled or reached at runtime.
+# All three advisories are CRL / name-constraint parsing issues that require the
+# legacy webpki code path, which this binary never executes. Re-evaluate when the
+# AWS SDK drops the rustls 0.21 legacy backend.
+[advisories]
+ignore = ["RUSTSEC-2026-0104", "RUSTSEC-2026-0099", "RUSTSEC-2026-0098"]

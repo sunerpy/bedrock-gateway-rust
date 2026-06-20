@@ -1,0 +1,9 @@
+{
+  "modelId": "deepseek.v3-v1:0",
+  "messages": [{ "role": "user", "content": [{ "text": "solve" }] }],
+  "system": [],
+  "inferenceConfig": { "maxTokens": 2048 },
+  "additionalModelRequestFields": {
+    "reasoning_config": "high"
+  }
+}

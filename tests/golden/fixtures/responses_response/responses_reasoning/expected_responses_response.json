@@ -1,0 +1,28 @@
+{
+  "id": "resp_x",
+  "object": "response",
+  "created_at": 1700000000,
+  "status": "completed",
+  "output": [
+    {
+      "type": "reasoning",
+      "id": "rs_x",
+      "summary": [{ "type": "summary_text", "text": "think step by step" }]
+    },
+    {
+      "type": "message",
+      "id": "msg_x",
+      "status": "completed",
+      "role": "assistant",
+      "content": [{ "type": "output_text", "text": "The answer is 4." }]
+    }
+  ],
+  "usage": {
+    "input_tokens": 21,
+    "input_tokens_details": { "cached_tokens": 4 },
+    "output_tokens": 5,
+    "output_tokens_details": { "reasoning_tokens": 0 },
+    "total_tokens": 26
+  },
+  "model": "resolved.model-id"
+}

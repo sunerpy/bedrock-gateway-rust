@@ -1,0 +1,6 @@
+{
+  "model": "deepseek.v3-v1:0",
+  "messages": [{ "role": "user", "content": "solve" }],
+  "max_tokens": 2048,
+  "reasoning_effort": "high"
+}

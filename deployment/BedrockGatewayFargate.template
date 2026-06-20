@@ -1,0 +1,340 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Bedrock Access Gateway (Rust) - OpenAI-compatible RESTful APIs for Amazon
+  Bedrock, deployed as an ECS/Fargate service behind an internet-facing
+  Application Load Balancer. Brings your own VPC and subnets.
+
+Parameters:
+  ContainerImageUri:
+    Type: String
+    Default: docker.io/sunerpy/bedrock-gateway-rust:latest
+    Description: >-
+      Container image for the gateway. Defaults to the published Docker Hub image
+      (sunerpy/bedrock-gateway-rust). To use your own build, push the repository
+      root Dockerfile image to ECR and pass its URI (e.g.,
+      123456789012.dkr.ecr.us-east-1.amazonaws.com/bedrock-gateway:latest).
+  ApiKeySecretArn:
+    Type: String
+    Description: >-
+      The Secrets Manager secret ARN holding the API key (key "api_key") used to
+      authenticate clients of the gateway.
+    AllowedPattern: ^arn:aws[a-zA-Z-]*:secretsmanager:.*$
+  DefaultModelId:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) The default Bedrock model ID. Leave blank to use the gateway
+      built-in default. Make sure the model ID is available in this region.
+  DefaultEmbeddingModelId:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) The default embedding model ID. Leave blank to use the gateway
+      built-in default (cohere.embed-multilingual-v3).
+  EnablePromptCaching:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >-
+      Auto-inject prompt cache points for Claude and Nova models. On by default.
+  LogLevel:
+    Type: String
+    Default: info
+    AllowedValues:
+      - trace
+      - debug
+      - info
+      - warn
+      - error
+    Description: Log verbosity for the gateway.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The VPC into which the load balancer and Fargate tasks are deployed.
+  Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >-
+      At least two subnets (in different AZs) used for both the ALB and the
+      Fargate tasks. Use public subnets, or private subnets with a NAT gateway
+      for ECR/Bedrock egress.
+  DesiredCount:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    Description: The desired number of running Fargate tasks.
+
+Conditions:
+  HasDefaultModelId: !Not [!Equals [!Ref DefaultModelId, ""]]
+  HasDefaultEmbeddingModelId: !Not [!Equals [!Ref DefaultEmbeddingModelId, ""]]
+
+Resources:
+  # ----------------------------------------------------------------
+  # CloudWatch Logs
+  # ----------------------------------------------------------------
+  GatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
+
+  # ----------------------------------------------------------------
+  # IAM: Task execution role (ECR pull + CloudWatch logs + secret read)
+  # ----------------------------------------------------------------
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SecretReadForContainer
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref ApiKeySecretArn
+
+  # ----------------------------------------------------------------
+  # IAM: Task role (least-privilege Bedrock + secret read)
+  # ----------------------------------------------------------------
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockGatewayTaskPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: BedrockList
+                Effect: Allow
+                Action:
+                  - bedrock:ListFoundationModels
+                  - bedrock:ListInferenceProfiles
+                Resource: "*"
+              - Sid: BedrockInvoke
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/*
+                  - !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*
+                  - !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:application-inference-profile/*
+              - Sid: SecretRead
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref ApiKeySecretArn
+
+  # ----------------------------------------------------------------
+  # Security Groups
+  # ----------------------------------------------------------------
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Bedrock Gateway ALB - allow inbound HTTP from anywhere
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: Allow inbound HTTP from anywhere
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Bedrock Gateway Fargate tasks - allow inbound only from ALB
+      VpcId: !Ref VpcId
+
+  AlbToTaskIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Allow ALB to reach the task on the container port
+      GroupId: !GetAtt TaskSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId: !GetAtt AlbSecurityGroup.GroupId
+
+  AlbToTaskEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      Description: Allow ALB to forward to the task on the container port
+      GroupId: !GetAtt AlbSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      DestinationSecurityGroupId: !GetAtt TaskSecurityGroup.GroupId
+
+  TaskEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      Description: Allow all outbound traffic (ECR pull, Bedrock, Secrets Manager)
+      GroupId: !GetAtt TaskSecurityGroup.GroupId
+      IpProtocol: "-1"
+      CidrIp: 0.0.0.0/0
+
+  # ----------------------------------------------------------------
+  # ECS Cluster + Task Definition + Service
+  # ----------------------------------------------------------------
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: bedrock-gateway
+      Cpu: "512"
+      Memory: "1024"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+        - Name: bedrock-gateway
+          Image: !Ref ContainerImageUri
+          Essential: true
+          StopTimeout: 30
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Secrets:
+            - Name: API_KEY
+              ValueFrom: !Sub "${ApiKeySecretArn}:api_key::"
+          Environment:
+            - Name: API_KEY_SECRET_ARN
+              Value: !Ref ApiKeySecretArn
+            - Name: PORT
+              Value: "8080"
+            - Name: API_ROUTE_PREFIX
+              Value: /api/v1
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: LOG_LEVEL
+              Value: !Ref LogLevel
+            - Name: ENABLE_PROMPT_CACHING
+              Value: !Ref EnablePromptCaching
+            - !If
+              - HasDefaultModelId
+              - Name: DEFAULT_MODEL
+                Value: !Ref DefaultModelId
+              - !Ref AWS::NoValue
+            - !If
+              - HasDefaultEmbeddingModelId
+              - Name: DEFAULT_EMBEDDING_MODEL
+                Value: !Ref DefaultEmbeddingModelId
+              - !Ref AWS::NoValue
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref GatewayLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: bedrock-gateway
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - AlbListener
+      - AlbToTaskIngress
+    Properties:
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinition
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !GetAtt TaskSecurityGroup.GroupId
+          Subnets: !Ref Subnets
+      LoadBalancers:
+        - ContainerName: bedrock-gateway
+          ContainerPort: 8080
+          TargetGroupArn: !Ref TargetGroup
+
+  # ----------------------------------------------------------------
+  # Application Load Balancer + Listener + Target Group
+  # ----------------------------------------------------------------
+  BedrockGatewayALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Type: application
+      SecurityGroups:
+        - !GetAtt AlbSecurityGroup.GroupId
+      Subnets: !Ref Subnets
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: "600"
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: ip
+      Protocol: HTTP
+      Port: 8080
+      VpcId: !Ref VpcId
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /api/v1/health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
+      Matcher:
+        HttpCode: "200"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+
+  AlbListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref BedrockGatewayALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  APIBaseUrl:
+    Description: Bedrock Gateway API Base URL (OPENAI_API_BASE)
+    Value: !Sub "http://${BedrockGatewayALB.DNSName}/api/v1"
+  ClusterName:
+    Description: ECS cluster name
+    Value: !Ref Cluster
+  ServiceName:
+    Description: ECS service name
+    Value: !GetAtt Service.Name

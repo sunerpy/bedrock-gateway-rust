@@ -1,0 +1,10 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [{ "text": "Hi" }]
+    }
+  },
+  "stopReason": "end_turn",
+  "usage": { "inputTokens": 8, "outputTokens": 2, "totalTokens": 10 }
+}

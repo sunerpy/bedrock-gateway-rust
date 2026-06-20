@@ -1,0 +1,7 @@
+{
+  "object": "list",
+  "model": "amazon.titan-embed-text-v2:0",
+  "data": [
+    { "object": "embedding", "index": 0, "embedding": [1.0, 2.0, -0.5] }
+  ]
+}

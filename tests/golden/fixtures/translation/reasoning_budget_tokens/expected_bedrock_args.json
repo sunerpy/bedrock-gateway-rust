@@ -1,0 +1,9 @@
+{
+  "modelId": "global.anthropic.claude-sonnet-4-5-20250101-v1:0",
+  "messages": [{ "role": "user", "content": [{ "text": "reason" }] }],
+  "system": [],
+  "inferenceConfig": { "maxTokens": 2048 },
+  "additionalModelRequestFields": {
+    "reasoning_config": { "type": "enabled", "budget_tokens": 1228 }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "resp_x",
+  "object": "response",
+  "created_at": 1700000000,
+  "status": "completed",
+  "output": [
+    {
+      "type": "message",
+      "id": "msg_x",
+      "status": "completed",
+      "role": "assistant",
+      "content": [{ "type": "output_text", "text": "Hello from Responses." }]
+    }
+  ],
+  "usage": {
+    "input_tokens": 8,
+    "input_tokens_details": { "cached_tokens": 0 },
+    "output_tokens": 4,
+    "output_tokens_details": { "reasoning_tokens": 0 },
+    "total_tokens": 12
+  },
+  "model": "resolved.model-id",
+  "instructions": "Be brief.",
+  "temperature": 0.5,
+  "top_p": 0.875,
+  "max_output_tokens": 256,
+  "parallel_tool_calls": true
+}

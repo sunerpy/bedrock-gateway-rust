@@ -1,0 +1,10 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [{ "text": "" }]
+    }
+  },
+  "stopReason": "content_filtered",
+  "usage": { "inputTokens": 7, "outputTokens": 0, "totalTokens": 7 }
+}
