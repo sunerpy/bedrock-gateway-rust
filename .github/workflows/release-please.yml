@@ -213,58 +213,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ----------------------------------------------------------------
-  # changelog-file: render the per-version changelog file and commit it
-  # back to main. We keep ONE markdown file per release under changelog/
-  # (e.g. changelog/bedrock-gateway-rust-v0.1.0.md) instead of a single
-  # cumulative CHANGELOG.md (release-please keeps skip-changelog: true).
-  #
-  # Gated on release_created so it only runs when a real tag is cut on a
-  # push (NOT on workflow_dispatch re-builds of an already-released tag).
-  # The commit carries [skip ci] so pushing it back to main does not
-  # re-trigger this Release workflow (release-please would not bump on a
-  # docs-only commit anyway, but [skip ci] avoids the empty re-run).
-  # ----------------------------------------------------------------
-  changelog-file:
-    name: Commit Per-Version Changelog
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      # Check out main (not the tag): we need to commit the new file back to
-      # the main branch. fetch-depth: 0 brings full history + tags so
-      # git-cliff can resolve the latest tag range.
-      - name: Checkout main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      # Render ONLY the just-released version section (no global header),
-      # mirroring the RELEASE_NOTES.md invocation in upload-assets.
-      - name: Generate per-version changelog
-        uses: orhun/git-cliff-action@v4
-        with:
-          config: cliff.toml
-          args: --latest --strip header
-        env:
-          OUTPUT: changelog/${{ needs.release-please.outputs.tag_name }}.md
-
-      - name: Commit and push changelog file
-        env:
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "changelog/${TAG_NAME}.md"
-          if git diff --cached --quiet; then
-            echo "No changelog changes to commit."
-            exit 0
-          fi
-          git commit -m "docs(changelog): ${TAG_NAME} 版本变更记录 [skip ci]"
-          git push origin HEAD:main
-
-  # ----------------------------------------------------------------
   # docker: build & push multi-arch image to Docker Hub.
   # Gated on release_created.
   # ----------------------------------------------------------------
