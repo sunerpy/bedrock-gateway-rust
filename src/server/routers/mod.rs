@@ -48,7 +48,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::StreamExt;
 
-use crate::domain::{gen_request_id, NormalizedChatRequest, NormalizedResponsesRequest};
+use crate::domain::{
+    gen_request_id, NormalizedChatRequest, NormalizedResponsesRequest, ResponsesBackend,
+};
 use crate::error::AppError;
 use crate::openai::responses_schema::{ResponseStreamEvent, ResponsesRequest};
 use crate::openai::schema::{ChatRequest, EmbeddingsRequest};
@@ -128,6 +130,11 @@ pub async fn chat_completions(
         stream = is_stream,
         "chat request received"
     );
+    if state.caps.responses_backend(&client_model) == ResponsesBackend::Mantle {
+        return Err(AppError::BadRequest(format!(
+            "model {client_model} is only available on the /responses endpoint"
+        )));
+    }
     let normalized = NormalizedChatRequest {
         request,
         resolved_model,
@@ -258,11 +265,12 @@ fn error_envelope_json(err: &AppError) -> String {
 pub async fn responses(
     State(state): State<AppState>,
     headers: HeaderMap,
-    payload: Result<Json<ResponsesRequest>, JsonRejection>,
+    body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
     let received_at = std::time::Instant::now();
     let request_id = resolve_request_id(&headers);
-    let Json(request) = payload.map_err(|rej| AppError::BadRequest(rej.body_text()))?;
+    let request: ResponsesRequest =
+        serde_json::from_slice(&body).map_err(|e| AppError::BadRequest(e.to_string()))?;
 
     let resolved_model = state.caps.resolve_foundation(&request.model);
     let is_stream = request.stream.unwrap_or(false);
@@ -278,9 +286,25 @@ pub async fn responses(
         resolved_model: resolved_model.clone(),
         request_id: request_id.clone(),
         received_at,
+        raw_body: body,
     };
 
     if is_stream {
+        // Raw-bytes passthrough lane (Mantle): when the provider offers a raw
+        // SSE stream, forward its bytes verbatim — no typed-event framing, no
+        // [DONE], no synthetic response.completed.
+        if let Some(raw) = state.responses.respond_raw_stream(&normalized).await {
+            tracing::info!(
+                request_id = %request_id,
+                model = %client_model,
+                ttfb_ms = received_at.elapsed().as_millis(),
+                "responses raw streaming started"
+            );
+            return Ok(with_model_header(
+                responses_raw_sse_response(raw),
+                &resolved_model,
+            ));
+        }
         match state.responses.respond_stream(&normalized).await {
             Ok(stream) => {
                 tracing::info!(
@@ -357,6 +381,25 @@ fn responses_sse_response(stream: crate::domain::ResponsesStream) -> Response {
             .keep_alive(sse_keep_alive())
             .into_response(),
     )
+}
+
+/// Build an SSE response from a raw-bytes Responses stream (Mantle passthrough).
+///
+/// The provider's upstream already emits the OpenAI Responses `text/event-stream`
+/// wire format, so each [`bytes::Bytes`] chunk is forwarded verbatim through
+/// `Body::from_stream` with no typed-event framing, no `[DONE]` sentinel, and no
+/// synthesized `response.completed`. The same anti-buffering headers as the typed
+/// path are applied via [`with_sse_headers`]. A mid-stream error item cannot be
+/// envelope-mapped after the `200`/headers are flushed; it simply truncates the
+/// stream. Only pre-stream provider errors map to the 400/error envelope.
+fn responses_raw_sse_response(raw: crate::domain::RawResponsesStream) -> Response {
+    let body = axum::body::Body::from_stream(raw);
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/event-stream"),
+    );
+    with_sse_headers(response)
 }
 
 /// Convert one [`ResponseStreamEvent`] into an SSE [`Event`] with the correct
@@ -677,6 +720,39 @@ mod tests {
         }
     }
 
+    const RAW_SSE_BYTES: &[u8] =
+        b"event: response.created\ndata: {\"x\":1}\n\nevent: response.completed\ndata: {\"y\":2}\n\n";
+
+    struct MockRawResponses;
+
+    #[async_trait::async_trait]
+    impl ResponsesProvider for MockRawResponses {
+        async fn respond(
+            &self,
+            req: &NormalizedResponsesRequest,
+        ) -> Result<ResponsesResponse, AppError> {
+            Ok(responses_fixture(&req.resolved_model))
+        }
+
+        async fn respond_stream(
+            &self,
+            _req: &NormalizedResponsesRequest,
+        ) -> Result<ResponsesStream, AppError> {
+            Err(AppError::Internal(
+                "typed path must not be used".to_string(),
+            ))
+        }
+
+        async fn respond_raw_stream(
+            &self,
+            _req: &NormalizedResponsesRequest,
+        ) -> Option<crate::domain::RawResponsesStream> {
+            let chunk: Result<bytes::Bytes, AppError> =
+                Ok(bytes::Bytes::from_static(RAW_SSE_BYTES));
+            Some(Box::pin(futures::stream::iter(vec![chunk])))
+        }
+    }
+
     fn responses_fixture(model: &str) -> ResponsesResponse {
         use crate::openai::responses_schema::{
             OutputContentPart, ResponseOutputItem, ResponsesUsage,
@@ -736,6 +812,8 @@ mod tests {
             aws_connect_timeout_secs: 60,
             aws_read_timeout_secs: 900,
             aws_max_retry_attempts: 8,
+            mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
+                .to_string(),
         }
     }
 
@@ -763,6 +841,20 @@ mod tests {
         let state = AppState::new(
             Arc::new(MockChat),
             Arc::new(MockResponses),
+            Arc::new(MockEmbeddings),
+            Arc::new(RwLock::new(catalog())),
+            caps(),
+            Arc::new(KEY.to_string()),
+            Arc::new(settings()),
+            Arc::new(crate::bedrock::cache_support::CacheSupportRegistry::new()),
+        );
+        build_router(state, PREFIX)
+    }
+
+    fn app_with_raw() -> Router {
+        let state = AppState::new(
+            Arc::new(MockChat),
+            Arc::new(MockRawResponses),
             Arc::new(MockEmbeddings),
             Arc::new(RwLock::new(catalog())),
             caps(),
@@ -1043,6 +1135,56 @@ mod tests {
         assert_eq!(value["error"]["type"], "invalid_request_error");
     }
 
+    // ---- mantle-only models rejected on /chat/completions -----------------
+
+    /// A mantle-only model (GPT-5.x is Responses-API-only) MUST be rejected on
+    /// `/chat/completions` with a clean OpenAI 400 envelope. The gate is
+    /// capability-driven (`responses_backend == Mantle`), NOT model-name
+    /// matching: `gpt-5.5` aliases to `openai.gpt-5.5` which declares
+    /// `responses_backend = "mantle"` in `config/models.toml`.
+    #[tokio::test]
+    async fn chat_completions_rejects_mantle_only_model_with_400() {
+        let body = r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}]}"#;
+        let (status, bytes, _ct) = send(
+            app(),
+            "POST",
+            "/api/v1/chat/completions",
+            Some(&auth()),
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        // Full OpenAI error envelope shape.
+        assert_eq!(value["error"]["type"], "invalid_request_error");
+        assert_eq!(value["error"]["code"], "bad_request");
+        let message = value["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("/responses"),
+            "rejection message must point the caller to /responses, got: {message}"
+        );
+        assert!(value.get("detail").is_none());
+    }
+
+    /// A normal Converse model (claude/nova) MUST NOT be caught by the mantle
+    /// gate — it proceeds to the 200 path served by the mock chat provider.
+    #[tokio::test]
+    async fn chat_completions_converse_model_not_rejected_by_mantle_gate() {
+        let body = r#"{"model":"anthropic.claude-3-sonnet-v1:0","messages":[{"role":"user","content":"hi"}]}"#;
+        let (status, bytes, _ct) = send(
+            app(),
+            "POST",
+            "/api/v1/chat/completions",
+            Some(&auth()),
+            Some(body),
+        )
+        .await;
+        // Proceeds past the gate to the mock provider's 200 response.
+        assert_eq!(status, StatusCode::OK);
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["object"], "chat.completion");
+    }
+
     // ---- /responses route --------------------------------------------------
 
     #[tokio::test]
@@ -1120,6 +1262,66 @@ mod tests {
         assert!(
             !text.contains("[DONE]"),
             "Responses SSE must not emit [DONE]"
+        );
+    }
+
+    /// When the provider offers a raw passthrough stream, the handler forwards
+    /// the upstream bytes verbatim (no re-framing, no [DONE], no synthesized
+    /// response.completed) and carries the same anti-buffering SSE headers as
+    /// the typed path.
+    #[tokio::test]
+    async fn responses_stream_raw_passthrough_forwards_bytes_and_headers() {
+        let body = r#"{"model":"anthropic.claude-3-sonnet-v1:0","input":"hi","stream":true}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/responses")
+            .header(AUTHORIZATION, auth())
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app_with_raw().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(ct.contains("text/event-stream"), "got {ct}");
+
+        let accel = resp
+            .headers()
+            .get(ACCEL_BUFFERING_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(accel, "no", "missing X-Accel-Buffering: no");
+
+        let cache_control = resp
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(cache_control, "no-cache, no-transform");
+
+        let model_header = resp
+            .headers()
+            .get(OPENAI_MODEL_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        assert_eq!(
+            model_header.as_deref(),
+            Some("anthropic.claude-3-sonnet-v1:0")
+        );
+
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            bytes.as_ref(),
+            RAW_SSE_BYTES,
+            "raw bytes must pass through verbatim"
+        );
+        assert!(
+            !bytes.windows(6).any(|w| w == b"[DONE]"),
+            "raw passthrough must not inject [DONE]"
         );
     }
 

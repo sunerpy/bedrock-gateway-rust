@@ -293,6 +293,12 @@ mod tests {
         fn reasoning_path(&self, _model: &str) -> ReasoningPath {
             self.path
         }
+        fn responses_backend(&self, _model: &str) -> crate::domain::ResponsesBackend {
+            crate::domain::ResponsesBackend::Converse
+        }
+        fn model_regions(&self, _model: &str) -> Option<Vec<String>> {
+            None
+        }
     }
 
     /// A controlled ratio set mirroring the config defaults, used to assert the

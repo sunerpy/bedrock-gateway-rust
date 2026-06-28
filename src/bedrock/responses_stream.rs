@@ -1575,6 +1575,105 @@ mod tests {
         }
     }
 
+    // -- T3 regression: typed-stream lifecycle locked for the T5 seam refactor
+
+    /// CHARACTERIZATION LOCK (T3): pins TODAY's typed Converse→Responses SSE
+    /// streaming lifecycle so the later raw-bytes seam refactor (T5) cannot
+    /// silently regress it. This drives the CURRENT
+    /// [`ResponsesStreamState`] / [`converse_stream_to_openai_responses`] path
+    /// (via the same `drive()` harness the async wrapper mirrors) over a
+    /// representative reasoning+text+tool response and asserts, using the
+    /// [`ResponseStreamEvent::event_type`] wire tags:
+    ///
+    /// 1. the exact ordered `event_type()` sequence,
+    /// 2. the terminal event is `response.completed`, and
+    /// 3. ZERO `[DONE]` sentinels appear anywhere (the Responses surface, unlike
+    ///    chat, never emits `[DONE]` — AGENTS.md §9).
+    ///
+    /// If T5 reorders, drops, or appends any lifecycle event — or leaks a
+    /// `[DONE]` — this test fails, flagging a behavior change for review.
+    #[test]
+    fn converse_responses_stream_lifecycle_locked() {
+        // A representative response exercising reasoning, then text, then a
+        // tool call — the full lifecycle fan-out in one stream.
+        let events = drive(&[
+            ev_message_start(),
+            ev_reasoning_text("thinking", 0),
+            ev_text("Answer", 1),
+            ev_block_stop(1),
+            ev_tool_start(2, "call-1", "get_weather"),
+            ev_tool_input(2, "{\"city\":\"Paris\"}"),
+            ev_block_stop(2),
+            ev_message_stop(StopReason::ToolUse),
+            ev_metadata(20, 10, 30),
+        ]);
+
+        // (a) The exact ordered wire-type sequence, read straight off
+        // ResponseStreamEvent::event_type() (the tag the SSE frame carries).
+        let tags: Vec<&str> = events.iter().map(ResponseStreamEvent::event_type).collect();
+        assert_eq!(
+            tags,
+            vec![
+                "response.created",
+                "response.in_progress",
+                // reasoning item lifecycle (structured, NOT <think>).
+                "response.output_item.added",
+                "response.reasoning_summary_part.added",
+                "response.reasoning_text.delta",
+                "response.reasoning_summary_text.delta",
+                "response.reasoning_text.done",
+                "response.reasoning_summary_text.done",
+                "response.reasoning_summary_part.done",
+                "response.output_item.done",
+                // message item lifecycle.
+                "response.output_item.added",
+                "response.content_part.added",
+                "response.output_text.delta",
+                "response.output_text.done",
+                "response.content_part.done",
+                "response.output_item.done",
+                // function_call item: add + done (no arg-delta events).
+                "response.output_item.added",
+                "response.output_item.done",
+                // terminal envelope.
+                "response.completed",
+            ],
+            "typed Responses stream lifecycle order changed — T5 seam refactor must preserve this"
+        );
+
+        // (b) The terminal event MUST be response.completed.
+        assert_eq!(
+            events
+                .last()
+                .map(ResponseStreamEvent::event_type)
+                .expect("at least one event"),
+            "response.completed",
+            "Responses stream MUST terminate on response.completed"
+        );
+        assert!(
+            matches!(events.last(), Some(ResponseStreamEvent::Completed { .. })),
+            "terminal event must be the Completed variant"
+        );
+
+        // (c) ZERO [DONE] sentinels anywhere — neither in the wire tags nor in
+        // any serialized event payload (the Responses surface never emits one).
+        assert!(
+            !tags.contains(&"[DONE]"),
+            "no event_type may be the [DONE] sentinel"
+        );
+        for ev in &events {
+            let s = serde_json::to_string(ev).expect("event serializes");
+            assert!(
+                !s.contains("[DONE]"),
+                "[DONE] sentinel leaked into the Responses stream: {s}"
+            );
+        }
+
+        // Sanity: the lock guards a single terminal completion, not many.
+        let completed = tags.iter().filter(|t| **t == "response.completed").count();
+        assert_eq!(completed, 1, "exactly one response.completed expected");
+    }
+
     // -- finish() is idempotent ----------------------------------------------
 
     #[test]

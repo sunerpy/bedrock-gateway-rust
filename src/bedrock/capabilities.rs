@@ -25,7 +25,7 @@ use std::collections::HashMap;
 
 use crate::config::capabilities::ModelEntry;
 use crate::config::{BudgetRatios, Capability, ModelCapabilityConfig, ReasoningPath};
-use crate::domain::ModelCapabilities;
+use crate::domain::{ModelCapabilities, ResponsesBackend};
 
 /// The exact-key name of the fallback entry in `config/models.toml` that
 /// supplies default tunables (e.g. budget ratios) when a matched model entry
@@ -73,6 +73,15 @@ pub(crate) fn normalize_for_match(id: &str) -> String {
     lower
 }
 
+/// Build the `from → to` alias lookup from a loaded config's `[[alias]]` tables.
+fn alias_map(config: &ModelCapabilityConfig) -> HashMap<String, String> {
+    config
+        .aliases
+        .iter()
+        .map(|a| (a.from.clone(), a.to.clone()))
+        .collect()
+}
+
 /// Config-driven implementation of [`ModelCapabilities`].
 ///
 /// Wraps a loaded [`ModelCapabilityConfig`] plus a profile→foundation map. All
@@ -89,14 +98,20 @@ pub struct ConfigModelCapabilities {
     config: ModelCapabilityConfig,
     /// Inference-profile-id/ARN → underlying foundation model id.
     profile_map: HashMap<String, String>,
+    /// Client-facing model name → canonical resolved id, from the config's
+    /// `[[alias]]` tables. Consulted BEFORE `profile_map` so an alias resolves
+    /// without any runtime-seeded inference-profile catalog.
+    aliases: HashMap<String, String>,
 }
 
 impl ConfigModelCapabilities {
     /// Construct from a loaded config with an empty profile map.
     pub fn new(config: ModelCapabilityConfig) -> Self {
+        let aliases = alias_map(&config);
         Self {
             config,
             profile_map: HashMap::new(),
+            aliases,
         }
     }
 
@@ -105,9 +120,11 @@ impl ConfigModelCapabilities {
         config: ModelCapabilityConfig,
         profile_map: HashMap<String, String>,
     ) -> Self {
+        let aliases = alias_map(&config);
         Self {
             config,
             profile_map,
+            aliases,
         }
     }
 
@@ -150,8 +167,11 @@ impl ModelCapabilities for ConfigModelCapabilities {
     }
 
     fn resolve_foundation(&self, model_or_profile: &str) -> String {
-        // Dictionary lookup; unknown ids pass through unchanged
-        // (bedrock.py:415-417).
+        // Aliases (config `[[alias]]`) win first; then the runtime profile map
+        // (bedrock.py:415-417); unknown ids pass through unchanged.
+        if let Some(canonical) = self.aliases.get(model_or_profile) {
+            return canonical.clone();
+        }
         self.profile_map
             .get(model_or_profile)
             .cloned()
@@ -220,6 +240,25 @@ impl ModelCapabilities for ConfigModelCapabilities {
         self.matching_entry(&model_lower)
             .and_then(|e| e.params.reasoning_path)
             .unwrap_or(ReasoningPath::None)
+    }
+
+    fn responses_backend(&self, model: &str) -> ResponsesBackend {
+        let canonical = self.resolve_foundation(model);
+        match self
+            .config
+            .entry_for_match(&canonical)
+            .and_then(|e| e.params.responses_backend.as_deref())
+        {
+            Some("mantle") => ResponsesBackend::Mantle,
+            _ => ResponsesBackend::Converse,
+        }
+    }
+
+    fn model_regions(&self, model: &str) -> Option<Vec<String>> {
+        let canonical = self.resolve_foundation(model);
+        self.config
+            .entry_for_match(&canonical)
+            .and_then(|e| e.params.available_regions.clone())
     }
 }
 
@@ -343,6 +382,28 @@ mod tests {
         let c = caps();
         let id = "anthropic.claude-opus-4-8-20251101-v1:0";
         assert_eq!(c.resolve_foundation(id), id);
+    }
+
+    #[test]
+    fn alias_resolves_foundation_without_seeded_profile_map() {
+        let raw = "[[alias]]\nfrom = \"gpt-5.5\"\nto = \"openai.gpt-5.5\"\n\n[[alias]]\nfrom = \"gpt-5.4\"\nto = \"openai.gpt-5.4\"\n";
+        let config = ModelCapabilityConfig::from_toml_str(raw).expect("alias config must parse");
+        let c = ConfigModelCapabilities::new(config);
+
+        assert_eq!(c.resolve_foundation("gpt-5.5"), "openai.gpt-5.5");
+        assert_eq!(c.resolve_foundation("gpt-5.4"), "openai.gpt-5.4");
+        assert_eq!(c.resolve_foundation("not-aliased"), "not-aliased");
+    }
+
+    #[test]
+    fn alias_wins_over_profile_map() {
+        let raw = "[[alias]]\nfrom = \"gpt-5.5\"\nto = \"openai.gpt-5.5\"\n";
+        let config = ModelCapabilityConfig::from_toml_str(raw).expect("alias config must parse");
+        let mut profiles = HashMap::new();
+        profiles.insert("gpt-5.5".to_string(), "profile.wrong-target".to_string());
+        let c = ConfigModelCapabilities::with_profiles(config, profiles);
+
+        assert_eq!(c.resolve_foundation("gpt-5.5"), "openai.gpt-5.5");
     }
 
     #[test]
@@ -637,5 +698,56 @@ mod tests {
                 "{prefixed} family floor"
             );
         }
+    }
+
+    #[test]
+    fn responses_backend_mantle_via_canonical_and_alias() {
+        use crate::domain::ResponsesBackend;
+        let c = caps();
+        // Canonical id and the bare alias both route to Mantle. The alias path
+        // transitively re-tests T1's resolve_foundation("gpt-5.5") resolution.
+        assert_eq!(
+            c.responses_backend("openai.gpt-5.5"),
+            ResponsesBackend::Mantle
+        );
+        assert_eq!(c.responses_backend("gpt-5.5"), ResponsesBackend::Mantle);
+        assert_eq!(
+            c.responses_backend("openai.gpt-5.4"),
+            ResponsesBackend::Mantle
+        );
+        assert_eq!(c.responses_backend("gpt-5.4"), ResponsesBackend::Mantle);
+    }
+
+    #[test]
+    fn responses_backend_converse_for_non_mantle_and_unknown() {
+        use crate::domain::ResponsesBackend;
+        let c = caps();
+        assert_eq!(
+            c.responses_backend(FULL_SONNET_4_5),
+            ResponsesBackend::Converse
+        );
+        assert_eq!(c.responses_backend(FULL_NOVA), ResponsesBackend::Converse);
+        assert_eq!(
+            c.responses_backend("vendor.totally-unknown-v1:0"),
+            ResponsesBackend::Converse
+        );
+    }
+
+    #[test]
+    fn model_regions_from_config_via_canonical_and_alias() {
+        let c = caps();
+        // gpt-5.5 is gated to a single region; the alias resolves first.
+        assert_eq!(
+            c.model_regions("gpt-5.5"),
+            Some(vec!["us-east-2".to_string()])
+        );
+        // gpt-5.4 allows two regions, including us-west-2.
+        let regions = c
+            .model_regions("gpt-5.4")
+            .expect("gpt-5.4 must declare a region allow-list");
+        assert!(regions.contains(&"us-west-2".to_string()));
+        // A model with no region gate, and an unknown model, both return None.
+        assert_eq!(c.model_regions(FULL_SONNET_4_5), None);
+        assert_eq!(c.model_regions("vendor.totally-unknown-v1:0"), None);
     }
 }

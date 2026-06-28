@@ -73,6 +73,12 @@ pub struct AppSettings {
 
     /// AWS maximum retry attempts (default: 8, from botocore parity)
     pub aws_max_retry_attempts: u32,
+
+    /// URL template for the bedrock-mantle OpenAI-compatible upstream, with a
+    /// `{region}` placeholder substituted per request. Default:
+    /// `https://bedrock-mantle.{region}.api.aws/openai/v1`. Env:
+    /// `MANTLE_BASE_URL_TEMPLATE` (or `APP_MANTLE_BASE_URL_TEMPLATE`).
+    pub mantle_base_url_template: String,
 }
 
 impl AppSettings {
@@ -100,6 +106,10 @@ impl AppSettings {
             .set_default("aws_connect_timeout_secs", 60u64)?
             .set_default("aws_read_timeout_secs", 900u64)?
             .set_default("aws_max_retry_attempts", 8u32)?
+            .set_default(
+                "mantle_base_url_template",
+                "https://bedrock-mantle.{region}.api.aws/openai/v1",
+            )?
             .add_source(File::with_name("config/app").required(false))
             .add_source(
                 Environment::with_prefix("APP")
@@ -131,7 +141,7 @@ impl AppSettings {
 /// `ENABLE_APPLICATION_INFERENCE_PROFILES`, `ENABLE_PROMPT_CACHING`, `API_KEY`,
 /// `API_KEY_SECRET_ARN`, `API_KEY_PARAM_NAME`, `AWS_BEARER_TOKEN_BEDROCK`
 /// (alias `BEDROCK_API_KEY`), plus the operational knobs `PORT`, `BIND_ADDR`,
-/// `LOG_LEVEL`.
+/// `LOG_LEVEL`, `MANTLE_BASE_URL_TEMPLATE`.
 fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder> {
     // String-valued overrides.
     for (env_name, field) in [
@@ -144,6 +154,7 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
         ("API_KEY_PARAM_NAME", "api_key_param_name"),
         ("BIND_ADDR", "bind_addr"),
         ("LOG_LEVEL", "log_level"),
+        ("MANTLE_BASE_URL_TEMPLATE", "mantle_base_url_template"),
     ] {
         if let Some(value) = non_empty_env(env_name) {
             builder = builder.set_override(field, value)?;
@@ -264,6 +275,11 @@ mod tests {
             .unwrap()
             .set_default("aws_max_retry_attempts", 8u32)
             .unwrap()
+            .set_default(
+                "mantle_base_url_template",
+                "https://bedrock-mantle.{region}.api.aws/openai/v1",
+            )
+            .unwrap()
     }
 
     #[test]
@@ -296,6 +312,11 @@ mod tests {
             .set_default("aws_read_timeout_secs", 900u64)
             .unwrap()
             .set_default("aws_max_retry_attempts", 8u32)
+            .unwrap()
+            .set_default(
+                "mantle_base_url_template",
+                "https://bedrock-mantle.{region}.api.aws/openai/v1",
+            )
             .unwrap()
             .build()
             .unwrap();
@@ -354,6 +375,12 @@ mod tests {
             .set_default("aws_read_timeout_secs", 900u64)
             .unwrap();
         builder = builder.set_default("aws_max_retry_attempts", 8u32).unwrap();
+        builder = builder
+            .set_default(
+                "mantle_base_url_template",
+                "https://bedrock-mantle.{region}.api.aws/openai/v1",
+            )
+            .unwrap();
 
         builder = builder.set_override("api_route_prefix", "/v2").unwrap();
         builder = builder.set_override("debug", true).unwrap();
@@ -404,6 +431,11 @@ mod tests {
             .unwrap()
             .set_default("aws_max_retry_attempts", 8u32)
             .unwrap()
+            .set_default(
+                "mantle_base_url_template",
+                "https://bedrock-mantle.{region}.api.aws/openai/v1",
+            )
+            .unwrap()
             .build()
             .unwrap();
 
@@ -445,6 +477,12 @@ mod tests {
             .set_default("aws_read_timeout_secs", 900u64)
             .unwrap();
         builder = builder.set_default("aws_max_retry_attempts", 8u32).unwrap();
+        builder = builder
+            .set_default(
+                "mantle_base_url_template",
+                "https://bedrock-mantle.{region}.api.aws/openai/v1",
+            )
+            .unwrap();
 
         builder = builder.set_override("api_key", "test-key").unwrap();
         builder = builder
@@ -498,6 +536,12 @@ mod tests {
             .set_default("aws_read_timeout_secs", 900u64)
             .unwrap();
         builder = builder.set_default("aws_max_retry_attempts", 8u32).unwrap();
+        builder = builder
+            .set_default(
+                "mantle_base_url_template",
+                "https://bedrock-mantle.{region}.api.aws/openai/v1",
+            )
+            .unwrap();
 
         builder = builder
             .set_override("aws_connect_timeout_secs", 120u64)
@@ -567,6 +611,11 @@ mod tests {
             .set_override("enable_prompt_caching", parse_bool("yes"))
             .unwrap()
             .set_override("port", 9000i64)
+            .unwrap()
+            .set_override(
+                "mantle_base_url_template",
+                "https://bedrock-mantle.{region}.api.aws/openai/v1",
+            )
             .unwrap();
 
         let settings: AppSettings = overridden.build().unwrap().try_deserialize().unwrap();
