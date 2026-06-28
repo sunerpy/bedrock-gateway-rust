@@ -177,6 +177,7 @@ legacy/
 
 # Environment and evidence
 .env
+.codegraph
 .omo/evidence/
 
 # Local-only proxy build (not for publish)

@@ -775,6 +775,55 @@ pub enum ResponseStreamEvent {
     },
 }
 
+impl ResponseStreamEvent {
+    /// The wire `type` string for this event (matches the `serde(rename = ...)`
+    /// discriminant). Content-free: returns only the protocol event-type tag,
+    /// never any message text, arguments, or token values. Used by the
+    /// stream-diagnostic logging in `bedrock::responses_stream` to record the
+    /// emitted event-type sequence/counts without touching payload content.
+    #[must_use]
+    pub fn event_type(&self) -> &str {
+        match self {
+            ResponseStreamEvent::Queued { .. } => "response.queued",
+            ResponseStreamEvent::Created { .. } => "response.created",
+            ResponseStreamEvent::InProgress { .. } => "response.in_progress",
+            ResponseStreamEvent::OutputItemAdded { .. } => "response.output_item.added",
+            ResponseStreamEvent::ContentPartAdded { .. } => "response.content_part.added",
+            ResponseStreamEvent::OutputTextDelta { .. } => "response.output_text.delta",
+            ResponseStreamEvent::OutputTextDone { .. } => "response.output_text.done",
+            ResponseStreamEvent::ContentPartDone { .. } => "response.content_part.done",
+            ResponseStreamEvent::OutputItemDone { .. } => "response.output_item.done",
+            ResponseStreamEvent::Completed { .. } => "response.completed",
+            ResponseStreamEvent::Failed { .. } => "response.failed",
+            ResponseStreamEvent::Incomplete { .. } => "response.incomplete",
+            ResponseStreamEvent::Error { .. } => "error",
+            ResponseStreamEvent::FunctionCallArgumentsDelta { .. } => {
+                "response.function_call_arguments.delta"
+            }
+            ResponseStreamEvent::FunctionCallArgumentsDone { .. } => {
+                "response.function_call_arguments.done"
+            }
+            ResponseStreamEvent::ReasoningTextDelta { .. } => "response.reasoning_text.delta",
+            ResponseStreamEvent::ReasoningTextDone { .. } => "response.reasoning_text.done",
+            ResponseStreamEvent::ReasoningSummaryPartAdded { .. } => {
+                "response.reasoning_summary_part.added"
+            }
+            ResponseStreamEvent::ReasoningSummaryPartDone { .. } => {
+                "response.reasoning_summary_part.done"
+            }
+            ResponseStreamEvent::ReasoningSummaryTextDelta { .. } => {
+                "response.reasoning_summary_text.delta"
+            }
+            ResponseStreamEvent::ReasoningSummaryTextDone { .. } => {
+                "response.reasoning_summary_text.done"
+            }
+            ResponseStreamEvent::RefusalDelta { .. } => "response.refusal.delta",
+            ResponseStreamEvent::RefusalDone { .. } => "response.refusal.done",
+            ResponseStreamEvent::Other { event_type, .. } => event_type.as_str(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
