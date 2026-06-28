@@ -449,6 +449,12 @@ mod tests {
         fn reasoning_path(&self, _model: &str) -> crate::domain::ReasoningPath {
             crate::domain::ReasoningPath::None
         }
+        fn responses_backend(&self, _model: &str) -> crate::domain::ResponsesBackend {
+            crate::domain::ResponsesBackend::Converse
+        }
+        fn model_regions(&self, _model: &str) -> Option<Vec<String>> {
+            None
+        }
     }
 
     impl FakeCaps {

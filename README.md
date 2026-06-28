@@ -239,6 +239,12 @@ Prefer fetching `API_KEY` from a secrets store. Priority order:
 | `AWS_READ_TIMEOUT_SECS`    | `900`   | Response read timeout (15 min, accommodates long streams) |
 | `AWS_MAX_RETRY_ATTEMPTS`   | `8`     | Retries on transient throttling or 5xx failures           |
 
+**GPT-5.x / bedrock-mantle**
+
+| Variable                   | Default                                                  | Description                                                                                 |
+| -------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `MANTLE_BASE_URL_TEMPLATE` | `https://bedrock-mantle.{region}.api.aws/openai/v1`      | Upstream URL for GPT-5.x models. `{region}` is replaced with `AWS_REGION` at call time.    |
+
 </details>
 
 ### Config files (no recompile needed)
@@ -301,6 +307,28 @@ response = client.chat.completions.create(
 # Reasoning appears inline as <think>...</think> inside content
 ```
 
+### GPT-5.x (Responses API)
+
+GPT-5.x models are available on `/api/v1/responses` only — not `/chat/completions`, not listed in `GET /models`. Region-gated: `gpt-5.5` requires `us-east-2`; `gpt-5.4` accepts `us-east-2` or `us-west-2`. Requires `AWS_BEARER_TOKEN_BEDROCK` to be set.
+
+**Non-streaming:**
+
+```bash
+curl http://localhost:8080/api/v1/responses \
+  -H "Authorization: Bearer sk-my-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.5","input":"say hello","max_output_tokens":64,"stream":false}'
+```
+
+**Streaming (raw SSE, terminates on `response.completed` — no `[DONE]`):**
+
+```bash
+curl http://localhost:8080/api/v1/responses \
+  -H "Authorization: Bearer sk-my-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.4","input":"count to 5","stream":true}'
+```
+
 ### codex configuration
 
 Add to `~/.codex/config.toml`:
@@ -353,6 +381,7 @@ The authoritative list is `config/models.toml` and the live `GET /api/v1/models`
 - **Claude** — Sonnet 4.x, Haiku 4.x, Opus 4.x (via Bedrock model IDs and cross-region inference profiles)
 - **Amazon Nova** — multimodal and text models
 - **DeepSeek** — v3 (string-form reasoning path)
+- **GPT-5.x** — `gpt-5.4` and `gpt-5.5` on `/api/v1/responses` only, via the AWS Bedrock mantle upstream. Send the bare alias name; the gateway rewrites it to the canonical `openai.gpt-*` ID before dispatch. Not available on `/chat/completions`. Not listed in `GET /models`. Region-gated: `gpt-5.5` requires `us-east-2`; `gpt-5.4` requires `us-east-2` or `us-west-2`. Requires `AWS_BEARER_TOKEN_BEDROCK` to be set (startup fails otherwise).
 - Any Bedrock foundation model or inference profile accessible in your account — the catalog refreshes from the control plane at startup
 
 Adding a model requires only a `config/models.toml` entry and no recompile.

@@ -30,6 +30,8 @@
 
 pub mod auth;
 
+pub mod composite;
+
 pub mod routers;
 
 pub mod state;
@@ -47,12 +49,15 @@ use tracing::Level;
 use crate::bedrock::cache_support::CacheSupportRegistry;
 use crate::bedrock::client::{build_aws_config, BedrockClients};
 use crate::bedrock::embeddings::BedrockEmbeddingProvider;
+use crate::bedrock::mantle_client::MantleClient;
+use crate::bedrock::mantle_provider::MantleResponsesProvider;
 use crate::bedrock::models::ModelCatalog;
 use crate::bedrock::provider::BedrockChatProvider;
 use crate::bedrock::responses_provider::BedrockResponsesProvider;
 use crate::bedrock::translate::ReqwestImageResolver;
 use crate::config::{AppSettings, EmbeddingRegistry, ModelCapabilityConfig, RegionRoutingConfig};
 use crate::domain::{ChatProvider, EmbeddingProvider, ModelCapabilities, ResponsesProvider};
+use crate::server::composite::{validate_mantle_startup, CompositeResponsesProvider};
 use crate::server::state::AppState;
 
 /// Default config directory used when `CONFIG_DIR` is unset (backward-compatible
@@ -99,6 +104,11 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
 
     let caps_config =
         ModelCapabilityConfig::load_with_fallback(Some(&config_dir.join(MODELS_CONFIG_FILE)));
+
+    // Must run before `caps_config` is moved into `with_profiles` below.
+    validate_mantle_startup(&caps_config, &settings)
+        .map_err(|e| anyhow::anyhow!("mantle startup validation failed: {e}"))?;
+
     let caps: Arc<dyn ModelCapabilities> = Arc::new(
         crate::bedrock::capabilities::ConfigModelCapabilities::with_profiles(
             caps_config,
@@ -132,7 +142,7 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
         settings.clone(),
         cache_support.clone(),
     ));
-    let responses: Arc<dyn ResponsesProvider> = Arc::new(BedrockResponsesProvider::new(
+    let converse_responses: Arc<dyn ResponsesProvider> = Arc::new(BedrockResponsesProvider::new(
         clients.clone(),
         caps.clone(),
         regions,
@@ -140,6 +150,24 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
         settings.clone(),
         cache_support.clone(),
     ));
+
+    let mantle_client = MantleClient::new(
+        reqwest::Client::new(),
+        settings.mantle_base_url_template.clone(),
+        settings.bedrock_api_key.clone().unwrap_or_default(),
+    );
+    let mantle_responses: Arc<dyn ResponsesProvider> = Arc::new(MantleResponsesProvider::new(
+        mantle_client,
+        caps.clone(),
+        settings.clone(),
+    ));
+
+    let responses: Arc<dyn ResponsesProvider> = Arc::new(CompositeResponsesProvider::new(
+        converse_responses,
+        mantle_responses,
+        caps.clone(),
+    ));
+
     let embeddings: Arc<dyn EmbeddingProvider> =
         Arc::new(BedrockEmbeddingProvider::new(clients, embedding_registry));
 
@@ -297,13 +325,15 @@ mod tests {
             api_key: Some("testkey".to_string()),
             api_key_secret_arn: None,
             api_key_param_name: None,
-            bedrock_api_key: None,
+            bedrock_api_key: Some("test-bedrock-bearer".to_string()),
             bind_addr: "127.0.0.1".to_string(),
             port: 0,
             log_level: "info".to_string(),
             aws_connect_timeout_secs: 60,
             aws_read_timeout_secs: 900,
             aws_max_retry_attempts: 8,
+            mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
+                .to_string(),
         }
     }
 

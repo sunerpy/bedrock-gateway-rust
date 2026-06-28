@@ -550,6 +550,8 @@ mod tests {
             aws_connect_timeout_secs: 60,
             aws_read_timeout_secs: 900,
             aws_max_retry_attempts: 8,
+            mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
+                .to_string(),
         });
         let aws_config = build_aws_config(&settings).await;
         let clients = BedrockClients::new(&aws_config);
@@ -574,6 +576,7 @@ mod tests {
             resolved_model: "resolved".to_string(),
             request_id: Arc::from("req-test"),
             received_at: std::time::Instant::now(),
+            raw_body: bytes::Bytes::new(),
         };
         assert!(
             provider.respond_stream(&req).await.is_err(),

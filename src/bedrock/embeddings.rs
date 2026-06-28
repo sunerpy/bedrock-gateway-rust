@@ -564,6 +564,8 @@ mod tests {
             aws_connect_timeout_secs: 60,
             aws_read_timeout_secs: 900,
             aws_max_retry_attempts: 8,
+            mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
+                .to_string(),
         };
         let clients = BedrockClients::from_settings(&settings).await;
         let provider = BedrockEmbeddingProvider::new(clients, EmbeddingRegistry::default());

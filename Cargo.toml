@@ -40,11 +40,13 @@ config = "0.15"
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+bytes = "1"
 base64 = "0.22"
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
+wiremock = "0.6"
 
 # Release profile tuned for minimal binary / image size. This service is
 # IO-bound (a Bedrock proxy), so trading CPU speed for a smaller artifact is the

@@ -10,6 +10,10 @@ pub mod client;
 
 pub mod embeddings;
 
+pub mod mantle_client;
+
+pub mod mantle_provider;
+
 pub mod models;
 
 pub mod provider;

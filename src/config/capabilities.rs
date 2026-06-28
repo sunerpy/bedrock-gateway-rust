@@ -103,6 +103,15 @@ pub struct ModelParams {
     pub min_budget_tokens: Option<u32>,
     /// The reasoning strategy for this model.
     pub reasoning_path: Option<ReasoningPath>,
+    /// Which backend serves this model's `/responses` requests. `None` means the
+    /// default Bedrock Converse path; a value such as `"mantle"` routes the model
+    /// to the bedrock-mantle OpenAI-compatible upstream instead. This is a CONFIG
+    /// DATA flag — the resolution layer reads it; no model-name branching in code.
+    pub responses_backend: Option<String>,
+    /// Regions where this model is available. `None` means "no region gate"
+    /// (available everywhere); a non-empty list restricts the model to those
+    /// regions, enabling startup validation and per-request 400 on a mismatch.
+    pub available_regions: Option<Vec<String>>,
 }
 
 /// A single declarative model entry from `config/models.toml`.
@@ -129,6 +138,19 @@ impl ModelEntry {
     }
 }
 
+/// A single declarative model-id alias from `config/models.toml`.
+///
+/// Maps a client-facing model name (`from`) to a canonical resolved id (`to`).
+/// The resolution layer consults aliases BEFORE the runtime profile map, so an
+/// alias works without any seeded inference-profile catalog.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelAlias {
+    /// Client-facing model name to rewrite.
+    pub from: String,
+    /// Canonical resolved foundation/profile id the alias maps to.
+    pub to: String,
+}
+
 /// The top-level model-capability registry, deserialized from
 /// `config/models.toml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -141,6 +163,11 @@ pub struct ModelCapabilityConfig {
     /// The list of model entries (TOML `[[model]]` tables).
     #[serde(default, rename = "model")]
     pub models: Vec<ModelEntry>,
+
+    /// The list of model-id aliases (TOML `[[alias]]` tables). Consulted before
+    /// the runtime profile map during foundation resolution.
+    #[serde(default, rename = "alias")]
+    pub aliases: Vec<ModelAlias>,
 }
 
 /// Default for `context_1m_beta_header` when omitted from TOML.
@@ -155,6 +182,7 @@ impl Default for ModelCapabilityConfig {
         Self {
             context_1m_beta_header: default_context_1m_beta_header(),
             models: Vec::new(),
+            aliases: Vec::new(),
         }
     }
 }
@@ -458,5 +486,27 @@ mod tests {
             .entry_for_match("external.only-model")
             .expect("external file content must be loaded");
         assert!(entry.has_capability(Capability::AdaptiveThinking));
+    }
+
+    #[test]
+    fn test_aliases_and_responses_backend_and_regions_parse() {
+        let raw = "[[alias]]\nfrom = \"gpt-5.5\"\nto = \"openai.gpt-5.5\"\n\n[[alias]]\nfrom = \"gpt-5.4\"\nto = \"openai.gpt-5.4\"\n\n[[model]]\nmatch = \"openai.gpt-5.5\"\n[model.params]\nresponses_backend = \"mantle\"\navailable_regions = [\"us-east-2\"]\n";
+        let cfg =
+            ModelCapabilityConfig::from_toml_str(raw).expect("config with aliases must parse");
+
+        assert_eq!(cfg.aliases.len(), 2);
+        assert_eq!(cfg.aliases[0].from, "gpt-5.5");
+        assert_eq!(cfg.aliases[0].to, "openai.gpt-5.5");
+        assert_eq!(cfg.aliases[1].from, "gpt-5.4");
+        assert_eq!(cfg.aliases[1].to, "openai.gpt-5.4");
+
+        let entry = cfg
+            .entry_for_match("openai.gpt-5.5")
+            .expect("gpt-5.5 model entry must resolve");
+        assert_eq!(entry.params.responses_backend.as_deref(), Some("mantle"));
+        assert_eq!(
+            entry.params.available_regions.as_deref(),
+            Some(["us-east-2".to_string()].as_slice())
+        );
     }
 }

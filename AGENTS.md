@@ -84,13 +84,26 @@ src/
 │   │                           #   reasoning → structured reasoning output item (NOT <think>)
 │   ├── responses_stream.rs     # ResponsesStreamState + converse_stream_to_openai_responses wrapper;
 │   │                           #   full lifecycle events, monotonic sequence_number, NO [DONE] sentinel
-│   └── responses_provider.rs   # BedrockResponsesProvider implements ResponsesProvider — composes
-│                                #   responses_translate + reasoning + cache → converse/converse_stream
-│                                #   → responses_response/responses_stream mapping
+│   ├── responses_provider.rs   # BedrockResponsesProvider implements ResponsesProvider — composes
+│   │                           #   responses_translate + reasoning + cache → converse/converse_stream
+│   │                           #   → responses_response/responses_stream mapping
+│   ├── mantle_client.rs        # MantleClient: raw HTTP client for the bedrock-mantle OpenAI-compatible
+│   │                           #   upstream (bedrock-mantle.{region}.api.aws); byte-level SSE passthrough
+│   │                           #   via responses_nonstream / responses_stream; pre-stream errors mapped
+│   │                           #   to AppError; mid-stream errors truncate (no envelope after 200+headers)
+│   └── mantle_provider.rs      # MantleResponsesProvider implements ResponsesProvider for GPT-5.x models;
+│                                #   region gate → model rewrite (only "model" field patched) →
+│                                #   responds_raw_stream override (Some(raw)) for streaming verbatim
+│                                #   passthrough; respond for non-stream; respond_stream as typed fallback
 │
 └── server/
     ├── auth.rs          # Bearer-token middleware
     ├── state.rs         # AppState, build_app_state assembles all components
+    ├── composite.rs     # CompositeResponsesProvider: single Arc<dyn ResponsesProvider> that
+    │                    #   dispatches to Converse (BedrockResponsesProvider) or Mantle
+    │                    #   (MantleResponsesProvider) by caps.responses_backend(model);
+    │                    #   validate_mantle_startup: fail-fast if mantle model present but
+    │                    #   bedrock_api_key absent; soft WARN for region mismatches at boot
     ├── mod.rs           # serve(AppSettings) entrypoint, apply_layers (TraceLayer + CorsLayer)
     └── routers/
         └── mod.rs       # build_router: axum Router wiring all endpoints
@@ -128,6 +141,8 @@ This service is IO-bound (Bedrock proxy); actix-web offers no measurable through
 | `responses_provider.rs`  | `BedrockResponsesProvider` implements `ResponsesProvider`; composes the above three + cache injection                                        |
 
 The surface is **stateless**: `store` and `previous_response_id` are accepted and silently ignored (codex sends `store: false`). It reuses the same Converse call layer and the shared `compute_token_usage` helper from `src/bedrock/tokens.rs`. codex requires this surface (`wire_api = "responses"` only).
+
+**Composite dispatcher:** `AppState.responses` holds a single `Arc<dyn ResponsesProvider>` — in practice a `CompositeResponsesProvider` (`src/server/composite.rs`) that picks the right backend at request time by calling `caps.responses_backend(model)`. Models with `responses_backend = "mantle"` in `config/models.toml` go to `MantleResponsesProvider` (raw byte passthrough); all others go to `BedrockResponsesProvider` (Converse path). The composite overrides `respond_raw_stream` so the mantle streaming lane fires correctly; the Converse provider inherits the default (`None`), keeping its existing typed-stream path unchanged.
 
 **Tool support / rejection matrix:**
 
@@ -221,6 +236,48 @@ context_window = 200000
 For cross-region routing, add an entry to `config/regions.toml`. For a new embedding model, add to `config/embeddings.toml` with its `family` field.
 
 No recompile required for config-only changes when the binary reads config at startup from disk. (The Docker image embeds the config files; rebuild the image to pick up config changes in containerized deployments.)
+
+#### Model-ID aliases (`[[alias]]` table)
+
+To let clients use a short name that resolves to a canonical model ID before any capability or region lookup, add an entry to the `[[alias]]` table at the **top** of `config/models.toml` (before the first `[[model]]` entry — TOML positional constraint):
+
+```toml
+[[alias]]
+from = "short-name"      # what the client sends
+to   = "provider.full-id"  # the canonical id the gateway resolves it to
+```
+
+Alias resolution runs before the runtime inference-profile map, so it works even with no live Bedrock catalog. The current aliases are `gpt-5.4` → `openai.gpt-5.4` and `gpt-5.5` → `openai.gpt-5.5`.
+
+#### GPT-5.x via bedrock-mantle (`responses_backend = "mantle"`)
+
+Models served through AWS Bedrock's mantle OpenAI-compatible upstream use a different backend than the standard Converse path. Two extra `[model.params]` fields control this:
+
+| Field               | Type              | Meaning                                                                                           |
+| ------------------- | ----------------- | ------------------------------------------------------------------------------------------------- |
+| `responses_backend` | `"mantle"`        | Routes this model to `MantleResponsesProvider` instead of `BedrockResponsesProvider`              |
+| `available_regions` | array of strings  | Region allow-list; absent = available everywhere; non-empty = per-request 400 if region not listed |
+
+Example (from `config/models.toml`):
+
+```toml
+[[model]]
+match = "openai.gpt-5.5"
+capabilities = []
+[model.params]
+responses_backend = "mantle"
+available_regions = ["us-east-2"]
+```
+
+**Startup behavior:** if any model carries `responses_backend = "mantle"` and `bedrock_api_key` (env `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY`) is absent, the gateway **fails to start** (fail-fast). Region mismatches between the running instance's `AWS_REGION` and a model's `available_regions` emit a WARN at boot but don't hard-fail (the per-request gate returns 400 instead).
+
+**Mantle endpoint template:** the upstream URL is controlled by `MANTLE_BASE_URL_TEMPLATE` (default `https://bedrock-mantle.{region}.api.aws/openai/v1`). The literal `{region}` placeholder is replaced with the gateway's `AWS_REGION` at call time. Change this env var to point at a private or test mantle endpoint without recompiling.
+
+**Constraints for mantle models:**
+- `/responses` only — `/chat/completions` returns 400.
+- Raw SSE byte passthrough — the gateway forwards the mantle stream verbatim; no `[DONE]` sentinel is appended, and the stream terminates on mantle's own `response.completed` event.
+- Not listed in `GET /models` (the catalog comes from the Bedrock control plane, which does not include mantle models).
+- Auth reuses the same `bedrock_api_key` bearer (`AWS_BEARER_TOKEN_BEDROCK`) the gateway uses for Converse calls.
 
 ---
 
@@ -331,6 +388,7 @@ When you add a new translation path, add a golden fixture alongside the implemen
 | Responses `function_call_arguments.delta`  | N/A                                                 | Schema accepts `delta` / `done` for compatibility, but the state machine does not emit them; codex reconstructs calls from `response.output_item.done` |
 | Responses `namespace` / `custom` tools     | N/A                                                 | SUPPORTED — `custom` → one `toolSpec`; `namespace` is FLATTENED into one `toolSpec` per inner tool with `{ns}__{fn}` prefixed names (round-tripped unchanged) |
 | Responses hosted server tools              | N/A                                                 | SILENTLY DROPPED (`web_search` / `file_search` / `code_interpreter` / `tool_search` / `mcp` / `computer` / `image_generation` + any unknown type) — never a 400, so codex sessions bundling hosted tools survive; `ResponsesTool` has a `#[serde(other)] Unknown` catch-all |
+| GPT-5.x (`gpt-5.4` / `gpt-5.5`) models   | N/A                                                 | Served via AWS bedrock-mantle (`responses_backend = "mantle"`), **Responses API only** — `/chat/completions` returns 400. Byte-level raw SSE passthrough; no Converse translation. NOT listed in `GET /models`. Region-gated: `gpt-5.5` = `us-east-2` only; `gpt-5.4` = `us-east-2` + `us-west-2`. Clients use bare alias names (`gpt-5.4` / `gpt-5.5`); the `[[alias]]` table in `config/models.toml` rewrites them to `openai.gpt-5.4` / `openai.gpt-5.5` before dispatch. |
 
 ---
 
@@ -449,13 +507,26 @@ src/
 │   │                           #   推理 → 结构化 reasoning 输出项（非 <think>）
 │   ├── responses_stream.rs     # ResponsesStreamState + converse_stream_to_openai_responses 包装器；
 │   │                           #   完整生命周期事件，单调递增 sequence_number，无 [DONE] 哨兵
-│   └── responses_provider.rs   # BedrockResponsesProvider 实现 ResponsesProvider，组合
-│                                #   responses_translate + reasoning + cache → converse/converse_stream
-│                                #   → responses_response/responses_stream 映射
+│   ├── responses_provider.rs   # BedrockResponsesProvider 实现 ResponsesProvider，组合
+│   │                           #   responses_translate + reasoning + cache → converse/converse_stream
+│   │                           #   → responses_response/responses_stream 映射
+│   ├── mantle_client.rs        # MantleClient：bedrock-mantle OpenAI 兼容上游的原始 HTTP 客户端
+│   │                           #   （bedrock-mantle.{region}.api.aws）；字节级 SSE 透传，通过
+│   │                           #   responses_nonstream / responses_stream；流前错误映射为 AppError；
+│   │                           #   流中错误截断（200+headers 已发送后无法封装错误信封）
+│   └── mantle_provider.rs      # MantleResponsesProvider 实现 ResponsesProvider，处理 GPT-5.x 模型；
+│                                #   区域门控 → 模型名称改写（仅改写 "model" 字段）→
+│                                #   respond_raw_stream 覆盖（返回 Some(raw)）用于流式字节透传；
+│                                #   respond 用于非流式；respond_stream 为有类型兜底路径
 │
 └── server/
     ├── auth.rs          # Bearer token 中间件
     ├── state.rs         # AppState，build_app_state 组装所有组件
+    ├── composite.rs     # CompositeResponsesProvider：单个 Arc<dyn ResponsesProvider>，
+    │                    #   通过 caps.responses_backend(model) 在请求时分发至
+    │                    #   Converse（BedrockResponsesProvider）或 Mantle（MantleResponsesProvider）；
+    │                    #   validate_mantle_startup：若存在 mantle 模型但 bedrock_api_key 缺失则快速失败；
+    │                    #   区域不匹配时启动 WARN（不硬失败）
     ├── mod.rs           # serve(AppSettings) 入口，apply_layers（TraceLayer + CorsLayer）
     └── routers/
         └── mod.rs       # build_router：axum Router 配置所有端点
@@ -493,6 +564,8 @@ HTTP 框架选用 **axum**（tokio + tower + tower-http）。曾评估替换为 
 | `responses_provider.rs`  | `BedrockResponsesProvider` 实现 `ResponsesProvider`；组合以上三模块 + 缓存注入                                                     |
 
 该接口**无状态**：`store` 和 `previous_response_id` 接受但静默忽略（codex 发送 `store: false`）。它复用同一 Converse 调用层以及 `src/bedrock/tokens.rs` 中的共享 `compute_token_usage` helper。codex 仅支持此接口（`wire_api = "responses"`）。
+
+**复合调度器：** `AppState.responses` 持有一个 `Arc<dyn ResponsesProvider>` — 实际上是 `CompositeResponsesProvider`（`src/server/composite.rs`），它在请求时通过 `caps.responses_backend(model)` 选择后端。`config/models.toml` 中设置了 `responses_backend = "mantle"` 的模型走 `MantleResponsesProvider`（字节级透传）；其余模型走 `BedrockResponsesProvider`（Converse 路径）。Composite 覆盖了 `respond_raw_stream` 以确保 mantle 流式通道正确触发；Converse provider 继承默认实现（`None`），保持原有有类型流路径不变。
 
 **工具支持 / 拒绝矩阵：**
 
@@ -586,6 +659,48 @@ context_window = 200000
 跨区域路由在 `config/regions.toml` 中添加条目。新的 Embedding 模型在 `config/embeddings.toml` 中添加，并指定对应的 `family` 字段。
 
 对于从磁盘读取配置的部署方式，纯配置变更无需重新编译。容器化部署中配置文件已打包进镜像，需重新构建镜像才能生效。
+
+#### 模型 ID 别名（`[[alias]]` 表）
+
+要让客户端使用短名称，并在任何能力或区域查找之前解析为规范模型 ID，在 `config/models.toml` **顶部**（第一个 `[[model]]` 条目之前 — TOML 位置约束）添加 `[[alias]]` 条目：
+
+```toml
+[[alias]]
+from = "short-name"      # 客户端发送的名称
+to   = "provider.full-id"  # 网关解析为的规范 ID
+```
+
+别名解析先于运行时 inference-profile 映射，因此即使没有实时 Bedrock 目录也能生效。当前别名：`gpt-5.4` → `openai.gpt-5.4`，`gpt-5.5` → `openai.gpt-5.5`。
+
+#### GPT-5.x 通过 bedrock-mantle（`responses_backend = "mantle"`）
+
+通过 AWS Bedrock 的 mantle OpenAI 兼容上游提供服务的模型使用与标准 Converse 路径不同的后端。两个额外的 `[model.params]` 字段控制此行为：
+
+| 字段                | 类型              | 含义                                                                                           |
+| ------------------- | ----------------- | ---------------------------------------------------------------------------------------------- |
+| `responses_backend` | `"mantle"`        | 将该模型路由到 `MantleResponsesProvider` 而非 `BedrockResponsesProvider`                       |
+| `available_regions` | 字符串数组        | 区域允许列表；缺失 = 全区域可用；非空 = 请求区域不在列表时返回 400                            |
+
+示例（来自 `config/models.toml`）：
+
+```toml
+[[model]]
+match = "openai.gpt-5.5"
+capabilities = []
+[model.params]
+responses_backend = "mantle"
+available_regions = ["us-east-2"]
+```
+
+**启动行为：** 如果任何模型配置了 `responses_backend = "mantle"` 且 `bedrock_api_key`（环境变量 `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY`）未设置，网关**启动失败**（快速失败）。运行实例的 `AWS_REGION` 与模型 `available_regions` 不匹配时，启动时发出 WARN 但不硬失败（每请求门控返回 400）。
+
+**Mantle 端点模板：** 上游 URL 由 `MANTLE_BASE_URL_TEMPLATE` 控制（默认 `https://bedrock-mantle.{region}.api.aws/openai/v1`）。字面占位符 `{region}` 在调用时替换为网关的 `AWS_REGION`。修改此环境变量可指向私有或测试 mantle 端点，无需重新编译。
+
+**mantle 模型的限制：**
+- 仅支持 `/responses` — `/chat/completions` 返回 400。
+- 字节级原始 SSE 透传 — 网关原样转发 mantle 流；不追加 `[DONE]` 哨兵；流以 mantle 自身的 `response.completed` 事件结束。
+- 不在 `GET /models` 中列出（目录来自 Bedrock 控制面，不包含 mantle 模型）。
+- 鉴权复用网关用于 Converse 调用的同一 `bedrock_api_key` bearer（`AWS_BEARER_TOKEN_BEDROCK`）。
 
 ---
 
@@ -696,6 +811,7 @@ BEDROCK_INTEGRATION=1 AWS_PROFILE=us cargo test -- --ignored
 | Responses `function_call_arguments.delta`  | N/A                                          | 协议类型接受 `delta` / `done` 以兼容客户端，但状态机不主动发送；codex 通过 `response.output_item.done` 还原调用 |
 | Responses `namespace` / `custom` 工具      | N/A                                          | 支持 —— `custom` → 一个 `toolSpec`；`namespace` 扁平化为每个内部工具一个 `toolSpec`，名称加前缀 `{ns}__{fn}`（原样回传）          |
 | Responses 内置服务端工具                   | N/A                                          | 静默丢弃（`web_search` / `file_search` / `code_interpreter` / `tool_search` / `mcp` / `computer` / `image_generation` 及任何未知类型）—— 绝不返回 400，捆绑内置工具的 codex 会话得以存活；`ResponsesTool` 带 `#[serde(other)] Unknown` 兜底 |
+| GPT-5.x（`gpt-5.4` / `gpt-5.5`）模型      | N/A                                          | 通过 AWS bedrock-mantle 提供（`responses_backend = "mantle"`），**仅支持 Responses API** — `/chat/completions` 返回 400。字节级原始 SSE 透传，无 Converse 翻译。不在 `GET /models` 中列出。区域门控：`gpt-5.5` = `us-east-2`；`gpt-5.4` = `us-east-2` + `us-west-2`。客户端使用裸别名（`gpt-5.4` / `gpt-5.5`），`config/models.toml` 的 `[[alias]]` 表在分发前将其改写为 `openai.gpt-5.4` / `openai.gpt-5.5`。 |
 
 ---
 
