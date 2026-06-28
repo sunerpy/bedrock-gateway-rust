@@ -309,7 +309,7 @@ response = client.chat.completions.create(
 
 ### GPT-5.x (Responses API)
 
-GPT-5.x models are available on `/api/v1/responses` only — not `/chat/completions`, not listed in `GET /models`. Region-gated: `gpt-5.5` requires `us-east-2`; `gpt-5.4` accepts `us-east-2` or `us-west-2`. Requires `AWS_BEARER_TOKEN_BEDROCK` to be set.
+GPT-5.x models are available on `/api/v1/responses` only — not `/chat/completions`, listed in `GET /models` under the bare names `gpt-5.4` / `gpt-5.5` (and `GET /models/{id}` resolves them). Region-gated: `gpt-5.5` requires `us-east-2`; `gpt-5.4` accepts `us-east-2` or `us-west-2`. Requires `AWS_BEARER_TOKEN_BEDROCK` to be set.
 
 **Non-streaming:**
 
@@ -381,7 +381,7 @@ The authoritative list is `config/models.toml` and the live `GET /api/v1/models`
 - **Claude** — Sonnet 4.x, Haiku 4.x, Opus 4.x (via Bedrock model IDs and cross-region inference profiles)
 - **Amazon Nova** — multimodal and text models
 - **DeepSeek** — v3 (string-form reasoning path)
-- **GPT-5.x** — `gpt-5.4` and `gpt-5.5` on `/api/v1/responses` only, via the AWS Bedrock mantle upstream. Send the bare alias name; the gateway rewrites it to the canonical `openai.gpt-*` ID before dispatch. Not available on `/chat/completions`. Not listed in `GET /models`. Region-gated: `gpt-5.5` requires `us-east-2`; `gpt-5.4` requires `us-east-2` or `us-west-2`. Requires `AWS_BEARER_TOKEN_BEDROCK` to be set (startup fails otherwise).
+- **GPT-5.x** — `gpt-5.4` and `gpt-5.5` on `/api/v1/responses` only, via the AWS Bedrock mantle upstream. Send the bare alias name; the gateway rewrites it to the canonical `openai.gpt-*` ID before dispatch. Not available on `/chat/completions`. Listed in `GET /models` under the bare alias names `gpt-5.4` / `gpt-5.5`; `GET /models/{id}` resolves those names. Region-gated: `gpt-5.5` requires `us-east-2`; `gpt-5.4` requires `us-east-2` or `us-west-2`. Requires `AWS_BEARER_TOKEN_BEDROCK` to be set (startup fails otherwise).
 - Any Bedrock foundation model or inference profile accessible in your account — the catalog refreshes from the control plane at startup
 
 Adding a model requires only a `config/models.toml` entry and no recompile.

@@ -109,6 +109,11 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
     validate_mantle_startup(&caps_config, &settings)
         .map_err(|e| anyhow::anyhow!("mantle startup validation failed: {e}"))?;
 
+    // Mantle-backed models are absent from the control-plane catalog; surface
+    // their bare alias names so `/models` lists them. Computed before
+    // `caps_config` is moved.
+    let mantle_alias_names = caps_config.mantle_alias_names();
+
     let caps: Arc<dyn ModelCapabilities> = Arc::new(
         crate::bedrock::capabilities::ConfigModelCapabilities::with_profiles(
             caps_config,
@@ -116,7 +121,7 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
         ),
     );
 
-    let catalog = Arc::new(RwLock::new(catalog));
+    let catalog = Arc::new(RwLock::new(catalog.with_extra_models(mantle_alias_names)));
 
     let regions = Arc::new(RegionRoutingConfig::load_with_fallback(Some(
         &config_dir.join(REGIONS_CONFIG_FILE),
