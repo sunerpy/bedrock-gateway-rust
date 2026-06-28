@@ -276,7 +276,7 @@ available_regions = ["us-east-2"]
 **Constraints for mantle models:**
 - `/responses` only — `/chat/completions` returns 400.
 - Raw SSE byte passthrough — the gateway forwards the mantle stream verbatim; no `[DONE]` sentinel is appended, and the stream terminates on mantle's own `response.completed` event.
-- Not listed in `GET /models` (the catalog comes from the Bedrock control plane, which does not include mantle models).
+- Listed in `GET /models` under their bare alias names (`gpt-5.4` / `gpt-5.5`), injected from the `[[alias]]` config (the Bedrock control plane itself does not return mantle models, so the gateway surfaces them from config); `GET /models/{id}` resolves those names.
 - Auth reuses the same `bedrock_api_key` bearer (`AWS_BEARER_TOKEN_BEDROCK`) the gateway uses for Converse calls.
 
 ---
@@ -388,7 +388,7 @@ When you add a new translation path, add a golden fixture alongside the implemen
 | Responses `function_call_arguments.delta`  | N/A                                                 | Schema accepts `delta` / `done` for compatibility, but the state machine does not emit them; codex reconstructs calls from `response.output_item.done` |
 | Responses `namespace` / `custom` tools     | N/A                                                 | SUPPORTED — `custom` → one `toolSpec`; `namespace` is FLATTENED into one `toolSpec` per inner tool with `{ns}__{fn}` prefixed names (round-tripped unchanged) |
 | Responses hosted server tools              | N/A                                                 | SILENTLY DROPPED (`web_search` / `file_search` / `code_interpreter` / `tool_search` / `mcp` / `computer` / `image_generation` + any unknown type) — never a 400, so codex sessions bundling hosted tools survive; `ResponsesTool` has a `#[serde(other)] Unknown` catch-all |
-| GPT-5.x (`gpt-5.4` / `gpt-5.5`) models   | N/A                                                 | Served via AWS bedrock-mantle (`responses_backend = "mantle"`), **Responses API only** — `/chat/completions` returns 400. Byte-level raw SSE passthrough; no Converse translation. NOT listed in `GET /models`. Region-gated: `gpt-5.5` = `us-east-2` only; `gpt-5.4` = `us-east-2` + `us-west-2`. Clients use bare alias names (`gpt-5.4` / `gpt-5.5`); the `[[alias]]` table in `config/models.toml` rewrites them to `openai.gpt-5.4` / `openai.gpt-5.5` before dispatch. |
+| GPT-5.x (`gpt-5.4` / `gpt-5.5`) models   | N/A                                                 | Served via AWS bedrock-mantle (`responses_backend = "mantle"`), **Responses API only** — `/chat/completions` returns 400. Byte-level raw SSE passthrough; no Converse translation. Listed in `GET /models` by bare alias name (`gpt-5.4` / `gpt-5.5`), surfaced from config since the control plane omits mantle models. Region-gated: `gpt-5.5` = `us-east-2` only; `gpt-5.4` = `us-east-2` + `us-west-2`. Clients use bare alias names (`gpt-5.4` / `gpt-5.5`); the `[[alias]]` table in `config/models.toml` rewrites them to `openai.gpt-5.4` / `openai.gpt-5.5` before dispatch. |
 
 ---
 
@@ -699,7 +699,7 @@ available_regions = ["us-east-2"]
 **mantle 模型的限制：**
 - 仅支持 `/responses` — `/chat/completions` 返回 400。
 - 字节级原始 SSE 透传 — 网关原样转发 mantle 流；不追加 `[DONE]` 哨兵；流以 mantle 自身的 `response.completed` 事件结束。
-- 不在 `GET /models` 中列出（目录来自 Bedrock 控制面，不包含 mantle 模型）。
+- 在 `GET /models` 中以裸别名（`gpt-5.4` / `gpt-5.5`）列出，由 `[[alias]]` 配置注入（Bedrock 控制面本身不返回 mantle 模型，网关从配置补充）；`GET /models/{id}` 可解析这些名称。
 - 鉴权复用网关用于 Converse 调用的同一 `bedrock_api_key` bearer（`AWS_BEARER_TOKEN_BEDROCK`）。
 
 ---
@@ -811,7 +811,7 @@ BEDROCK_INTEGRATION=1 AWS_PROFILE=us cargo test -- --ignored
 | Responses `function_call_arguments.delta`  | N/A                                          | 协议类型接受 `delta` / `done` 以兼容客户端，但状态机不主动发送；codex 通过 `response.output_item.done` 还原调用 |
 | Responses `namespace` / `custom` 工具      | N/A                                          | 支持 —— `custom` → 一个 `toolSpec`；`namespace` 扁平化为每个内部工具一个 `toolSpec`，名称加前缀 `{ns}__{fn}`（原样回传）          |
 | Responses 内置服务端工具                   | N/A                                          | 静默丢弃（`web_search` / `file_search` / `code_interpreter` / `tool_search` / `mcp` / `computer` / `image_generation` 及任何未知类型）—— 绝不返回 400，捆绑内置工具的 codex 会话得以存活；`ResponsesTool` 带 `#[serde(other)] Unknown` 兜底 |
-| GPT-5.x（`gpt-5.4` / `gpt-5.5`）模型      | N/A                                          | 通过 AWS bedrock-mantle 提供（`responses_backend = "mantle"`），**仅支持 Responses API** — `/chat/completions` 返回 400。字节级原始 SSE 透传，无 Converse 翻译。不在 `GET /models` 中列出。区域门控：`gpt-5.5` = `us-east-2`；`gpt-5.4` = `us-east-2` + `us-west-2`。客户端使用裸别名（`gpt-5.4` / `gpt-5.5`），`config/models.toml` 的 `[[alias]]` 表在分发前将其改写为 `openai.gpt-5.4` / `openai.gpt-5.5`。 |
+| GPT-5.x（`gpt-5.4` / `gpt-5.5`）模型      | N/A                                          | 通过 AWS bedrock-mantle 提供（`responses_backend = "mantle"`），**仅支持 Responses API** — `/chat/completions` 返回 400。字节级原始 SSE 透传，无 Converse 翻译。在 `GET /models` 中以裸别名（`gpt-5.4` / `gpt-5.5`）列出，因控制面不含 mantle 模型，由配置补充。区域门控：`gpt-5.5` = `us-east-2`；`gpt-5.4` = `us-east-2` + `us-west-2`。客户端使用裸别名（`gpt-5.4` / `gpt-5.5`），`config/models.toml` 的 `[[alias]]` 表在分发前将其改写为 `openai.gpt-5.4` / `openai.gpt-5.5`。 |
 
 ---
 

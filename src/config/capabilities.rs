@@ -272,6 +272,29 @@ impl ModelCapabilityConfig {
             .iter()
             .find(|e| e.match_pattern == match_pattern)
     }
+
+    /// The client-facing alias names whose canonical id is served by the mantle
+    /// backend.
+    ///
+    /// For each `[[alias]]`, resolve its `to` (canonical id) against the model
+    /// entries: if any entry whose `match` is a substring of the canonical id
+    /// declares `responses_backend = "mantle"`, surface the alias `from`. These
+    /// mantle models are absent from the Bedrock control-plane catalog, so the
+    /// `/models` listing injects these bare alias names. Derived purely from
+    /// config — no model-name string literals.
+    pub fn mantle_alias_names(&self) -> Vec<String> {
+        const MANTLE_BACKEND: &str = "mantle";
+        self.aliases
+            .iter()
+            .filter(|alias| {
+                self.models.iter().any(|entry| {
+                    alias.to.contains(&entry.match_pattern)
+                        && entry.params.responses_backend.as_deref() == Some(MANTLE_BACKEND)
+                })
+            })
+            .map(|alias| alias.from.clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -508,5 +531,27 @@ mod tests {
             entry.params.available_regions.as_deref(),
             Some(["us-east-2".to_string()].as_slice())
         );
+    }
+
+    #[test]
+    fn test_mantle_alias_names_derived_from_config() {
+        // Two gpt aliases whose `to` resolves to mantle model entries → both
+        // bare alias names are surfaced. A non-mantle alias is NOT surfaced.
+        let raw = "[[alias]]\nfrom = \"gpt-5.5\"\nto = \"openai.gpt-5.5\"\n\n[[alias]]\nfrom = \"gpt-5.4\"\nto = \"openai.gpt-5.4\"\n\n[[alias]]\nfrom = \"sonnet\"\nto = \"anthropic.claude-sonnet-4-5\"\n\n[[model]]\nmatch = \"openai.gpt-5.5\"\n[model.params]\nresponses_backend = \"mantle\"\n\n[[model]]\nmatch = \"openai.gpt-5.4\"\n[model.params]\nresponses_backend = \"mantle\"\n\n[[model]]\nmatch = \"anthropic.claude-sonnet-4-5\"\n";
+        let cfg = ModelCapabilityConfig::from_toml_str(raw).expect("config must parse");
+
+        let names: HashSet<String> = cfg.mantle_alias_names().into_iter().collect();
+        let expected: HashSet<String> = ["gpt-5.4".to_string(), "gpt-5.5".to_string()]
+            .into_iter()
+            .collect();
+        assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn test_mantle_alias_names_empty_without_mantle_entries() {
+        // Aliases that do not resolve to any mantle-backed entry surface nothing.
+        let raw = "[[alias]]\nfrom = \"sonnet\"\nto = \"anthropic.claude-sonnet-4-5\"\n\n[[model]]\nmatch = \"anthropic.claude-sonnet-4-5\"\n";
+        let cfg = ModelCapabilityConfig::from_toml_str(raw).expect("config must parse");
+        assert!(cfg.mantle_alias_names().is_empty());
     }
 }

@@ -303,7 +303,7 @@ response = client.chat.completions.create(
 
 ### GPT-5.x（Responses API）
 
-GPT-5.x 模型仅支持 `/api/v1/responses`，不支持 `/chat/completions`，不在 `GET /models` 中列出。区域门控：`gpt-5.5` 仅限 `us-east-2`；`gpt-5.4` 支持 `us-east-2` 或 `us-west-2`。需要设置 `AWS_BEARER_TOKEN_BEDROCK`。
+GPT-5.x 模型仅支持 `/api/v1/responses`，不支持 `/chat/completions`，在 `GET /models` 中以裸别名 `gpt-5.4` / `gpt-5.5` 列出（`GET /models/{id}` 亦可解析）。区域门控：`gpt-5.5` 仅限 `us-east-2`；`gpt-5.4` 支持 `us-east-2` 或 `us-west-2`。需要设置 `AWS_BEARER_TOKEN_BEDROCK`。
 
 **非流式：**
 
@@ -375,7 +375,7 @@ src/
 - **Claude** — Sonnet 4.x、Haiku 4.x、Opus 4.x 系列（通过 Bedrock 模型 ID 和跨区域 inference profile）
 - **Amazon Nova** — 多模态和文本模型
 - **DeepSeek** — v3（字符串形式推理路径）
-- **GPT-5.x** — `gpt-5.4` 和 `gpt-5.5`，仅支持 `/api/v1/responses`，通过 AWS Bedrock mantle 上游提供。客户端发送裸别名，网关在分发前改写为规范 `openai.gpt-*` ID。不支持 `/chat/completions`。不在 `GET /models` 中列出。区域门控：`gpt-5.5` 仅限 `us-east-2`；`gpt-5.4` 支持 `us-east-2` 或 `us-west-2`。需要设置 `AWS_BEARER_TOKEN_BEDROCK`（否则启动失败）。
+- **GPT-5.x** — `gpt-5.4` 和 `gpt-5.5`，仅支持 `/api/v1/responses`，通过 AWS Bedrock mantle 上游提供。客户端发送裸别名，网关在分发前改写为规范 `openai.gpt-*` ID。不支持 `/chat/completions`。在 `GET /models` 中以裸别名 `gpt-5.4` / `gpt-5.5` 列出；`GET /models/{id}` 可解析这些名称。区域门控：`gpt-5.5` 仅限 `us-east-2`；`gpt-5.4` 支持 `us-east-2` 或 `us-west-2`。需要设置 `AWS_BEARER_TOKEN_BEDROCK`（否则启动失败）。
 - 账户中可访问的任何 Bedrock 基础模型或 inference profile — 模型目录在启动时从控制面刷新
 
 添加新模型只需一条 `config/models.toml` 条目，无需重新编译。

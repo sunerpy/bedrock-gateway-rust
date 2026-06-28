@@ -95,6 +95,7 @@ pub struct ModelInfo {
 pub struct ModelCatalog {
     models: HashMap<String, ModelInfo>,
     profile_metadata: HashMap<String, String>,
+    extra_model_ids: Vec<String>,
 }
 
 impl ModelCatalog {
@@ -182,20 +183,35 @@ impl ModelCatalog {
         &self.profile_metadata
     }
 
+    /// Attach display-only model ids (e.g. mantle-backed GPT aliases) that are
+    /// absent from the Bedrock control-plane catalog. They surface in `list()`
+    /// and `get()` but are NOT added to `models` or `profile_metadata`, so
+    /// capability resolution and routing are unaffected.
+    pub fn with_extra_models(mut self, ids: Vec<String>) -> Self {
+        self.extra_model_ids = ids;
+        self
+    }
+
     /// Lookup a single model in OpenAI `Model` shape, if present.
     pub fn get(&self, id: &str) -> Option<Model> {
-        self.models.get(id).map(|_| make_model(id))
+        if self.models.contains_key(id) || self.extra_model_ids.iter().any(|e| e == id) {
+            Some(make_model(id))
+        } else {
+            None
+        }
     }
 
     /// Render the catalog as the OpenAI `Models` list (sorted by id for stable
     /// output). Every entry uses `object="model"`, `owned_by="bedrock"` and a
     /// fixed `created` epoch (parity with the Python `Model` defaults).
     pub fn list(&self) -> Models {
-        let mut ids: Vec<&String> = self.models.keys().collect();
-        ids.sort();
+        let mut ids: Vec<&str> = self.models.keys().map(String::as_str).collect();
+        ids.extend(self.extra_model_ids.iter().map(String::as_str));
+        ids.sort_unstable();
+        ids.dedup();
         Models {
             object: "list".to_string(),
-            data: ids.into_iter().map(|id| make_model(id)).collect(),
+            data: ids.into_iter().map(make_model).collect(),
         }
     }
 }
@@ -390,6 +406,7 @@ pub fn assemble_catalog(
     ModelCatalog {
         models,
         profile_metadata,
+        extra_model_ids: Vec::new(),
     }
 }
 
@@ -799,6 +816,67 @@ mod tests {
         assert_eq!(got.owned_by, "bedrock");
 
         assert!(catalog.get("nope.absent-v1:0").is_none());
+    }
+
+    #[test]
+    fn extra_model_ids_listed_merged_sorted_deduped() {
+        let s = settings("fallback.model-v1:0");
+        let models = [
+            fm(
+                "vendor.zeta-v1:0",
+                &["TEXT"],
+                &["ON_DEMAND"],
+                true,
+                "ACTIVE",
+            ),
+            fm(
+                "vendor.alpha-v1:0",
+                &["TEXT"],
+                &["ON_DEMAND"],
+                true,
+                "ACTIVE",
+            ),
+        ];
+        let catalog = assemble_catalog(&models, &[], &s).with_extra_models(vec![
+            "gpt-5.5".to_string(),
+            "gpt-5.4".to_string(),
+            "vendor.zeta-v1:0".to_string(),
+        ]);
+        let listed = catalog.list();
+
+        let ids: Vec<String> = listed.data.iter().map(|m| m.id.clone()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "gpt-5.4".to_string(),
+                "gpt-5.5".to_string(),
+                "vendor.alpha-v1:0".to_string(),
+                "vendor.zeta-v1:0".to_string(),
+            ]
+        );
+        assert_eq!(listed.data[0].object, "model");
+        assert_eq!(listed.data[0].owned_by, "bedrock");
+    }
+
+    #[test]
+    fn get_resolves_extra_model_ids() {
+        let s = settings("fallback.model-v1:0");
+        let models = [fm(
+            "vendor.base-v1:0",
+            &["TEXT"],
+            &["ON_DEMAND"],
+            true,
+            "ACTIVE",
+        )];
+        let catalog =
+            assemble_catalog(&models, &[], &s).with_extra_models(vec!["gpt-5.5".to_string()]);
+
+        let got = catalog.get("gpt-5.5").expect("extra model present");
+        assert_eq!(got.id, "gpt-5.5");
+        assert_eq!(got.object, "model");
+        assert!(catalog.get("vendor.base-v1:0").is_some());
+        assert!(catalog.get("nope.absent-v1:0").is_none());
+        assert!(!catalog.profile_metadata().contains_key("gpt-5.5"));
     }
 
     #[test]
