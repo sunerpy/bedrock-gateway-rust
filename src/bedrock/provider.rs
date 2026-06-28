@@ -385,7 +385,9 @@ pub(crate) fn build_sdk_tool_config(tc: &Value) -> Result<ToolConfiguration, App
             .name(name)
             .input_schema(ToolInputSchema::Json(json_to_document(&schema_json)));
         if let Some(desc) = spec_obj.get("description").and_then(Value::as_str) {
-            builder = builder.description(desc);
+            if !desc.trim().is_empty() {
+                builder = builder.description(desc);
+            }
         }
         let tool_spec = builder
             .build()
@@ -1198,6 +1200,79 @@ mod tests {
         match &sdk.tools()[1] {
             Tool::CachePoint(_) => {}
             other => panic!("expected cachePoint at [1], got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_sdk_tool_config_empty_description_omitted() {
+        let tc = json!({
+            "tools": [
+                { "toolSpec": {
+                    "name": "tool_with_empty_desc",
+                    "description": "",
+                    "inputSchema": { "json": { "type": "object", "properties": {} } }
+                }},
+                { "toolSpec": {
+                    "name": "tool_with_real_desc",
+                    "description": "A real description",
+                    "inputSchema": { "json": { "type": "object", "properties": {} } }
+                }},
+                { "toolSpec": {
+                    "name": "tool_with_whitespace_desc",
+                    "description": "   ",
+                    "inputSchema": { "json": { "type": "object", "properties": {} } }
+                }},
+                { "toolSpec": {
+                    "name": "tool_no_desc",
+                    "inputSchema": { "json": { "type": "object", "properties": {} } }
+                }}
+            ]
+        });
+        let sdk = build_sdk_tool_config(&tc).expect("tool config");
+        assert_eq!(sdk.tools().len(), 4);
+
+        // Tool 1: empty description should be omitted (None)
+        match &sdk.tools()[0] {
+            Tool::ToolSpec(spec) => {
+                assert_eq!(spec.name(), "tool_with_empty_desc");
+                assert_eq!(
+                    spec.description(),
+                    None,
+                    "empty description must be None, not Some(\"\")"
+                );
+            }
+            other => panic!("expected toolSpec at [0], got {other:?}"),
+        }
+
+        // Tool 2: real description must be preserved
+        match &sdk.tools()[1] {
+            Tool::ToolSpec(spec) => {
+                assert_eq!(spec.name(), "tool_with_real_desc");
+                assert_eq!(spec.description(), Some("A real description"));
+            }
+            other => panic!("expected toolSpec at [1], got {other:?}"),
+        }
+
+        // Tool 3: whitespace-only description should be omitted (None)
+        match &sdk.tools()[2] {
+            Tool::ToolSpec(spec) => {
+                assert_eq!(spec.name(), "tool_with_whitespace_desc");
+                assert_eq!(
+                    spec.description(),
+                    None,
+                    "whitespace-only description must be None"
+                );
+            }
+            other => panic!("expected toolSpec at [2], got {other:?}"),
+        }
+
+        // Tool 4: no description key should remain None
+        match &sdk.tools()[3] {
+            Tool::ToolSpec(spec) => {
+                assert_eq!(spec.name(), "tool_no_desc");
+                assert_eq!(spec.description(), None);
+            }
+            other => panic!("expected toolSpec at [3], got {other:?}"),
         }
     }
 
