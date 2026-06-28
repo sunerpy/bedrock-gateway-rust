@@ -150,6 +150,12 @@ pub struct ResponsesStreamState {
     request_id: Arc<str>,
     /// Handler-entry instant, used to compute end-to-end `duration_ms`.
     start: Instant,
+
+    /// Content-free per-event-type counts, accumulated as lifecycle events are
+    /// emitted. Logged once at debug level on `finish()` so operators can see
+    /// the emitted event-type shape (e.g. whether any `output_text.delta` were
+    /// produced) without ever logging payload content. Ordered by first emit.
+    event_type_counts: Vec<(String, u64)>,
 }
 
 impl ResponsesStreamState {
@@ -193,6 +199,20 @@ impl ResponsesStreamState {
             finalized: false,
             request_id,
             start,
+            event_type_counts: Vec::new(),
+        }
+    }
+
+    /// Tally each emitted event by its content-free wire type tag, preserving
+    /// first-emit order. Counts only; no payload is inspected or stored.
+    fn tally(&mut self, events: &[ResponseStreamEvent]) {
+        for ev in events {
+            let ty = ev.event_type();
+            if let Some(entry) = self.event_type_counts.iter_mut().find(|(k, _)| k == ty) {
+                entry.1 += 1;
+            } else {
+                self.event_type_counts.push((ty.to_string(), 1));
+            }
         }
     }
 
@@ -324,6 +344,7 @@ impl ResponsesStreamState {
             _ => {}
         }
 
+        self.tally(&out);
         out
     }
 
@@ -599,6 +620,20 @@ impl ResponsesStreamState {
             response,
             sequence_number: seq,
         });
+        self.tally(&out);
+        let event_types = self
+            .event_type_counts
+            .iter()
+            .map(|(k, n)| format!("{k}={n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let total_events: u64 = self.event_type_counts.iter().map(|(_, n)| n).sum();
+        tracing::debug!(
+            request_id = %self.request_id,
+            total_events,
+            event_types = %event_types,
+            "responses streaming event-type summary"
+        );
         out
     }
 
