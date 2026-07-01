@@ -636,6 +636,9 @@ impl BedrockChatProvider {
             tool_config,
         };
         let mut args = to_converse_args(&chat, caps, self.image_resolver.as_ref(), &extras).await?;
+        if args.tool_config.is_none() {
+            args.tool_config = tools::synthesize_tool_config_from_messages(&args.messages);
+        }
 
         // --- 5. Apply reasoning side-signals to inferenceConfig --------------
         if let Value::Object(cfg) = &mut args.inference_config {
@@ -966,7 +969,232 @@ fn req_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::time::Instant;
+
+    use crate::bedrock::client::build_aws_config;
+    use crate::bedrock::translate::ReqwestImageResolver;
+    use crate::domain::{BudgetRatios, Capability, ReasoningPath, ResponsesBackend};
+    use crate::openai::schema::{
+        Function, Message as OpenAiMessage, ResponseFunction, Tool as OpenAiTool, ToolCall,
+        ToolChoice as OpenAiToolChoice, ToolContentInput,
+    };
     use serde_json::json;
+
+    #[derive(Debug)]
+    struct StubCaps;
+
+    impl ModelCapabilities for StubCaps {
+        fn has(&self, _model: &str, _cap: Capability) -> bool {
+            false
+        }
+
+        fn resolve_foundation(&self, model_or_profile: &str) -> String {
+            model_or_profile.to_string()
+        }
+
+        fn budget_ratios(&self, _model: &str) -> Option<BudgetRatios> {
+            None
+        }
+
+        fn min_budget_tokens(&self, _model: &str) -> Option<u32> {
+            None
+        }
+
+        fn max_cache_tokens(&self, _model: &str) -> Option<u32> {
+            None
+        }
+
+        fn cache_min_tokens(&self, _model: &str) -> Option<u32> {
+            None
+        }
+
+        fn max_cache_checkpoints(&self, _model: &str) -> Option<u32> {
+            None
+        }
+
+        fn beta_headers(&self, _model: &str) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn reasoning_path(&self, _model: &str) -> ReasoningPath {
+            ReasoningPath::None
+        }
+
+        fn responses_backend(&self, _model: &str) -> ResponsesBackend {
+            ResponsesBackend::Converse
+        }
+
+        fn model_regions(&self, _model: &str) -> Option<Vec<String>> {
+            None
+        }
+    }
+
+    fn test_settings() -> AppSettings {
+        AppSettings {
+            api_route_prefix: "/api/v1".to_string(),
+            debug: false,
+            aws_region: "us-east-1".to_string(),
+            default_model: "anthropic.claude-3-5-sonnet-20241022-v2:0".to_string(),
+            default_embedding_model: "cohere.embed-multilingual-v3".to_string(),
+            enable_cross_region_inference: true,
+            enable_application_inference_profiles: true,
+            enable_prompt_caching: true,
+            api_key: None,
+            api_key_secret_arn: None,
+            api_key_param_name: None,
+            bedrock_api_key: None,
+            bind_addr: "0.0.0.0".to_string(),
+            port: 8080,
+            log_level: "info".to_string(),
+            aws_connect_timeout_secs: 60,
+            aws_read_timeout_secs: 900,
+            aws_max_retry_attempts: 8,
+            mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
+                .to_string(),
+        }
+    }
+
+    async fn test_provider() -> BedrockChatProvider {
+        let settings = Arc::new(test_settings());
+        let sdk_config = build_aws_config(&settings).await;
+        BedrockChatProvider::new(
+            BedrockClients::new(&sdk_config),
+            Arc::new(StubCaps),
+            Arc::new(RegionRoutingConfig::default()),
+            Arc::new(ReqwestImageResolver::new(|_| false)),
+            settings,
+            Arc::new(CacheSupportRegistry::new()),
+        )
+    }
+
+    fn base_chat_request(
+        messages: Vec<OpenAiMessage>,
+        tools: Option<Vec<OpenAiTool>>,
+    ) -> ChatRequest {
+        ChatRequest {
+            messages,
+            model: "anthropic.claude-3-5-sonnet-20241022-v2:0".to_string(),
+            frequency_penalty: None,
+            presence_penalty: None,
+            stream: None,
+            stream_options: None,
+            temperature: None,
+            top_p: None,
+            user: None,
+            max_tokens: Some(2048),
+            max_completion_tokens: None,
+            reasoning_effort: None,
+            n: None,
+            tools,
+            tool_choice: OpenAiToolChoice::default(),
+            stop: None,
+            extra_body: None,
+            extra: HashMap::new(),
+        }
+    }
+
+    fn normalized_chat_request(request: ChatRequest) -> NormalizedChatRequest {
+        let resolved_model = request.model.clone();
+        NormalizedChatRequest {
+            request,
+            resolved_model,
+            request_id: Arc::<str>::from("req-test-toolconfig"),
+            received_at: Instant::now(),
+        }
+    }
+
+    fn assistant_tool_call(name: &str) -> OpenAiMessage {
+        OpenAiMessage::Assistant {
+            name: None,
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                index: Some(0),
+                id: Some("call_weather".to_string()),
+                r#type: "function".to_string(),
+                function: ResponseFunction {
+                    name: Some(name.to_string()),
+                    arguments: r#"{"city":"Paris"}"#.to_string(),
+                },
+            }]),
+        }
+    }
+
+    fn tool_result_message() -> OpenAiMessage {
+        OpenAiMessage::Tool {
+            content: ToolContentInput::Text("sunny".to_string()),
+            tool_call_id: "call_weather".to_string(),
+        }
+    }
+
+    fn function_tool(name: &str, description: &str) -> OpenAiTool {
+        OpenAiTool {
+            r#type: "function".to_string(),
+            function: Function {
+                name: name.to_string(),
+                description: Some(description.to_string()),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "city": { "type": "string" }
+                    },
+                    "required": ["city"]
+                }),
+            },
+        }
+    }
+
+    fn first_tool_spec(tool_config: &Value) -> Option<&Value> {
+        tool_config
+            .get("tools")
+            .and_then(Value::as_array)
+            .and_then(|tools| tools.first())
+            .and_then(|tool| tool.get("toolSpec"))
+    }
+
+    fn first_tool_name(tool_config: &Value) -> Option<&str> {
+        first_tool_spec(tool_config)
+            .and_then(|spec| spec.get("name"))
+            .and_then(Value::as_str)
+    }
+
+    fn first_tool_description(tool_config: &Value) -> Option<&str> {
+        first_tool_spec(tool_config)
+            .and_then(|spec| spec.get("description"))
+            .and_then(Value::as_str)
+    }
+
+    #[tokio::test]
+    async fn chat_assemble_synthesizes_toolconfig_for_continuation() {
+        let provider = test_provider().await;
+        let req = normalized_chat_request(base_chat_request(
+            vec![assistant_tool_call("get_weather"), tool_result_message()],
+            None,
+        ));
+
+        let (args, _) = provider.assemble(&req, false).await.expect("assemble");
+        let tool_config = args.tool_config.as_ref().expect("toolConfig");
+
+        assert_eq!(first_tool_name(tool_config), Some("get_weather"));
+    }
+
+    #[tokio::test]
+    async fn chat_assemble_real_tools_unchanged() {
+        let provider = test_provider().await;
+        let req = normalized_chat_request(base_chat_request(
+            vec![assistant_tool_call("get_weather"), tool_result_message()],
+            Some(vec![function_tool("get_weather", "Real weather tool")]),
+        ));
+
+        let (args, _) = provider.assemble(&req, false).await.expect("assemble");
+        let tool_config = args.tool_config.as_ref().expect("toolConfig");
+
+        assert_eq!(first_tool_name(tool_config), Some("get_weather"));
+        assert_eq!(
+            first_tool_description(tool_config),
+            Some("Real weather tool")
+        );
+    }
 
     // ----- json_to_document / document_to_json round trips -------------------
 

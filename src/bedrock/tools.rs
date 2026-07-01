@@ -255,6 +255,55 @@ pub fn messages_contain_tool_content(messages: &[Value]) -> bool {
     false
 }
 
+#[must_use]
+pub(crate) fn synthesize_tool_config_from_messages(messages: &Value) -> Option<Value> {
+    let Value::Array(turns) = messages else {
+        return None;
+    };
+
+    let mut names: Vec<&str> = Vec::new();
+    for turn in turns {
+        let Some(content) = turn.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for block in content {
+            let Some(name) = block
+                .get("toolUse")
+                .and_then(|tool_use| tool_use.get("name"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+
+    if names.is_empty() {
+        return None;
+    }
+
+    let tools: Vec<Value> = names
+        .into_iter()
+        .map(|name| {
+            json!({
+                "toolSpec": {
+                    "name": name,
+                    "description": "(tool definition omitted on continuation turn)",
+                    "inputSchema": {
+                        "json": {
+                            "type": "object"
+                        }
+                    },
+                }
+            })
+        })
+        .collect();
+
+    Some(json!({ "tools": tools }))
+}
+
 /// Normalize `toolResult` turns to avoid Bedrock count mismatches.
 ///
 /// Ports `_normalize_tool_result_turns` (bedrock.py:1038-1104). For a `user`
@@ -657,6 +706,59 @@ mod tests {
     fn no_tool_content_for_plain_text() {
         let msgs = vec![json!({ "role": "user", "content": [{ "text": "hi" }] })];
         assert!(!messages_contain_tool_content(&msgs));
+    }
+
+    // ----- synthesize toolConfig from replayed toolUse -------------------------
+
+    #[test]
+    fn synthesize_tool_config_from_messages_builds_specs() {
+        let messages = json!([
+            {
+                "role": "assistant",
+                "content": [
+                    { "toolUse": { "toolUseId": "call_1", "name": "get_weather", "input": {} } },
+                    { "toolUse": { "toolUseId": "call_2", "name": "lookup_user", "input": {} } }
+                ]
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    { "toolUse": { "toolUseId": "call_3", "name": "get_weather", "input": {} } }
+                ]
+            }
+        ]);
+
+        let config = synthesize_tool_config_from_messages(&messages).expect("toolConfig");
+        let tools = config["tools"].as_array().expect("tools array");
+
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0]["toolSpec"]["name"], "get_weather");
+        assert_eq!(tools[1]["toolSpec"]["name"], "lookup_user");
+        for tool in tools {
+            let spec = &tool["toolSpec"];
+            assert!(!spec["description"].as_str().unwrap_or_default().is_empty());
+            assert_eq!(spec["inputSchema"]["json"]["type"], "object");
+        }
+    }
+
+    #[test]
+    fn synthesize_tool_config_none_without_tooluse() {
+        let messages = json!([
+            { "role": "user", "content": [{ "text": "hi" }] },
+            {
+                "role": "user",
+                "content": [
+                    { "toolResult": { "toolUseId": "call_1", "content": [{ "text": "ok" }] } }
+                ]
+            }
+        ]);
+
+        assert!(synthesize_tool_config_from_messages(&messages).is_none());
+    }
+
+    #[test]
+    fn synthesize_tool_config_none_for_non_array_messages() {
+        assert!(synthesize_tool_config_from_messages(&json!({})).is_none());
     }
 
     // ----- normalize_tool_result_turns --------------------------------------
