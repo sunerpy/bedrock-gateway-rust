@@ -154,7 +154,11 @@ pub async fn chat_completions(
                 Ok(sse_response(chat_stream))
             }
             Err(e) => {
-                tracing::warn!(request_id = %request_id, model = %client_model, error = %e, "chat request failed");
+                if e.is_server_error() {
+                    tracing::error!(request_id = %request_id, model = %client_model, error = %e, "chat request failed");
+                } else {
+                    tracing::warn!(request_id = %request_id, model = %client_model, error = %e, "chat request failed");
+                }
                 Err(e)
             }
         }
@@ -190,7 +194,11 @@ pub async fn chat_completions(
                 Ok(Json(response).into_response())
             }
             Err(e) => {
-                tracing::warn!(request_id = %request_id, model = %client_model, error = %e, "chat request failed");
+                if e.is_server_error() {
+                    tracing::error!(request_id = %request_id, model = %client_model, error = %e, "chat request failed");
+                } else {
+                    tracing::warn!(request_id = %request_id, model = %client_model, error = %e, "chat request failed");
+                }
                 Err(e)
             }
         }
@@ -319,7 +327,11 @@ pub async fn responses(
                 ))
             }
             Err(e) => {
-                tracing::warn!(request_id = %request_id, model = %client_model, error = %e, "responses request failed");
+                if e.is_server_error() {
+                    tracing::error!(request_id = %request_id, model = %client_model, error = %e, "responses request failed");
+                } else {
+                    tracing::warn!(request_id = %request_id, model = %client_model, error = %e, "responses request failed");
+                }
                 Err(e)
             }
         }
@@ -351,7 +363,11 @@ pub async fn responses(
                 ))
             }
             Err(e) => {
-                tracing::warn!(request_id = %request_id, model = %client_model, error = %e, "responses request failed");
+                if e.is_server_error() {
+                    tracing::error!(request_id = %request_id, model = %client_model, error = %e, "responses request failed");
+                } else {
+                    tracing::warn!(request_id = %request_id, model = %client_model, error = %e, "responses request failed");
+                }
                 Err(e)
             }
         }
@@ -459,7 +475,11 @@ pub async fn embeddings(
             Ok(Json(response).into_response())
         }
         Err(e) => {
-            tracing::warn!(model = %request.model, error = %e, "embeddings request failed");
+            if e.is_server_error() {
+                tracing::error!(model = %request.model, error = %e, "embeddings request failed");
+            } else {
+                tracing::warn!(model = %request.model, error = %e, "embeddings request failed");
+            }
             Err(e)
         }
     }

@@ -66,6 +66,12 @@ pub enum AppError {
 }
 
 impl AppError {
+    /// Returns `true` if this error is a 5xx server fault (502 or 500).
+    /// Used for level-aware logging: server errors → `error`, client errors → `warn`.
+    pub fn is_server_error(&self) -> bool {
+        self.status().is_server_error()
+    }
+
     /// Returns the HTTP status code for this error.
     fn status(&self) -> StatusCode {
         match self {
@@ -416,5 +422,19 @@ mod tests {
     fn responses_unknown_maps_to_server_error() {
         let (code, _) = responses_error(&AppError::Internal("boom".to_string()));
         assert_eq!(code, "server_error");
+    }
+
+    /// Server errors (5xx) are correctly classified as true; client errors (4xx) as false.
+    #[test]
+    fn app_error_is_server_error_classification() {
+        // 5xx faults → true
+        assert!(AppError::UpstreamBedrock("x".into()).is_server_error());
+        assert!(AppError::Internal("x".into()).is_server_error());
+
+        // 4xx client errors → false
+        assert!(!AppError::BadRequest("x".into()).is_server_error());
+        assert!(!AppError::Unsupported("x".into()).is_server_error());
+        assert!(!AppError::Throttled("x".into()).is_server_error());
+        assert!(!AppError::Unauthorized.is_server_error());
     }
 }
