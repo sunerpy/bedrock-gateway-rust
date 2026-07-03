@@ -196,6 +196,10 @@ fn build_tool_use_block(tu: &Value) -> Result<ToolUseBlock, AppError> {
         .map_err(|e| AppError::Internal(format!("invalid toolUse block: {e}")))
 }
 
+fn empty_object_tool_result_content_block() -> ToolResultContentBlock {
+    ToolResultContentBlock::Json(json_to_document(&serde_json::json!({})))
+}
+
 /// Build an SDK `ToolResultBlock` from a translate `toolResult` JSON object.
 ///
 /// The translate/tools layers always emit `content` as a list of `{"text":...}`
@@ -210,11 +214,18 @@ fn build_tool_result_block(tr: &Value) -> Result<ToolResultBlock, AppError> {
     if let Some(blocks) = obj.get("content").and_then(Value::as_array) {
         for block in blocks {
             if let Some(text) = block.get("text").and_then(Value::as_str) {
-                content.push(ToolResultContentBlock::Text(text.to_string()));
+                if text.is_empty() {
+                    content.push(empty_object_tool_result_content_block());
+                } else {
+                    content.push(ToolResultContentBlock::Text(text.to_string()));
+                }
             } else {
                 content.push(ToolResultContentBlock::Json(json_to_document(block)));
             }
         }
+    }
+    if content.is_empty() {
+        content.push(empty_object_tool_result_content_block());
     }
     ToolResultBlock::builder()
         .tool_use_id(id)
@@ -230,6 +241,11 @@ fn build_content_block(block: &Value) -> Result<ContentBlock, AppError> {
         .as_object()
         .ok_or_else(|| AppError::Internal("content block must be an object".to_string()))?;
     if let Some(text) = obj.get("text").and_then(Value::as_str) {
+        if text.is_empty() {
+            return Err(AppError::Internal(
+                "empty text content block reached SDK bridge".to_string(),
+            ));
+        }
         return Ok(ContentBlock::Text(text.to_string()));
     }
     if let Some(image) = obj.get("image") {
@@ -252,6 +268,10 @@ fn build_content_block(block: &Value) -> Result<ContentBlock, AppError> {
     Err(AppError::Internal(format!(
         "unrecognized content block shape: {block}"
     )))
+}
+
+fn is_empty_text_block(block: &Value) -> bool {
+    block.get("text").and_then(Value::as_str) == Some("")
 }
 
 /// Build the typed SDK `messages` from the `ConverseArgs::messages` JSON array.
@@ -281,7 +301,15 @@ pub(crate) fn build_sdk_messages(messages: &Value) -> Result<Vec<Message>, AppEr
             })?;
         let mut content = Vec::with_capacity(content_json.len());
         for block in content_json {
+            if is_empty_text_block(block) {
+                continue;
+            }
             content.push(build_content_block(block)?);
+        }
+        if content.is_empty() {
+            return Err(AppError::Internal(
+                "message turn content contained no SDK content blocks".to_string(),
+            ));
         }
         let message = Message::builder()
             .role(role)
@@ -303,7 +331,9 @@ pub(crate) fn build_sdk_system(system: &Value) -> Result<Vec<SystemContentBlock>
     let mut out = Vec::with_capacity(blocks.len());
     for block in blocks {
         if let Some(text) = block.get("text").and_then(Value::as_str) {
-            out.push(SystemContentBlock::Text(text.to_string()));
+            if !text.is_empty() {
+                out.push(SystemContentBlock::Text(text.to_string()));
+            }
         } else if block.get("cachePoint").is_some() {
             out.push(SystemContentBlock::CachePoint(
                 CachePointBlock::builder()
@@ -1296,6 +1326,36 @@ mod tests {
     }
 
     #[test]
+    fn build_sdk_messages_filters_empty_text_blocks() {
+        let messages = json!([
+            { "role": "user", "content": [{ "text": "" }, { "text": "Hello!" }] }
+        ]);
+        let sdk = build_sdk_messages(&messages).expect("messages map");
+        let content = sdk[0].content();
+
+        assert_eq!(content.len(), 1);
+        match &content[0] {
+            ContentBlock::Text(t) => assert_eq!(t, "Hello!"),
+            other => panic!("expected text block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_sdk_messages_rejects_all_empty_text_turn() {
+        let messages = json!([
+            { "role": "user", "content": [{ "text": "" }] }
+        ]);
+        let err = build_sdk_messages(&messages).expect_err("must reject all-empty turn");
+
+        match err {
+            AppError::Internal(message) => {
+                assert!(message.contains("message turn content contained no SDK content blocks"));
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn build_sdk_messages_rejects_missing_role() {
         let messages = json!([{ "content": [{ "text": "x" }] }]);
         let err = build_sdk_messages(&messages).expect_err("must error");
@@ -1323,6 +1383,21 @@ mod tests {
     fn build_sdk_system_empty_array() {
         let sdk = build_sdk_system(&json!([])).expect("empty system");
         assert!(sdk.is_empty());
+    }
+
+    #[test]
+    fn build_sdk_system_skips_empty_text_blocks() {
+        let system = json!([
+            { "text": "" },
+            { "text": "You are helpful." }
+        ]);
+        let sdk = build_sdk_system(&system).expect("system map");
+
+        assert_eq!(sdk.len(), 1);
+        match &sdk[0] {
+            SystemContentBlock::Text(t) => assert_eq!(t, "You are helpful."),
+            other => panic!("expected text, got {other:?}"),
+        }
     }
 
     // ----- build_sdk_inference_config ----------------------------------------
@@ -1598,5 +1673,33 @@ mod tests {
         assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("tool_calls"));
         let calls = resp.choices[0].message.tool_calls.as_ref().expect("calls");
         assert_eq!(calls[0].id.as_deref(), Some("call_1"));
+    }
+
+    #[test]
+    fn build_sdk_tool_result_empty_text_becomes_json_empty_object() {
+        let turn = tools::tool_message_to_tool_result_turn("call_1", "");
+        let result =
+            build_tool_result_block(&turn["content"][0]["toolResult"]).expect("tool result block");
+
+        assert_eq!(result.content().len(), 1);
+        match &result.content()[0] {
+            ToolResultContentBlock::Json(doc) => assert_eq!(document_to_json(doc), json!({})),
+            other => panic!("expected JSON empty object, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_sdk_tool_result_empty_content_gets_json_empty_object() {
+        let result = build_tool_result_block(&json!({
+            "toolUseId": "call_1",
+            "content": []
+        }))
+        .expect("tool result block");
+
+        assert_eq!(result.content().len(), 1);
+        match &result.content()[0] {
+            ToolResultContentBlock::Json(doc) => assert_eq!(document_to_json(doc), json!({})),
+            other => panic!("expected JSON empty object, got {other:?}"),
+        }
     }
 }

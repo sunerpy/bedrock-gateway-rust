@@ -106,6 +106,12 @@ struct Turn {
     content: Vec<Value>,
 }
 
+fn push_non_empty_text_block(blocks: &mut Vec<Value>, text: &str) {
+    if !text.is_empty() {
+        blocks.push(json!({ "text": text }));
+    }
+}
+
 /// Translate a [`ResponsesRequest`] into Bedrock Converse `messages` + `system`.
 ///
 /// Runs the full stateless rejection matrix first (so a malformed request is
@@ -142,13 +148,18 @@ pub async fn to_responses_converse_input(
     //    developer message-item blocks, in input order.
     let mut system_blocks: Vec<Value> = Vec::new();
     if let Some(instructions) = &req.instructions {
-        system_blocks.push(json!({ "text": instructions }));
+        push_non_empty_text_block(&mut system_blocks, instructions);
     }
 
     // 3) Parse input into per-item turns (system/developer items contribute to
     //    `system_blocks` instead of producing a turn).
     let turns = match &req.input {
         ResponsesInput::Text(text) => {
+            if text.is_empty() {
+                return Err(AppError::BadRequest(
+                    "input must contain non-empty text".to_string(),
+                ));
+            }
             vec![Turn {
                 role: "user".to_string(),
                 content: vec![json!({ "text": text })],
@@ -180,6 +191,12 @@ async fn parse_input_items(
                 // user → a Bedrock user turn.
                 ResponsesRole::User => {
                     let blocks = parse_message_content(content, model_id, resolver).await?;
+                    if blocks.is_empty() {
+                        return Err(AppError::BadRequest(
+                            "message content must contain at least one non-empty content block"
+                                .to_string(),
+                        ));
+                    }
                     turns.push(Turn {
                         role: "user".to_string(),
                         content: blocks,
@@ -190,6 +207,9 @@ async fn parse_input_items(
                 // `output_text` content part); same-role reframing merges it.
                 ResponsesRole::Assistant => {
                     let blocks = parse_message_content(content, model_id, resolver).await?;
+                    if blocks.is_empty() {
+                        continue;
+                    }
                     turns.push(Turn {
                         role: "assistant".to_string(),
                         content: blocks,
@@ -307,14 +327,14 @@ fn push_system_blocks(
 ) -> Result<(), AppError> {
     match content {
         ResponsesContent::Text(text) => {
-            system_blocks.push(json!({ "text": text }));
+            push_non_empty_text_block(system_blocks, text);
         }
         ResponsesContent::Parts(parts) => {
             for part in parts {
                 match part {
                     ResponseContentPart::InputText { text }
                     | ResponseContentPart::OutputText { text } => {
-                        system_blocks.push(json!({ "text": text }));
+                        push_non_empty_text_block(system_blocks, text);
                     }
                     ResponseContentPart::InputImage { .. } => {
                         return Err(AppError::BadRequest(
@@ -348,14 +368,18 @@ async fn parse_message_content(
     resolver: &dyn ImageResolver,
 ) -> Result<Vec<Value>, AppError> {
     match content {
-        ResponsesContent::Text(text) => Ok(vec![json!({ "text": text })]),
+        ResponsesContent::Text(text) => {
+            let mut blocks = Vec::new();
+            push_non_empty_text_block(&mut blocks, text);
+            Ok(blocks)
+        }
         ResponsesContent::Parts(parts) => {
             let mut blocks = Vec::with_capacity(parts.len());
             for part in parts {
                 match part {
                     ResponseContentPart::InputText { text }
                     | ResponseContentPart::OutputText { text } => {
-                        blocks.push(json!({ "text": text }));
+                        push_non_empty_text_block(&mut blocks, text);
                     }
                     ResponseContentPart::InputImage { image_url, .. } => {
                         if !resolver.supports_image(model_id) {
@@ -684,6 +708,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_string_input_is_bad_request() {
+        let req = req_from(json!({ "model": "m", "input": "" }));
+        let err = parse(&req)
+            .await
+            .expect_err("empty string input must reject");
+
+        match err {
+            AppError::BadRequest(message) => {
+                assert!(message.contains("input must contain non-empty text"));
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn user_message_with_only_empty_text_is_bad_request() {
+        let req = req_from(json!({
+            "model": "m",
+            "input": [{ "type": "message", "role": "user", "content": "" }]
+        }));
+        let err = parse(&req)
+            .await
+            .expect_err("empty user message must reject");
+
+        match err {
+            AppError::BadRequest(message) => {
+                assert!(message.contains("message content must contain at least"));
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mixed_empty_text_parts_keep_only_non_empty_text() {
+        let req = req_from(json!({
+            "model": "m",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": "" },
+                    { "type": "input_text", "text": "keep me" }
+                ]
+            }]
+        }));
+        let out = parse(&req).await.expect("parse");
+        let content = out.messages[0]["content"].as_array().expect("content");
+
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["text"], "keep me");
+    }
+
+    #[tokio::test]
     async fn item_array_with_function_call_output_yields_tool_result() {
         let req = req_from(json!({
             "model": "m",
@@ -771,6 +848,18 @@ mod tests {
         let msgs = out.messages.as_array().expect("messages");
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["role"], "user");
+    }
+
+    #[tokio::test]
+    async fn empty_instructions_are_skipped() {
+        let req = req_from(json!({
+            "model": "m",
+            "instructions": "",
+            "input": "hi"
+        }));
+        let out = parse(&req).await.expect("parse");
+
+        assert_eq!(out.system.as_array().expect("system").len(), 0);
     }
 
     #[tokio::test]
@@ -1108,6 +1197,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn assistant_replay_empty_output_text_is_skipped() {
+        let req = req_from(json!({
+            "model": "m",
+            "input": [
+                { "type": "message", "role": "user", "content": "first" },
+                { "type": "message", "role": "assistant", "content": [
+                    { "type": "output_text", "text": "" }
+                ]}
+            ]
+        }));
+        let out = parse(&req).await.expect("parse");
+        let msgs = out.messages.as_array().expect("messages");
+
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[0]["content"][0]["text"], "first");
+    }
+
+    #[tokio::test]
     async fn codex_multiturn_replay_shape_parses_with_assistant_turn() {
         let req = req_from(json!({
             "model": "qwen.qwen3-235b-a22b-2507-v1:0",
@@ -1250,5 +1358,37 @@ mod tests {
         req.extra
             .insert("tools".to_string(), json!([{ "type": "function" }]));
         assert!(parse(&req).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn empty_function_call_output_reaches_sdk_as_json_empty_object() {
+        use aws_sdk_bedrockruntime::types::{ContentBlock, ToolResultContentBlock};
+
+        use crate::bedrock::provider::{build_sdk_messages, document_to_json};
+
+        let req = req_from(json!({
+            "model": "m",
+            "input": [
+                { "type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "c1", "output": "" }
+            ]
+        }));
+        let out = parse(&req).await.expect("parse empty tool output");
+        let msgs = out.messages.as_array().expect("messages");
+
+        assert_eq!(msgs[1]["content"][0]["toolResult"]["toolUseId"], "c1");
+        assert_eq!(
+            msgs[1]["content"][0]["toolResult"]["content"][0]["text"],
+            ""
+        );
+
+        let sdk = build_sdk_messages(&out.messages).expect("sdk messages");
+        match &sdk[1].content()[0] {
+            ContentBlock::ToolResult(result) => match &result.content()[0] {
+                ToolResultContentBlock::Json(doc) => assert_eq!(document_to_json(doc), json!({})),
+                other => panic!("expected JSON empty object, got {other:?}"),
+            },
+            other => panic!("expected toolResult, got {other:?}"),
+        }
     }
 }
