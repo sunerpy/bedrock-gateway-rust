@@ -177,6 +177,12 @@ pub fn parse_image_data_uri(url: &str) -> Result<Option<DecodedImage>, AppError>
     Ok(Some(DecodedImage { bytes, format }))
 }
 
+fn push_non_empty_text_block(blocks: &mut Vec<Value>, text: &str) {
+    if !text.is_empty() {
+        blocks.push(json!({ "text": text }));
+    }
+}
+
 /// Build the Bedrock `system` blocks from system/developer messages.
 ///
 /// Ports `_parse_system_prompts` (bedrock.py:709-744) for the translation
@@ -193,7 +199,7 @@ pub fn parse_system_prompts(req: &ChatRequest) -> Result<Value, AppError> {
     for message in &req.messages {
         match message {
             Message::System { content, .. } | Message::Developer { content, .. } => {
-                blocks.push(json!({ "text": content }));
+                push_non_empty_text_block(&mut blocks, content);
             }
             _ => continue,
         }
@@ -218,12 +224,16 @@ async fn parse_content_parts(
     resolver: &dyn ImageResolver,
 ) -> Result<Vec<Value>, AppError> {
     match content {
-        ContentInput::Text(text) => Ok(vec![json!({ "text": text })]),
+        ContentInput::Text(text) => {
+            let mut blocks = Vec::new();
+            push_non_empty_text_block(&mut blocks, text);
+            Ok(blocks)
+        }
         ContentInput::Parts(parts) => {
             let mut blocks = Vec::with_capacity(parts.len());
             for part in parts {
                 match part {
-                    ContentPart::Text(t) => blocks.push(json!({ "text": t.text })),
+                    ContentPart::Text(t) => push_non_empty_text_block(&mut blocks, &t.text),
                     ContentPart::Image(img) => {
                         if !resolver.supports_image(model_id) {
                             return Err(AppError::BadRequest(format!(
@@ -327,6 +337,12 @@ async fn build_intermediate_messages(
         match message {
             Message::User { content, .. } => {
                 let blocks = parse_content_parts(content, &req.model, resolver).await?;
+                if blocks.is_empty() {
+                    return Err(AppError::BadRequest(
+                        "message content must contain at least one non-empty content block"
+                            .to_string(),
+                    ));
+                }
                 out.push(IntermediateMessage {
                     role: "user".to_string(),
                     content: blocks,
@@ -897,6 +913,79 @@ mod tests {
         let msgs = args.messages.as_array().expect("messages array");
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["role"], "user");
+    }
+
+    #[tokio::test]
+    async fn empty_system_text_is_skipped() {
+        let req = base_request(
+            "anthropic.claude-3-sonnet-v1:0",
+            vec![
+                Message::System {
+                    name: None,
+                    content: "".to_string(),
+                },
+                Message::Developer {
+                    name: None,
+                    content: "Be terse.".to_string(),
+                },
+                user_text("Hi"),
+            ],
+        );
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+
+        let sys = args.system.as_array().expect("system array");
+        assert_eq!(sys.len(), 1);
+        assert_eq!(sys[0]["text"], "Be terse.");
+    }
+
+    #[tokio::test]
+    async fn user_empty_text_is_bad_request() {
+        let req = base_request("anthropic.claude-3-sonnet-v1:0", vec![user_text("")]);
+        let c = caps();
+        let r = resolver(false);
+        let err = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect_err("empty user text must reject");
+
+        match err {
+            AppError::BadRequest(message) => {
+                assert!(message.contains("message content must contain at least"))
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mixed_empty_text_parts_keep_only_non_empty_text() {
+        let req = base_request(
+            "anthropic.claude-3-sonnet-v1:0",
+            vec![Message::User {
+                name: None,
+                content: ContentInput::Parts(vec![
+                    ContentPart::Text(TextContent {
+                        r#type: "text".to_string(),
+                        text: "".to_string(),
+                    }),
+                    ContentPart::Text(TextContent {
+                        r#type: "text".to_string(),
+                        text: "keep me".to_string(),
+                    }),
+                ]),
+            }],
+        );
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+
+        let content = args.messages[0]["content"].as_array().expect("content");
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["text"], "keep me");
     }
 
     #[tokio::test]

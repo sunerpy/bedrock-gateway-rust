@@ -646,6 +646,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn empty_tool_message_preserves_tool_result_turn() {
+        let turn = tool_message_to_tool_result_turn("call_1", "");
+        assert_eq!(turn["role"], "user");
+        assert_eq!(turn["content"][0]["toolResult"]["toolUseId"], "call_1");
+        assert_eq!(turn["content"][0]["toolResult"]["content"][0]["text"], "");
+    }
+
     // ----- same-role merge/split --------------------------------------------
 
     #[test]
