@@ -167,6 +167,7 @@ mod tests {
             aws_max_retry_attempts: attempts,
             mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
                 .to_string(),
+            allowed_models: None,
         }
     }
 

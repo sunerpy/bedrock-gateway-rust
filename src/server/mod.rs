@@ -112,6 +112,11 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
     // `caps_config` is moved.
     let mantle_alias_names = caps_config.mantle_alias_names();
 
+    // Effective allow-list: env `ALLOWED_MODELS` (comma-separated) OVERRIDES the
+    // optional `models.toml` `allowed_models` list. Resolved before `caps_config`
+    // is moved into the resolver. Empty ⇒ allow all (identity filter).
+    let effective_allow_list = resolve_allow_list(&settings, &caps_config);
+
     let caps: Arc<dyn ModelCapabilities> = Arc::new(
         crate::bedrock::capabilities::ConfigModelCapabilities::with_profiles(
             caps_config,
@@ -119,7 +124,11 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
         ),
     );
 
-    let catalog = Arc::new(RwLock::new(catalog.with_extra_models(mantle_alias_names)));
+    let catalog = Arc::new(RwLock::new(
+        catalog
+            .with_extra_models(mantle_alias_names)
+            .apply_allow_list(&effective_allow_list),
+    ));
 
     let regions = Arc::new(RegionRoutingConfig::load_with_fallback(Some(
         &config_dir.join(REGIONS_CONFIG_FILE),
@@ -185,6 +194,22 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
         settings,
         cache_support,
     ))
+}
+
+/// Resolve the effective model allow-list: the env `ALLOWED_MODELS` value
+/// (comma-separated, whitespace trimmed, empty entries dropped) takes precedence
+/// over the `models.toml` `allowed_models` list; when the env var is unset the
+/// config list is used. An empty result means "allow all" (identity filter).
+fn resolve_allow_list(settings: &AppSettings, caps_config: &ModelCapabilityConfig) -> Vec<String> {
+    match settings.allowed_models.as_deref() {
+        Some(raw) => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+        None => caps_config.allowed_models.clone(),
+    }
 }
 
 /// Build the `supports_image` predicate for the multimodal URL resolver by
@@ -339,7 +364,29 @@ mod tests {
             aws_max_retry_attempts: 8,
             mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
                 .to_string(),
+            allowed_models: None,
         }
+    }
+
+    #[test]
+    fn resolve_allow_list_env_overrides_config() {
+        let mut settings = boot_settings();
+        let caps_config = ModelCapabilityConfig {
+            allowed_models: vec!["nova".to_string()],
+            ..ModelCapabilityConfig::default()
+        };
+
+        settings.allowed_models = None;
+        assert_eq!(
+            resolve_allow_list(&settings, &caps_config),
+            vec!["nova".to_string()]
+        );
+
+        settings.allowed_models = Some(" claude , gpt ".to_string());
+        assert_eq!(
+            resolve_allow_list(&settings, &caps_config),
+            vec!["claude".to_string(), "gpt".to_string()]
+        );
     }
 
     #[test]

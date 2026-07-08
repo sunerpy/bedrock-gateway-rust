@@ -82,6 +82,14 @@ pub struct AppSettings {
     /// `https://bedrock-mantle.{region}.api.aws/openai/v1`. Env:
     /// `MANTLE_BASE_URL_TEMPLATE` (or `APP_MANTLE_BASE_URL_TEMPLATE`).
     pub mantle_base_url_template: String,
+
+    /// Optional comma-separated allow-list of model-id substrings (env:
+    /// `ALLOWED_MODELS`). When present it OVERRIDES the optional `models.toml`
+    /// `allowed_models` list. Applied at catalog-build time to filter both
+    /// `GET /models` and `GET /models/{id}` with zero per-request cost. `None`
+    /// or empty ⇒ allow all (backward compatible).
+    #[serde(default)]
+    pub allowed_models: Option<String>,
 }
 
 impl AppSettings {
@@ -145,7 +153,8 @@ impl AppSettings {
 /// `ENABLE_APPLICATION_INFERENCE_PROFILES`, `ENABLE_PROMPT_CACHING`,
 /// `DISABLE_MANTLE`, `API_KEY`, `API_KEY_SECRET_ARN`, `API_KEY_PARAM_NAME`,
 /// `AWS_BEARER_TOKEN_BEDROCK` (alias `BEDROCK_API_KEY`), plus the operational
-/// knobs `PORT`, `BIND_ADDR`, `LOG_LEVEL`, `MANTLE_BASE_URL_TEMPLATE`.
+/// knobs `PORT`, `BIND_ADDR`, `LOG_LEVEL`, `MANTLE_BASE_URL_TEMPLATE`,
+/// `ALLOWED_MODELS`.
 fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder> {
     // String-valued overrides.
     for (env_name, field) in [
@@ -159,6 +168,7 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
         ("BIND_ADDR", "bind_addr"),
         ("LOG_LEVEL", "log_level"),
         ("MANTLE_BASE_URL_TEMPLATE", "mantle_base_url_template"),
+        ("ALLOWED_MODELS", "allowed_models"),
     ] {
         if let Some(value) = non_empty_env(env_name) {
             builder = builder.set_override(field, value)?;
@@ -703,6 +713,28 @@ mod tests {
         assert_eq!(settings.aws_max_retry_attempts, 3);
 
         clear_timeout_retry_vars();
+    }
+
+    #[test]
+    fn allowed_models_env_parses() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::remove_var("ALLOWED_MODELS");
+
+        // Unset ⇒ None (allow-all, backward compatible).
+        let settings = AppSettings::load().unwrap();
+        assert_eq!(settings.allowed_models, None);
+
+        // Set to a comma-separated list ⇒ raw string is captured verbatim.
+        std::env::set_var("ALLOWED_MODELS", "claude,nova");
+        let settings = AppSettings::load().unwrap();
+        assert_eq!(settings.allowed_models, Some("claude,nova".to_string()));
+
+        // Empty ⇒ treated as unset (None), preserving allow-all.
+        std::env::set_var("ALLOWED_MODELS", "");
+        let settings = AppSettings::load().unwrap();
+        assert_eq!(settings.allowed_models, None);
+
+        std::env::remove_var("ALLOWED_MODELS");
     }
 
     #[test]
