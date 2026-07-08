@@ -57,7 +57,7 @@ use crate::bedrock::responses_provider::BedrockResponsesProvider;
 use crate::bedrock::translate::ReqwestImageResolver;
 use crate::config::{AppSettings, EmbeddingRegistry, ModelCapabilityConfig, RegionRoutingConfig};
 use crate::domain::{ChatProvider, EmbeddingProvider, ModelCapabilities, ResponsesProvider};
-use crate::server::composite::{validate_mantle_startup, CompositeResponsesProvider};
+use crate::server::composite::{resolve_mantle_enabled, CompositeResponsesProvider};
 use crate::server::state::AppState;
 
 /// Default config directory used when `CONFIG_DIR` is unset (backward-compatible
@@ -105,9 +105,7 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
     let caps_config =
         ModelCapabilityConfig::load_with_fallback(Some(&config_dir.join(MODELS_CONFIG_FILE)));
 
-    // Must run before `caps_config` is moved into `with_profiles` below.
-    validate_mantle_startup(&caps_config, &settings)
-        .map_err(|e| anyhow::anyhow!("mantle startup validation failed: {e}"))?;
+    let mantle_enabled = resolve_mantle_enabled(&caps_config, &settings);
 
     // Mantle-backed models are absent from the control-plane catalog; surface
     // their bare alias names so `/models` lists them. Computed before
@@ -171,6 +169,7 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
         converse_responses,
         mantle_responses,
         caps.clone(),
+        mantle_enabled,
     ));
 
     let embeddings: Arc<dyn EmbeddingProvider> =
