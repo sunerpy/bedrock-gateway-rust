@@ -51,6 +51,13 @@ pub enum Capability {
     /// `response_format` request is rejected with HTTP 400 rather than silently
     /// ignored.
     StructuredOutput,
+    /// This model supports a 1-hour prompt-cache `cachePoint.ttl`. When set, a
+    /// per-request or configured `1h` cache TTL is honored; when a model lacks
+    /// this flag, a requested `1h` TTL is silently downgraded to `5m` (which is
+    /// always allowed for any caching-capable model). The gate is config-driven
+    /// via this flag — never a model-name check in code.
+    #[serde(rename = "cache_ttl_1h")]
+    CacheTtl1h,
 }
 
 /// The strategy used to express reasoning/extended-thinking to Bedrock.
@@ -372,7 +379,8 @@ mod tests {
     #[test]
     fn test_sonnet_4_5_capabilities() {
         // Parity with Python MODEL_CAPABILITIES (bedrock.py:148):
-        // "claude-sonnet-4-5": {"temperature_topp_conflict"}
+        // "claude-sonnet-4-5": {"temperature_topp_conflict"}. The 4.5-gen family
+        // also declares cache_ttl_1h (PR-G): 1h prompt-cache retention support.
         let cfg = load_project_config();
         let entry = cfg
             .entry_for_match("claude-sonnet-4-5")
@@ -381,10 +389,21 @@ mod tests {
         let expected: HashSet<Capability> = [
             Capability::TemperatureToppConflict,
             Capability::StructuredOutput,
+            Capability::CacheTtl1h,
         ]
         .into_iter()
         .collect();
         assert_eq!(caps, expected);
+    }
+
+    #[test]
+    fn cache_ttl_1h_capability_parses() {
+        let cfg = ModelCapabilityConfig::from_toml_str(
+            "[[model]]\nmatch = \"x.y\"\ncapabilities = [\"cache_ttl_1h\"]\n",
+        )
+        .expect("config with cache_ttl_1h must parse");
+        let entry = cfg.entry_for_match("x.y").unwrap();
+        assert!(entry.has_capability(Capability::CacheTtl1h));
     }
 
     #[test]

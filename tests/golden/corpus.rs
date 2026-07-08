@@ -140,10 +140,15 @@ async fn assemble_args(req: &ChatRequest, caps: &ConfigModelCapabilities) -> Val
     }
 
     // 6. Prompt caching decoration. Global default off (matches a clean env);
-    // per-request prompt_caching controls drive enablement.
+    // per-request prompt_caching controls drive enablement. The effective cache
+    // TTL mirrors provider::assemble: per-request extra_body.prompt_caching.ttl
+    // wins over the default "5m", with a 1h→5m downgrade on models lacking
+    // cache_ttl_1h.
     let global_default = false;
     let system_enabled = caching.system_enabled(global_default);
     let messages_enabled = caching.messages_enabled(global_default);
+    let resolved_ttl = cache::resolve_cache_ttl(caching.ttl.as_deref(), "5m", &resolved, caps);
+    let ttl = Some(resolved_ttl.effective.as_str());
     let max_checkpoints = caps
         .max_cache_tokens(&resolved)
         .map(|_| 4u32)
@@ -154,6 +159,7 @@ async fn assemble_args(req: &ChatRequest, caps: &ConfigModelCapabilities) -> Val
         &resolved,
         caps,
         system_enabled,
+        ttl,
     );
     let system_checkpoints = count_cache_points(&decorated_system);
     args.system = decorated_system;
@@ -165,6 +171,7 @@ async fn assemble_args(req: &ChatRequest, caps: &ConfigModelCapabilities) -> Val
         messages_enabled,
         system_checkpoints,
         max_checkpoints,
+        ttl,
     );
     args.messages = decorated_messages;
 
@@ -269,6 +276,11 @@ async fn translation_tools_multi_turn_placeholder() {
 #[tokio::test]
 async fn translation_prompt_cache_system_point() {
     run_translation("prompt_cache_system_point").await;
+}
+
+#[tokio::test]
+async fn translation_prompt_cache_ttl_1h() {
+    run_translation("prompt_cache_ttl_1h").await;
 }
 
 #[tokio::test]

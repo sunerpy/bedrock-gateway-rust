@@ -5,6 +5,14 @@ use serde::{Deserialize, Serialize};
 
 type ConfigBuilder = RawConfigBuilder<DefaultState>;
 
+/// Schema-level fallback for `prompt_cache_ttl` when a deserialization source
+/// omits it. The authoritative default (`"5m"`) is also set via
+/// `.set_default("prompt_cache_ttl", "5m")` in [`AppSettings::load`]; this keeps
+/// `try_deserialize` from failing on sources that predate the field.
+fn default_prompt_cache_ttl() -> String {
+    "5m".to_string()
+}
+
 /// Application settings with layered configuration loading:
 /// defaults → optional file (config/app.toml) → environment variable overrides
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +42,14 @@ pub struct AppSettings {
 
     /// Enable prompt caching (default: false)
     pub enable_prompt_caching: bool,
+
+    /// Default prompt-cache TTL applied to injected `cachePoint`s when a request
+    /// does not override it via `extra_body.prompt_caching.ttl`. Env:
+    /// `PROMPT_CACHE_TTL` (or `APP_PROMPT_CACHE_TTL`). Default `"5m"`. A `"1h"`
+    /// value is only honored on models declaring `cache_ttl_1h`; otherwise it is
+    /// silently downgraded to `"5m"`.
+    #[serde(default = "default_prompt_cache_ttl")]
+    pub prompt_cache_ttl: String,
 
     /// Optional API key (env: API_KEY)
     pub api_key: Option<String>,
@@ -111,6 +127,7 @@ impl AppSettings {
             // supported models. ENABLE_PROMPT_CACHING=false disables all;
             // per-request `extra_body.prompt_caching` overrides either way.
             .set_default("enable_prompt_caching", true)?
+            .set_default("prompt_cache_ttl", "5m")?
             .set_default("disable_mantle", false)?
             .set_default("bind_addr", "0.0.0.0")?
             .set_default("port", 8080)?
@@ -154,7 +171,7 @@ impl AppSettings {
 /// `DISABLE_MANTLE`, `API_KEY`, `API_KEY_SECRET_ARN`, `API_KEY_PARAM_NAME`,
 /// `AWS_BEARER_TOKEN_BEDROCK` (alias `BEDROCK_API_KEY`), plus the operational
 /// knobs `PORT`, `BIND_ADDR`, `LOG_LEVEL`, `MANTLE_BASE_URL_TEMPLATE`,
-/// `ALLOWED_MODELS`.
+/// `ALLOWED_MODELS`, `PROMPT_CACHE_TTL`.
 fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder> {
     // String-valued overrides.
     for (env_name, field) in [
@@ -169,6 +186,7 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
         ("LOG_LEVEL", "log_level"),
         ("MANTLE_BASE_URL_TEMPLATE", "mantle_base_url_template"),
         ("ALLOWED_MODELS", "allowed_models"),
+        ("PROMPT_CACHE_TTL", "prompt_cache_ttl"),
     ] {
         if let Some(value) = non_empty_env(env_name) {
             builder = builder.set_override(field, value)?;
@@ -278,6 +296,8 @@ mod tests {
             .unwrap()
             .set_default("enable_prompt_caching", false)
             .unwrap()
+            .set_default("prompt_cache_ttl", "5m")
+            .unwrap()
             .set_default("disable_mantle", false)
             .unwrap()
             .set_default("bind_addr", "0.0.0.0")
@@ -317,6 +337,8 @@ mod tests {
             .set_default("enable_application_inference_profiles", true)
             .unwrap()
             .set_default("enable_prompt_caching", true)
+            .unwrap()
+            .set_default("prompt_cache_ttl", "5m")
             .unwrap()
             .set_default("disable_mantle", false)
             .unwrap()
@@ -363,6 +385,29 @@ mod tests {
         assert_eq!(settings.aws_connect_timeout_secs, 60);
         assert_eq!(settings.aws_read_timeout_secs, 900);
         assert_eq!(settings.aws_max_retry_attempts, 8);
+        assert_eq!(settings.prompt_cache_ttl, "5m");
+    }
+
+    #[test]
+    fn default_ttl_is_5m() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::remove_var("PROMPT_CACHE_TTL");
+        std::env::remove_var("APP_PROMPT_CACHE_TTL");
+        let settings = AppSettings::load().expect("settings load");
+        assert_eq!(
+            settings.prompt_cache_ttl, "5m",
+            "unset PROMPT_CACHE_TTL must default to 5m"
+        );
+    }
+
+    #[test]
+    fn bare_prompt_cache_ttl_env_overrides_default() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::remove_var("APP_PROMPT_CACHE_TTL");
+        std::env::set_var("PROMPT_CACHE_TTL", "1h");
+        let settings = AppSettings::load().expect("settings load");
+        assert_eq!(settings.prompt_cache_ttl, "1h");
+        std::env::remove_var("PROMPT_CACHE_TTL");
     }
 
     #[test]

@@ -44,14 +44,21 @@
 
 use serde_json::{json, Value};
 
-use crate::domain::ModelCapabilities;
+use crate::domain::{Capability, ModelCapabilities};
 
 /// The Bedrock cache-checkpoint block appended into a content/system array.
 ///
 /// Mirrors the Python literal `{"cachePoint": {"type": "default"}}`
-/// (bedrock.py:767, 721 example output).
-fn cache_point() -> Value {
-    json!({ "cachePoint": { "type": "default" } })
+/// (bedrock.py:767, 721 example output). When `ttl` is `Some`, the checkpoint
+/// carries a `ttl` key (`"5m"` | `"1h"`) so Bedrock applies the requested cache
+/// lifetime; when `ttl` is `None`, NO `ttl` key is emitted — the output is
+/// byte-identical to the historical `{"cachePoint": {"type": "default"}}`,
+/// preserving backward compatibility for any path that opts out.
+fn cache_point(ttl: Option<&str>) -> Value {
+    match ttl {
+        Some(ttl) => json!({ "cachePoint": { "type": "default", "ttl": ttl } }),
+        None => json!({ "cachePoint": { "type": "default" } }),
+    }
 }
 
 /// Per-request prompt-caching control, parsed from `extra_body.prompt_caching`.
@@ -67,12 +74,17 @@ fn cache_point() -> Value {
 /// This precedence matches the Python override logic (bedrock.py:744-748,
 /// 1004-1007): `cache_enabled = ENABLE_PROMPT_CACHING`, then if the key is
 /// present in `extra_body.prompt_caching`, the request value wins.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PromptCachingControl {
     /// Explicit per-request control for system-prompt caching, if present.
     pub system: Option<bool>,
     /// Explicit per-request control for message caching, if present.
     pub messages: Option<bool>,
+    /// Explicit per-request cache TTL override (`"5m"` | `"1h"`), if present.
+    /// This is the Option-B per-request knob under `extra_body.prompt_caching`;
+    /// it takes precedence over the env `PROMPT_CACHE_TTL` default. `None` ⇒ the
+    /// request did not request a TTL and the settings default applies.
+    pub ttl: Option<String>,
 }
 
 impl PromptCachingControl {
@@ -116,6 +128,7 @@ impl PromptCachingControl {
             Some(Value::Object(pc)) => Self {
                 system: pc.get("system").and_then(Value::as_bool),
                 messages: pc.get("messages").and_then(Value::as_bool),
+                ttl: pc.get("ttl").and_then(Value::as_str).map(str::to_string),
             },
             _ => Self::default(),
         }
@@ -133,6 +146,7 @@ impl PromptCachingControl {
             Some(Value::Object(pc)) => Self {
                 system: pc.get("system").and_then(Value::as_bool),
                 messages: pc.get("messages").and_then(Value::as_bool),
+                ttl: pc.get("ttl").and_then(Value::as_str).map(str::to_string),
             },
             _ => Self::default(),
         }
@@ -213,6 +227,7 @@ pub fn decorate_tools(
     enabled: bool,
     already_used: u32,
     max_checkpoints: Option<u32>,
+    ttl: Option<&str>,
 ) -> Value {
     let Value::Array(mut specs) = tools else {
         return tools;
@@ -244,7 +259,7 @@ pub fn decorate_tools(
         return Value::Array(specs);
     }
 
-    specs.push(cache_point());
+    specs.push(cache_point(ttl));
     Value::Array(specs)
 }
 
@@ -269,6 +284,7 @@ pub fn decorate_system_blocks(
     model: &str,
     caps: &dyn ModelCapabilities,
     enabled: bool,
+    ttl: Option<&str>,
 ) -> Value {
     let Value::Array(mut blocks) = system else {
         return system;
@@ -301,7 +317,7 @@ pub fn decorate_system_blocks(
     // (pure fn); the ceiling is read but does not block insertion.
     let _ = caps.max_cache_tokens(model);
 
-    blocks.push(cache_point());
+    blocks.push(cache_point(ttl));
     Value::Array(blocks)
 }
 
@@ -336,6 +352,7 @@ pub fn decorate_messages(
     enabled: bool,
     already_used: u32,
     max_checkpoints: Option<u32>,
+    ttl: Option<&str>,
 ) -> Value {
     let Value::Array(mut turns) = messages else {
         return messages;
@@ -383,11 +400,61 @@ pub fn decorate_messages(
 
     if let Some(idx) = last_eligible {
         if let Some(content) = turns[idx].get_mut("content").and_then(Value::as_array_mut) {
-            content.push(cache_point());
+            content.push(cache_point(ttl));
         }
     }
 
     Value::Array(turns)
+}
+
+/// The canonical 1-hour prompt-cache TTL literal.
+const TTL_1H: &str = "1h";
+/// The canonical 5-minute prompt-cache TTL literal (always allowed).
+const TTL_5M: &str = "5m";
+
+/// The outcome of resolving the effective prompt-cache TTL for one request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedTtl {
+    /// The TTL string threaded into every `cachePoint` for this request
+    /// (uniform across tools/system/messages), e.g. `"5m"` or `"1h"`.
+    pub effective: String,
+    /// The TTL the caller requested before the capability gate (per-request
+    /// override or the settings default).
+    pub requested: String,
+    /// `true` when a requested `1h` was silently downgraded to `5m` because the
+    /// resolved model lacks [`Capability::CacheTtl1h`]. The caller emits a
+    /// metadata-only WARN when this is set.
+    pub downgraded: bool,
+}
+
+/// Resolve the effective, UNIFORM prompt-cache TTL for a request.
+///
+/// Precedence: the per-request `extra_body.prompt_caching.ttl` (`ctrl_ttl`) wins
+/// over the settings `PROMPT_CACHE_TTL` default. `1h` is honored only when the
+/// resolved model declares [`Capability::CacheTtl1h`]; otherwise it is silently
+/// downgraded to `5m` (always allowed for any caching-capable model). Any value
+/// other than `1h` passes through unchanged (no gate) — `5m` is the documented
+/// default, and an unrecognized value is forwarded verbatim for Bedrock to
+/// validate.
+pub fn resolve_cache_ttl(
+    ctrl_ttl: Option<&str>,
+    settings_default: &str,
+    model: &str,
+    caps: &dyn ModelCapabilities,
+) -> ResolvedTtl {
+    let requested = ctrl_ttl.unwrap_or(settings_default).to_string();
+    if requested == TTL_1H && !caps.has(model, Capability::CacheTtl1h) {
+        return ResolvedTtl {
+            effective: TTL_5M.to_string(),
+            requested,
+            downgraded: true,
+        };
+    }
+    ResolvedTtl {
+        effective: requested.clone(),
+        requested,
+        downgraded: false,
+    }
 }
 
 #[cfg(test)]
@@ -543,6 +610,7 @@ mod tests {
         let ctrl = PromptCachingControl {
             system: Some(false),
             messages: Some(true),
+            ttl: None,
         };
         // Global true, but request disables system.
         assert!(!ctrl.system_enabled(true));
@@ -582,16 +650,16 @@ mod tests {
         assert_eq!(c.cache_min_tokens(NOVA), Some(1024));
 
         // Below the 1024-token floor (estimate = words * 1.3) ⇒ no cachePoint.
-        let small = decorate_system_blocks(sys(&[&long_text(100)]), NOVA, &c, true);
+        let small = decorate_system_blocks(sys(&[&long_text(100)]), NOVA, &c, true, None);
         let small_arr = small.as_array().unwrap();
         assert_eq!(small_arr.len(), 1, "below Nova floor ⇒ no cachePoint");
         assert!(small_arr[0].get("cachePoint").is_none());
 
         // Above the floor ⇒ cachePoint injected.
-        let large = decorate_system_blocks(sys(&[&long_text(2000)]), NOVA, &c, true);
+        let large = decorate_system_blocks(sys(&[&long_text(2000)]), NOVA, &c, true, None);
         let large_arr = large.as_array().unwrap();
         assert_eq!(large_arr.len(), 2, "above Nova floor ⇒ cachePoint");
-        assert_eq!(large_arr[1], cache_point());
+        assert_eq!(large_arr[1], cache_point(None));
     }
 
     // ---- decorate_system_blocks ----
@@ -601,11 +669,11 @@ mod tests {
         // min=4 tokens; supply ~13 estimated tokens (10 words * 1.3).
         let caps = FakeCaps::supports(Some(4), Some(20_000), Some(4));
         let blocks = sys(&[&long_text(10)]);
-        let out = decorate_system_blocks(blocks, "m", &caps, true);
+        let out = decorate_system_blocks(blocks, "m", &caps, true, None);
         let arr = out.as_array().unwrap();
         assert_eq!(arr.len(), 2, "text block + cachePoint");
         assert!(arr[0]["text"].is_string());
-        assert_eq!(arr[1], cache_point());
+        assert_eq!(arr[1], cache_point(None));
     }
 
     #[test]
@@ -613,7 +681,7 @@ mod tests {
         // min very high; a single short word can't clear it.
         let caps = FakeCaps::supports(Some(100_000), None, None);
         let blocks = sys(&["hi"]);
-        let out = decorate_system_blocks(blocks, "m", &caps, true);
+        let out = decorate_system_blocks(blocks, "m", &caps, true, None);
         let arr = out.as_array().unwrap();
         assert_eq!(arr.len(), 1, "below min ⇒ no cachePoint");
         assert!(arr[0].get("cachePoint").is_none());
@@ -624,10 +692,10 @@ mod tests {
         // Over max_cache_tokens still inserts (Python parity: warn-only).
         let caps = FakeCaps::supports(Some(1), Some(2), Some(4));
         let blocks = sys(&[&long_text(50)]); // ~65 tokens >> max 2
-        let out = decorate_system_blocks(blocks, "m", &caps, true);
+        let out = decorate_system_blocks(blocks, "m", &caps, true, None);
         let arr = out.as_array().unwrap();
         assert_eq!(arr.len(), 2);
-        assert_eq!(arr[1], cache_point());
+        assert_eq!(arr[1], cache_point(None));
     }
 
     #[test]
@@ -635,7 +703,7 @@ mod tests {
         // No cache params ⇒ supports_caching == false ⇒ unchanged.
         let caps = FakeCaps::supports(None, None, None);
         let blocks = sys(&[&long_text(100)]);
-        let out = decorate_system_blocks(blocks.clone(), "m", &caps, true);
+        let out = decorate_system_blocks(blocks.clone(), "m", &caps, true, None);
         assert_eq!(out, blocks, "unsupported model: no cachePoint");
     }
 
@@ -643,7 +711,7 @@ mod tests {
     fn system_not_inserted_when_disabled() {
         let caps = FakeCaps::supports(Some(1), Some(20_000), Some(4));
         let blocks = sys(&[&long_text(100)]);
-        let out = decorate_system_blocks(blocks.clone(), "m", &caps, false);
+        let out = decorate_system_blocks(blocks.clone(), "m", &caps, false, None);
         assert_eq!(out, blocks, "disabled: no cachePoint");
     }
 
@@ -651,7 +719,7 @@ mod tests {
     fn system_empty_is_unchanged() {
         let caps = FakeCaps::supports(Some(1), Some(20_000), Some(4));
         let blocks = Value::Array(vec![]);
-        let out = decorate_system_blocks(blocks.clone(), "m", &caps, true);
+        let out = decorate_system_blocks(blocks.clone(), "m", &caps, true, None);
         assert_eq!(out, blocks);
     }
 
@@ -660,7 +728,7 @@ mod tests {
         // cache_min_tokens None but max present ⇒ supported, no floor to clear.
         let caps = FakeCaps::supports(None, Some(20_000), Some(4));
         let blocks = sys(&["short"]);
-        let out = decorate_system_blocks(blocks, "m", &caps, true);
+        let out = decorate_system_blocks(blocks, "m", &caps, true, None);
         assert_eq!(out.as_array().unwrap().len(), 2);
     }
 
@@ -681,12 +749,12 @@ mod tests {
             assistant_turn("reply"),
             user_turn("second"),
         ]);
-        let out = decorate_messages(messages, "m", &caps, true, 0, caps.checkpoints());
+        let out = decorate_messages(messages, "m", &caps, true, 0, caps.checkpoints(), None);
         let turns = out.as_array().unwrap();
         // Last user turn gets the cachePoint appended.
         let last_content = turns[2]["content"].as_array().unwrap();
         assert_eq!(last_content.len(), 2);
-        assert_eq!(last_content[1], cache_point());
+        assert_eq!(last_content[1], cache_point(None));
         // Earlier user turn is untouched.
         assert_eq!(turns[0]["content"].as_array().unwrap().len(), 1);
     }
@@ -695,7 +763,15 @@ mod tests {
     fn messages_not_inserted_for_unsupported_model() {
         let caps = FakeCaps::supports(None, None, None);
         let messages = Value::Array(vec![user_turn("hi")]);
-        let out = decorate_messages(messages.clone(), "m", &caps, true, 0, caps.checkpoints());
+        let out = decorate_messages(
+            messages.clone(),
+            "m",
+            &caps,
+            true,
+            0,
+            caps.checkpoints(),
+            None,
+        );
         assert_eq!(out, messages);
     }
 
@@ -703,7 +779,15 @@ mod tests {
     fn messages_not_inserted_when_disabled() {
         let caps = FakeCaps::supports(Some(1), Some(20_000), Some(4));
         let messages = Value::Array(vec![user_turn("hi")]);
-        let out = decorate_messages(messages.clone(), "m", &caps, false, 0, caps.checkpoints());
+        let out = decorate_messages(
+            messages.clone(),
+            "m",
+            &caps,
+            false,
+            0,
+            caps.checkpoints(),
+            None,
+        );
         assert_eq!(out, messages);
     }
 
@@ -712,11 +796,19 @@ mod tests {
         // already_used == max_cache_checkpoints ⇒ no room.
         let caps = FakeCaps::supports(Some(1), Some(20_000), Some(2));
         let messages = Value::Array(vec![user_turn("hi")]);
-        let out = decorate_messages(messages.clone(), "m", &caps, true, 2, caps.checkpoints());
+        let out = decorate_messages(
+            messages.clone(),
+            "m",
+            &caps,
+            true,
+            2,
+            caps.checkpoints(),
+            None,
+        );
         assert_eq!(out, messages, "no room left under the checkpoint ceiling");
 
         // One under the ceiling ⇒ inserts.
-        let out2 = decorate_messages(messages, "m", &caps, true, 1, caps.checkpoints());
+        let out2 = decorate_messages(messages, "m", &caps, true, 1, caps.checkpoints(), None);
         let turns = out2.as_array().unwrap();
         assert_eq!(turns[0]["content"].as_array().unwrap().len(), 2);
     }
@@ -733,7 +825,15 @@ mod tests {
                 "content": [{ "toolResult": { "toolUseId": "t1", "content": [] } }]
             }),
         ]);
-        let out = decorate_messages(messages.clone(), "m", &caps, true, 0, caps.checkpoints());
+        let out = decorate_messages(
+            messages.clone(),
+            "m",
+            &caps,
+            true,
+            0,
+            caps.checkpoints(),
+            None,
+        );
         assert_eq!(out, messages, "toolResult-only turn must be skipped");
     }
 
@@ -749,12 +849,12 @@ mod tests {
                 "content": [{ "toolResult": { "toolUseId": "t1", "content": [] } }]
             }),
         ]);
-        let out = decorate_messages(messages, "m", &caps, true, 0, caps.checkpoints());
+        let out = decorate_messages(messages, "m", &caps, true, 0, caps.checkpoints(), None);
         let turns = out.as_array().unwrap();
         // The normal user turn (index 0) receives the cachePoint.
         let first = turns[0]["content"].as_array().unwrap();
         assert_eq!(first.len(), 2);
-        assert_eq!(first[1], cache_point());
+        assert_eq!(first[1], cache_point(None));
         // The toolResult-only turn is untouched.
         assert_eq!(turns[2]["content"].as_array().unwrap().len(), 1);
     }
@@ -765,9 +865,17 @@ mod tests {
         let caps = FakeCaps::supports(Some(1), Some(20_000), Some(4));
         let messages = Value::Array(vec![json!({
             "role": "user",
-            "content": [{ "text": "hi" }, cache_point()]
+            "content": [{ "text": "hi" }, cache_point(None)]
         })]);
-        let out = decorate_messages(messages.clone(), "m", &caps, true, 0, caps.checkpoints());
+        let out = decorate_messages(
+            messages.clone(),
+            "m",
+            &caps,
+            true,
+            0,
+            caps.checkpoints(),
+            None,
+        );
         assert_eq!(out, messages, "must not append a second cachePoint");
     }
 
@@ -775,7 +883,15 @@ mod tests {
     fn messages_empty_unchanged() {
         let caps = FakeCaps::supports(Some(1), Some(20_000), Some(4));
         let messages = Value::Array(vec![]);
-        let out = decorate_messages(messages.clone(), "m", &caps, true, 0, caps.checkpoints());
+        let out = decorate_messages(
+            messages.clone(),
+            "m",
+            &caps,
+            true,
+            0,
+            caps.checkpoints(),
+            None,
+        );
         assert_eq!(out, messages);
     }
 
@@ -804,6 +920,7 @@ mod tests {
             "m",
             &caps,
             ctrl.system_enabled(false),
+            None,
         );
         assert_eq!(system.as_array().unwrap().len(), 2);
 
@@ -814,6 +931,7 @@ mod tests {
             ctrl.messages_enabled(false),
             1, // one checkpoint already spent on system
             caps.checkpoints(),
+            None,
         );
         assert_eq!(messages[0]["content"].as_array().unwrap().len(), 2);
     }
@@ -833,7 +951,7 @@ mod tests {
         let (sys_on, msg_on) = resolved(ctrl, true);
 
         let caps = FakeCaps::supports(Some(1), Some(20_000), Some(4));
-        let system = decorate_system_blocks(sys(&[&long_text(10)]), "m", &caps, sys_on);
+        let system = decorate_system_blocks(sys(&[&long_text(10)]), "m", &caps, sys_on, None);
         assert_eq!(
             system.as_array().unwrap().len(),
             2,
@@ -847,6 +965,7 @@ mod tests {
             msg_on,
             count_cp(&system),
             caps.checkpoints(),
+            None,
         );
         assert_eq!(
             messages[0]["content"].as_array().unwrap().len(),
@@ -862,7 +981,7 @@ mod tests {
         let (sys_on, msg_on) = resolved(ctrl, true);
 
         let caps = FakeCaps::supports(Some(1), Some(20_000), Some(4));
-        let system = decorate_system_blocks(sys(&[&long_text(10)]), "m", &caps, sys_on);
+        let system = decorate_system_blocks(sys(&[&long_text(10)]), "m", &caps, sys_on, None);
         assert_eq!(
             system.as_array().unwrap().len(),
             2,
@@ -876,6 +995,7 @@ mod tests {
             msg_on,
             count_cp(&system),
             caps.checkpoints(),
+            None,
         );
         assert_eq!(
             messages[0]["content"].as_array().unwrap().len(),
@@ -890,7 +1010,7 @@ mod tests {
         let (sys_on, msg_on) = resolved(ctrl, true);
 
         let caps = FakeCaps::supports(None, None, None);
-        let system = decorate_system_blocks(sys(&[&long_text(100)]), "m", &caps, sys_on);
+        let system = decorate_system_blocks(sys(&[&long_text(100)]), "m", &caps, sys_on, None);
         assert_eq!(
             count_cp(&system),
             0,
@@ -904,6 +1024,7 @@ mod tests {
             msg_on,
             0,
             caps.checkpoints(),
+            None,
         );
         assert_eq!(
             count_cp(&messages),
@@ -918,7 +1039,7 @@ mod tests {
         let (sys_on, msg_on) = resolved(ctrl, false);
 
         let caps = FakeCaps::supports(Some(1), Some(20_000), Some(4));
-        let system = decorate_system_blocks(sys(&[&long_text(100)]), "m", &caps, sys_on);
+        let system = decorate_system_blocks(sys(&[&long_text(100)]), "m", &caps, sys_on, None);
         assert_eq!(count_cp(&system), 0, "master off ⇒ no system cachePoint");
 
         let messages = decorate_messages(
@@ -928,6 +1049,7 @@ mod tests {
             msg_on,
             0,
             caps.checkpoints(),
+            None,
         );
         assert_eq!(
             count_cp(&messages),
@@ -942,6 +1064,7 @@ mod tests {
             "m",
             &caps,
             forced.system_enabled(false),
+            None,
         );
         assert_eq!(
             count_cp(&system_forced),
@@ -993,6 +1116,7 @@ mod tests {
     /// the pure decorators with ONE shared running budget, exactly as
     /// `provider.rs::assemble` does. Returns each decorated zone plus the grand
     /// total of cachePoints placed.
+    #[allow(clippy::too_many_arguments)]
     fn run_three_zones(
         tools: Value,
         system: Value,
@@ -1001,16 +1125,17 @@ mod tests {
         caps: &dyn ModelCapabilities,
         enabled: bool,
         max_cp: Option<u32>,
+        ttl: Option<&str>,
     ) -> (Value, Value, Value, u32) {
         let mut used: u32 = 0;
 
-        let dt = decorate_tools(tools, model, caps, enabled, used, max_cp);
+        let dt = decorate_tools(tools, model, caps, enabled, used, max_cp, ttl);
         used += count_cp(&dt);
 
-        let ds = decorate_system_blocks(system, model, caps, enabled);
+        let ds = decorate_system_blocks(system, model, caps, enabled, ttl);
         used += count_cp(&ds);
 
-        let dm = decorate_messages(messages, model, caps, enabled, used, max_cp);
+        let dm = decorate_messages(messages, model, caps, enabled, used, max_cp, ttl);
         let grand = count_cp(&dt) + count_cp(&ds) + count_cp(&dm);
         (dt, ds, dm, grand)
     }
@@ -1033,6 +1158,7 @@ mod tests {
             &caps,
             true,
             Some(4),
+            None,
         );
         assert!(grand <= 4, "grand total {grand} must be ≤ 4");
         assert!(
@@ -1062,14 +1188,15 @@ mod tests {
             &caps,
             true,
             Some(4),
+            None,
         );
         assert_eq!(count_cp(&dt), 0, "no tools ⇒ zero tools cachePoint");
 
         // Legacy path (pre-T6): system decorated, then messages seeded with the
         // system checkpoint count.
-        let ds_old = decorate_system_blocks(sys(&[&long_text(10)]), "m", &caps, true);
+        let ds_old = decorate_system_blocks(sys(&[&long_text(10)]), "m", &caps, true, None);
         let sys_cp = count_cp(&ds_old);
-        let dm_old = decorate_messages(messages, "m", &caps, true, sys_cp, Some(4));
+        let dm_old = decorate_messages(messages, "m", &caps, true, sys_cp, Some(4), None);
 
         assert_eq!(ds_new, ds_old, "system behavior must be unchanged");
         assert_eq!(dm_new, dm_old, "messages behavior must be unchanged");
@@ -1090,6 +1217,7 @@ mod tests {
             &caps,
             true,
             Some(2),
+            None,
         );
         assert_eq!(grand, 2, "exactly two cachePoints under a budget of 2");
         assert_eq!(count_cp(&dt), 1, "tools consumes slot 1");
@@ -1117,6 +1245,7 @@ mod tests {
             &unsupported,
             true,
             Some(4),
+            None,
         );
         assert_eq!(grand, 0, "unsupported model ⇒ zero cachePoints");
         assert_eq!(count_cp(&dt), 0);
@@ -1135,6 +1264,7 @@ mod tests {
             &supported,
             false,
             Some(4),
+            None,
         );
         assert_eq!(grand2, 0, "disabled ⇒ zero cachePoints");
         assert_eq!(count_cp(&dt2), 0);
@@ -1147,20 +1277,264 @@ mod tests {
     fn t6_decorate_tools_empty_and_double_insert_guard() {
         let caps = FakeCaps::supports(Some(1), Some(20_000), Some(4));
         // Empty tools ⇒ unchanged.
-        let empty = decorate_tools(Value::Array(vec![]), "m", &caps, true, 0, Some(4));
+        let empty = decorate_tools(Value::Array(vec![]), "m", &caps, true, 0, Some(4), None);
         assert_eq!(empty, Value::Array(vec![]));
 
         // Already ends with a cachePoint ⇒ no double-insert.
         let already = Value::Array(vec![
             json!({ "toolSpec": { "name": "t", "inputSchema": { "json": {} } } }),
-            cache_point(),
+            cache_point(None),
         ]);
-        let out = decorate_tools(already.clone(), "m", &caps, true, 0, Some(4));
+        let out = decorate_tools(already.clone(), "m", &caps, true, 0, Some(4), None);
         assert_eq!(out, already, "must not append a second tools cachePoint");
 
         // Budget exhausted ⇒ unchanged.
-        let full = decorate_tools(tool_specs(&["t"]), "m", &caps, true, 4, Some(4));
+        let full = decorate_tools(tool_specs(&["t"]), "m", &caps, true, 4, Some(4), None);
         assert_eq!(count_cp(&full), 0, "no room under the ceiling");
+    }
+
+    // ---- PR-G: cachePoint.ttl (5m/1h) ----
+
+    /// A test-only capabilities impl that reports `Capability::CacheTtl1h` for a
+    /// model, so the 1h gate can be exercised in a `.rs` test WITHOUT naming a
+    /// model in production code (zero-hardcoding: the flag is the gate).
+    struct TtlCaps {
+        supports_1h: bool,
+    }
+
+    impl ModelCapabilities for TtlCaps {
+        fn has(&self, _model: &str, cap: Capability) -> bool {
+            matches!(cap, Capability::CacheTtl1h) && self.supports_1h
+        }
+        fn resolve_foundation(&self, m: &str) -> String {
+            m.to_string()
+        }
+        fn budget_ratios(&self, _model: &str) -> Option<crate::domain::BudgetRatios> {
+            None
+        }
+        fn min_budget_tokens(&self, _model: &str) -> Option<u32> {
+            None
+        }
+        fn max_cache_tokens(&self, _model: &str) -> Option<u32> {
+            Some(20_000)
+        }
+        fn cache_min_tokens(&self, _model: &str) -> Option<u32> {
+            Some(1)
+        }
+        fn max_cache_checkpoints(&self, _model: &str) -> Option<u32> {
+            Some(4)
+        }
+        fn beta_headers(&self, _model: &str) -> Vec<String> {
+            Vec::new()
+        }
+        fn reasoning_path(&self, _model: &str) -> crate::domain::ReasoningPath {
+            crate::domain::ReasoningPath::None
+        }
+        fn responses_backend(&self, _model: &str) -> crate::domain::ResponsesBackend {
+            crate::domain::ResponsesBackend::Converse
+        }
+        fn model_regions(&self, _model: &str) -> Option<Vec<String>> {
+            None
+        }
+    }
+
+    #[test]
+    fn cache_point_emits_ttl_when_present() {
+        assert_eq!(
+            cache_point(Some("1h")),
+            json!({ "cachePoint": { "type": "default", "ttl": "1h" } })
+        );
+        assert_eq!(
+            cache_point(Some("5m")),
+            json!({ "cachePoint": { "type": "default", "ttl": "5m" } })
+        );
+        // None ⇒ NO ttl key: byte-identical to the historical output.
+        assert_eq!(
+            cache_point(None),
+            json!({ "cachePoint": { "type": "default" } })
+        );
+        let none = serde_json::to_string(&cache_point(None)).unwrap();
+        assert!(!none.contains("ttl"), "None must not emit a ttl key");
+    }
+
+    #[test]
+    fn decorate_system_blocks_threads_ttl() {
+        let caps = FakeCaps::supports(Some(1), Some(20_000), Some(4));
+        let out = decorate_system_blocks(sys(&[&long_text(10)]), "m", &caps, true, Some("1h"));
+        let arr = out.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[1], cache_point(Some("1h")));
+        assert_eq!(arr[1]["cachePoint"]["ttl"], "1h");
+    }
+
+    #[test]
+    fn decorate_tools_threads_ttl() {
+        let caps = FakeCaps::supports(Some(1), Some(20_000), Some(4));
+        let out = decorate_tools(
+            tool_specs(&["t1"]),
+            "m",
+            &caps,
+            true,
+            0,
+            Some(4),
+            Some("1h"),
+        );
+        assert!(tools_tail_is_cache_point(&out));
+        let tail = out.as_array().unwrap().last().unwrap();
+        assert_eq!(tail, &cache_point(Some("1h")));
+        assert_eq!(tail["cachePoint"]["ttl"], "1h");
+    }
+
+    #[test]
+    fn decorate_messages_threads_ttl() {
+        let caps = FakeCaps::supports(Some(1), Some(20_000), Some(4));
+        let messages = Value::Array(vec![user_turn("q")]);
+        let out = decorate_messages(
+            messages,
+            "m",
+            &caps,
+            true,
+            0,
+            caps.checkpoints(),
+            Some("1h"),
+        );
+        let content = out[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[1], cache_point(Some("1h")));
+        assert_eq!(content[1]["cachePoint"]["ttl"], "1h");
+    }
+
+    #[test]
+    fn prompt_caching_ttl_parsed_from_extra_body() {
+        let mut extra = Some(json!({
+            "thinking": {"type": "enabled"},
+            "prompt_caching": {"system": true, "ttl": "1h"}
+        }));
+        let ctrl = PromptCachingControl::extract_and_strip(&mut extra);
+        assert_eq!(ctrl.ttl.as_deref(), Some("1h"));
+        assert_eq!(ctrl.system, Some(true));
+
+        // The control field is stripped; the Bedrock-bound field survives.
+        let obj = extra.expect("extra retained");
+        assert!(
+            obj.get("prompt_caching").is_none(),
+            "prompt_caching (incl. ttl) must be stripped from extra_body"
+        );
+        assert!(obj.get("thinking").is_some());
+
+        // Absent ttl ⇒ None (unchanged behavior).
+        let mut no_ttl = Some(json!({ "prompt_caching": {"system": true} }));
+        let ctrl2 = PromptCachingControl::extract_and_strip(&mut no_ttl);
+        assert_eq!(ctrl2.ttl, None);
+    }
+
+    #[test]
+    fn one_hour_downgraded_to_5m_on_unsupported_model() {
+        // Model LACKS cache_ttl_1h: a requested 1h resolves to 5m + downgrade flag.
+        let unsupported = TtlCaps { supports_1h: false };
+        let resolved = resolve_cache_ttl(Some("1h"), "5m", "m", &unsupported);
+        assert_eq!(resolved.effective, "5m");
+        assert_eq!(resolved.requested, "1h");
+        assert!(
+            resolved.downgraded,
+            "1h on unsupported model must downgrade"
+        );
+
+        // The emitted cachePoints (all zones) carry 5m — assert via decorated args.
+        let ttl = Some(resolved.effective.as_str());
+        let system = decorate_system_blocks(sys(&[&long_text(10)]), "m", &unsupported, true, ttl);
+        assert_eq!(system.as_array().unwrap()[1]["cachePoint"]["ttl"], "5m");
+        let messages = decorate_messages(
+            Value::Array(vec![user_turn("q")]),
+            "m",
+            &unsupported,
+            true,
+            0,
+            Some(4),
+            ttl,
+        );
+        assert_eq!(
+            messages[0]["content"].as_array().unwrap()[1]["cachePoint"]["ttl"],
+            "5m"
+        );
+
+        // Model SUPPORTS cache_ttl_1h: 1h is honored, no downgrade.
+        let supported = TtlCaps { supports_1h: true };
+        let ok = resolve_cache_ttl(Some("1h"), "5m", "m", &supported);
+        assert_eq!(ok.effective, "1h");
+        assert!(!ok.downgraded);
+
+        // 5m is always allowed on any caching-capable model (no downgrade).
+        let five = resolve_cache_ttl(Some("5m"), "5m", "m", &unsupported);
+        assert_eq!(five.effective, "5m");
+        assert!(!five.downgraded);
+    }
+
+    #[test]
+    fn resolve_cache_ttl_precedence_per_request_over_default() {
+        let supported = TtlCaps { supports_1h: true };
+        // Per-request override wins over the settings default.
+        let r = resolve_cache_ttl(Some("1h"), "5m", "m", &supported);
+        assert_eq!(r.effective, "1h");
+        // No per-request ttl ⇒ settings default applies.
+        let d = resolve_cache_ttl(None, "5m", "m", &supported);
+        assert_eq!(d.effective, "5m");
+        let d1h = resolve_cache_ttl(None, "1h", "m", &supported);
+        assert_eq!(d1h.effective, "1h");
+    }
+
+    #[test]
+    fn ttl_is_uniform_across_all_zones_in_one_request() {
+        // Every cachePoint placed across tools → system → messages carries the
+        // SAME ttl (no longer-before-shorter ordering).
+        let caps = FakeCaps::supports(Some(1), Some(20_000), Some(4));
+        let messages = Value::Array(vec![
+            user_turn("first"),
+            assistant_turn("reply"),
+            user_turn(&long_text(50)),
+        ]);
+        let (dt, ds, dm, grand) = run_three_zones(
+            tool_specs(&["get_weather", "search"]),
+            sys(&[&long_text(10)]),
+            messages,
+            "m",
+            &caps,
+            true,
+            Some(4),
+            Some("1h"),
+        );
+        assert_eq!(grand, 3);
+        let ttls = collect_ttls(&dt)
+            .into_iter()
+            .chain(collect_ttls(&ds))
+            .chain(collect_ttls(&dm))
+            .collect::<Vec<_>>();
+        assert_eq!(ttls.len(), 3, "one ttl per zone");
+        assert!(
+            ttls.iter().all(|t| t == "1h"),
+            "all cachePoint ttls must be uniform (1h), got {ttls:?}"
+        );
+    }
+
+    /// Recursively gather every `cachePoint.ttl` value present in a decorated
+    /// zone (arrays of blocks or message turns with nested `content` arrays).
+    fn collect_ttls(value: &Value) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Value::Array(arr) = value {
+            for item in arr {
+                if let Some(ttl) = item
+                    .get("cachePoint")
+                    .and_then(|cp| cp.get("ttl"))
+                    .and_then(Value::as_str)
+                {
+                    out.push(ttl.to_string());
+                }
+                if let Some(content) = item.get("content") {
+                    out.extend(collect_ttls(content));
+                }
+            }
+        }
+        out
     }
 
     /// Live integration test — skipped unless `BEDROCK_INTEGRATION` is set.

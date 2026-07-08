@@ -383,6 +383,7 @@ mod tests {
             enable_cross_region_inference: false,
             enable_application_inference_profiles: false,
             enable_prompt_caching: false,
+            prompt_cache_ttl: "5m".to_string(),
             disable_mantle: false,
             api_key: Some("k".to_string()),
             api_key_secret_arn: None,

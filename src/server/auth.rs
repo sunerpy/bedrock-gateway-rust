@@ -473,6 +473,7 @@ mod tests {
             enable_cross_region_inference: true,
             enable_application_inference_profiles: true,
             enable_prompt_caching: false,
+            prompt_cache_ttl: "5m".to_string(),
             bedrock_api_key: None,
             disable_mantle: false,
             api_key,

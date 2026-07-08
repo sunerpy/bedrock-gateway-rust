@@ -449,6 +449,7 @@ mod tests {
             enable_cross_region_inference: true,
             enable_application_inference_profiles: true,
             enable_prompt_caching: false,
+            prompt_cache_ttl: "5m".to_string(),
             api_key: None,
             api_key_secret_arn: None,
             api_key_param_name: None,

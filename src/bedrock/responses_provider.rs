@@ -167,6 +167,28 @@ impl BedrockResponsesProvider {
             caps.max_cache_checkpoints(resolved)
                 .unwrap_or(DEFAULT_MAX_CACHE_CHECKPOINTS),
         );
+
+        // Resolve the UNIFORM per-request cache TTL. On the Responses surface the
+        // Option-B control rides `extra_body.prompt_caching.ttl`, which flattens
+        // into `req.extra["extra_body"]`. A `1h` request on a model lacking
+        // `Capability::CacheTtl1h` is silently downgraded to `5m` with a
+        // metadata-only WARN (no content).
+        let ctrl = cache::PromptCachingControl::parse(req.extra.get("extra_body"));
+        let resolved_ttl = cache::resolve_cache_ttl(
+            ctrl.ttl.as_deref(),
+            &self.settings.prompt_cache_ttl,
+            resolved,
+            caps,
+        );
+        if resolved_ttl.downgraded {
+            tracing::warn!(
+                model = %resolved,
+                requested_ttl = %resolved_ttl.requested,
+                effective_ttl = %resolved_ttl.effective,
+                "prompt-cache 1h TTL not supported by model; downgraded to 5m"
+            );
+        }
+        let ttl = Some(resolved_ttl.effective.as_str());
         let mut used: u32 = 0;
 
         if let Some(Value::Object(tc)) = tool_config.as_mut() {
@@ -178,18 +200,26 @@ impl BedrockResponsesProvider {
                     enabled,
                     used,
                     max_checkpoints,
+                    ttl,
                 );
                 used += provider::count_cache_points(&decorated);
                 tc.insert("tools".to_string(), decorated);
             }
         }
 
-        let decorated_system = cache::decorate_system_blocks(system, resolved, caps, enabled);
+        let decorated_system = cache::decorate_system_blocks(system, resolved, caps, enabled, ttl);
         used += provider::count_cache_points(&decorated_system);
         system = decorated_system;
 
-        messages =
-            cache::decorate_messages(messages, resolved, caps, enabled, used, max_checkpoints);
+        messages = cache::decorate_messages(
+            messages,
+            resolved,
+            caps,
+            enabled,
+            used,
+            max_checkpoints,
+            ttl,
+        );
         used += provider::count_cache_points(&messages);
 
         Ok(AssembledConverse {
@@ -489,6 +519,7 @@ mod tests {
             enable_cross_region_inference: false,
             enable_application_inference_profiles: false,
             enable_prompt_caching,
+            prompt_cache_ttl: "5m".to_string(),
             api_key: Some("k".to_string()),
             api_key_secret_arn: None,
             api_key_param_name: None,
