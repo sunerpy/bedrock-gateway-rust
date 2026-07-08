@@ -319,6 +319,15 @@ pub async fn completions(
                 let prompt_tokens = chat.usage.prompt_tokens;
                 let completion_tokens = chat.usage.completion_tokens;
                 let total_tokens = chat.usage.total_tokens;
+                // cached_tokens is the cache-READ count already computed by
+                // compute_token_usage and surfaced under prompt_tokens_details.
+                let cached_tokens = chat
+                    .usage
+                    .prompt_tokens_details
+                    .as_ref()
+                    .map(|d| d.cached_tokens)
+                    .unwrap_or(0);
+                let cache_hit = cached_tokens > 0;
                 let resp = CompletionResponse {
                     id: format!(
                         "cmpl-{}",
@@ -338,6 +347,8 @@ pub async fn completions(
                     prompt_tokens,
                     completion_tokens,
                     total_tokens,
+                    cached_tokens,
+                    cache_hit,
                     latency_ms = received_at.elapsed().as_millis(),
                     "completions completed"
                 );
