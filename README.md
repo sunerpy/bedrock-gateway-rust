@@ -17,6 +17,7 @@ Point any OpenAI SDK, tool, or agent at this gateway and it routes requests to A
 - **100% Rust** — single statically-linked binary, distroless Docker image (~12 MB compressed), no GC, low memory footprint, high concurrency under load.
 - **Wire-exact OpenAI compatibility** — existing OpenAI SDKs, clients, and agents connect with zero code changes. No invented top-level fields; Bedrock-only features go through the standard `extra_body` mechanism.
 - **OpenAI Responses API** — full support for `POST /api/v1/responses`, including streaming. Required by `codex` (`wire_api = "responses"`). Stateless; `store` and `previous_response_id` are accepted and silently ignored.
+- **Legacy text completions** — `POST /api/v1/completions` for editors like Zed edit-prediction; reuses the Converse path and returns the `text_completion` shape (stream + non-stream).
 - **Automatic prompt caching** — cache-point injection is on by default. The gateway places cache points across tools, system prompt, and messages automatically (up to `max_cache_checkpoints` per model). No client changes needed. Thresholds and limits are config-driven per model; a family fallback entry covers new Claude models automatically.
 - **Extended thinking / reasoning** — Claude `budget_tokens`, `adaptive_thinking`, and DeepSeek string-form reasoning all supported. Map OpenAI's `reasoning_effort` levels (`low` / `medium` / `high` / `xhigh` / `max`) through `extra_body`; the gateway picks the right Bedrock wire format per model.
 - **Cross-region inference profiles** — all seven geographic prefixes (`us.` / `eu.` / `apac.` / `jp.` / `au.` / `ca.` / `global.`) work transparently. Capability matching strips the prefix; Bedrock calls always use the original model ID.
@@ -31,25 +32,27 @@ Point any OpenAI SDK, tool, or agent at this gateway and it routes requests to A
 
 All endpoints are prefixed by `API_ROUTE_PREFIX` (default `/api/v1`).
 
-| Method | Path                       | Description                                                   |
-| ------ | -------------------------- | ------------------------------------------------------------- |
-| `POST` | `/api/v1/chat/completions` | Chat completions — streaming (SSE) and non-streaming          |
-| `POST` | `/api/v1/responses`        | OpenAI Responses API — stateless, streaming and non-streaming |
-| `POST` | `/api/v1/embeddings`       | Embeddings — Cohere, Titan, and Nova families                 |
-| `GET`  | `/api/v1/models`           | Live model catalog from Bedrock control plane                 |
-| `GET`  | `/api/v1/models/{id}`      | Single model lookup (supports inference profile IDs)          |
-| `GET`  | `/api/v1/health`           | Liveness probe — returns `200 OK`                             |
+| Method | Path                       | Description                                                                                     |
+| ------ | -------------------------- | ----------------------------------------------------------------------------------------------- |
+| `POST` | `/api/v1/chat/completions` | Chat completions — streaming (SSE) and non-streaming                                            |
+| `POST` | `/api/v1/completions`      | Legacy text completions (`text_completion`) — for Zed edit-prediction; reuses the Converse path |
+| `POST` | `/api/v1/responses`        | OpenAI Responses API — stateless, streaming and non-streaming                                   |
+| `POST` | `/api/v1/embeddings`       | Embeddings — Cohere, Titan, and Nova families                                                   |
+| `GET`  | `/api/v1/models`           | Live model catalog from Bedrock control plane                                                   |
+| `GET`  | `/api/v1/models/{id}`      | Single model lookup (supports inference profile IDs)                                            |
+| `GET`  | `/api/v1/health`           | Liveness probe — returns `200 OK`                                                               |
 
 ---
 
 ## Client Compatibility
 
-| Client          | Wire API                | Endpoint                        | Status       |
-| --------------- | ----------------------- | ------------------------------- | ------------ |
-| **opencode**    | OpenAI Chat Completions | `POST /api/v1/chat/completions` | ✅ Supported |
-| **hermes**      | OpenAI Chat Completions | `POST /api/v1/chat/completions` | ✅ Supported |
-| **codex**       | OpenAI Responses API    | `POST /api/v1/responses`        | ✅ Supported |
-| **claude code** | Anthropic Messages      | `POST /v1/messages`             | ⏳ Roadmap   |
+| Client                    | Wire API                  | Endpoint                        | Status      |
+| ------------------------- | ------------------------- | ------------------------------- | ----------- |
+| **opencode**              | OpenAI Chat Completions   | `POST /api/v1/chat/completions` | ✅ Supported |
+| **hermes**                | OpenAI Chat Completions   | `POST /api/v1/chat/completions` | ✅ Supported |
+| **Zed** (edit prediction) | OpenAI Legacy Completions | `POST /api/v1/completions`      | ✅ Supported |
+| **codex**                 | OpenAI Responses API      | `POST /api/v1/responses`        | ✅ Supported |
+| **claude code**           | Anthropic Messages        | `POST /v1/messages`             | ⏳ Roadmap   |
 
 ---
 
