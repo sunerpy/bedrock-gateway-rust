@@ -34,10 +34,3 @@ bedrock-gateway has been deployed.
 {{- else }}
    - Set serviceAccount.annotations."eks.amazonaws.com/role-arn" for IRSA, or provide env.AWS_BEARER_TOKEN_BEDROCK.
 {{- end }}
-
-{{- if eq .Values.image.repository "public.ecr.aws/REPLACE_ME_ECR_ALIAS/bedrock-gateway-rust" }}
-
-WARNING: image.repository still uses the placeholder ECR alias
-"REPLACE_ME_ECR_ALIAS". Set image.repository to your published image before a
-real deployment. [MANUAL-2]
-{{- end }}

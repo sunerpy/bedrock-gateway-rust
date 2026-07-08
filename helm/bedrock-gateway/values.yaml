@@ -4,9 +4,9 @@
 replicaCount: 1
 
 image:
-  # [MANUAL-2] Replace REPLACE_ME_ECR_ALIAS with your ECR Public alias once the
-  # image is published (see PR-A). This is the release image from public ECR.
-  repository: public.ecr.aws/REPLACE_ME_ECR_ALIAS/bedrock-gateway-rust
+  # Release image from public ECR (see PR-A). Override repository/tag to pin a
+  # private mirror or a specific version.
+  repository: public.ecr.aws/k5i7b1e0/bedrock-gateway-rust
   # Empty tag falls back to .Chart.AppVersion.
   tag: ""
   pullPolicy: IfNotPresent
@@ -45,12 +45,23 @@ env:
   BIND_ADDR: null
   LOG_LEVEL: info
   MANTLE_BASE_URL_TEMPLATE: null
+  # ALLOWED_MODELS: comma-separated model-id substrings for the /models
+  # allow-list. Unset/empty ⇒ allow all (backward compatible).
+  ALLOWED_MODELS: null
+  # PROMPT_CACHE_TTL: injected cachePoint TTL ("5m" or "1h"). Unset ⇒ binary
+  # default "5m".
+  PROMPT_CACHE_TTL: null
+  # OTEL_EXPORTER_OTLP_ENDPOINT: OTLP collector endpoint. Unset ⇒ no OTLP export.
+  OTEL_EXPORTER_OTLP_ENDPOINT: null
   # --- Boolean-valued (settings.rs) ---
   DEBUG: null
   ENABLE_CROSS_REGION_INFERENCE: null
   ENABLE_APPLICATION_INFERENCE_PROFILES: null
   ENABLE_PROMPT_CACHING: null
   DISABLE_MANTLE: null
+  # OTEL_CAPTURE_CONTENT: attach prompt/completion text to OTLP spans. Unset ⇒
+  # false (spans stay REDACTED — metadata/counts only).
+  OTEL_CAPTURE_CONTENT: null
   # --- Integer-valued (settings.rs) ---
   PORT: null # defaults from containerPort above; see deployment.yaml
   AWS_CONNECT_TIMEOUT_SECS: null
