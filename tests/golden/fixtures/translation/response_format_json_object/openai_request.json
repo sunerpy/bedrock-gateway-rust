@@ -1,0 +1,6 @@
+{
+  "model": "claude-sonnet-4-5",
+  "messages": [{ "role": "user", "content": "Return JSON." }],
+  "max_tokens": 2048,
+  "response_format": { "type": "json_object" }
+}

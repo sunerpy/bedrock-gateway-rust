@@ -251,6 +251,7 @@ pub async fn completions(
         tools: None,
         tool_choice: Default::default(),
         stop: request.stop.clone(),
+        response_format: None,
         extra_body: None,
         extra: Default::default(),
     };

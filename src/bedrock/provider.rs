@@ -59,7 +59,8 @@ use std::sync::Arc;
 
 use aws_sdk_bedrockruntime::types::{
     AnyToolChoice, AutoToolChoice, CachePointBlock, CachePointType, ContentBlock, ConversationRole,
-    ImageBlock, ImageFormat, ImageSource, InferenceConfiguration, Message, SpecificToolChoice,
+    ImageBlock, ImageFormat, ImageSource, InferenceConfiguration, JsonSchemaDefinition, Message,
+    OutputConfig, OutputFormat, OutputFormatStructure, OutputFormatType, SpecificToolChoice,
     SystemContentBlock, Tool, ToolChoice, ToolConfiguration, ToolInputSchema, ToolResultBlock,
     ToolResultContentBlock, ToolSpecification, ToolUseBlock,
 };
@@ -457,6 +458,49 @@ fn build_sdk_tool_choice(choice: &Value) -> Result<ToolChoice, AppError> {
     )))
 }
 
+/// Build the SDK `OutputConfig` from the `ConverseArgs::output_config` JSON
+/// (`{"textFormat":{"type":"json_schema","structure":{"jsonSchema":{"schema":<string>,"name"?:...}}}}`).
+/// The `schema` value is already a STRING (stringified in translation); it is
+/// forwarded verbatim into `JsonSchemaDefinition.schema`.
+pub(crate) fn build_sdk_output_config(oc: &Value) -> Result<OutputConfig, AppError> {
+    let tf = oc
+        .get("textFormat")
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::Internal("outputConfig missing `textFormat`".to_string()))?;
+
+    let js = tf
+        .get("structure")
+        .and_then(|s| s.get("jsonSchema"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            AppError::Internal("outputConfig missing `structure.jsonSchema`".to_string())
+        })?;
+
+    let schema = js
+        .get("schema")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Internal("jsonSchema.schema must be a string".to_string()))?;
+
+    let mut def = JsonSchemaDefinition::builder().schema(schema);
+    if let Some(name) = js.get("name").and_then(Value::as_str) {
+        def = def.name(name);
+    }
+    if let Some(desc) = js.get("description").and_then(Value::as_str) {
+        def = def.description(desc);
+    }
+    let def = def
+        .build()
+        .map_err(|e| AppError::Internal(format!("invalid jsonSchema: {e}")))?;
+
+    let format = OutputFormat::builder()
+        .r#type(OutputFormatType::JsonSchema)
+        .structure(OutputFormatStructure::JsonSchema(def))
+        .build()
+        .map_err(|e| AppError::Internal(format!("invalid outputFormat: {e}")))?;
+
+    Ok(OutputConfig::builder().text_format(format).build())
+}
+
 // ===========================================================================
 // SDK ConverseOutput → response.rs JSON shape
 // ===========================================================================
@@ -831,6 +875,9 @@ impl BedrockChatProvider {
         if let Some(tc) = &args.tool_config {
             call = call.tool_config(build_sdk_tool_config(tc).map_err(SendError::App)?);
         }
+        if let Some(oc) = &args.output_config {
+            call = call.output_config(build_sdk_output_config(oc).map_err(SendError::App)?);
+        }
 
         if let Some(route) = &route {
             call.customize()
@@ -883,6 +930,9 @@ impl BedrockChatProvider {
         }
         if let Some(tc) = &args.tool_config {
             call = call.tool_config(build_sdk_tool_config(tc).map_err(SendError::App)?);
+        }
+        if let Some(oc) = &args.output_config {
+            call = call.output_config(build_sdk_output_config(oc).map_err(SendError::App)?);
         }
 
         if let Some(route) = &route {
@@ -1121,6 +1171,7 @@ mod tests {
             tools,
             tool_choice: OpenAiToolChoice::default(),
             stop: None,
+            response_format: None,
             extra_body: None,
             extra: HashMap::new(),
         }

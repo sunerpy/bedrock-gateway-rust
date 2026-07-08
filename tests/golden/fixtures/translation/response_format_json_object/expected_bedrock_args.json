@@ -1,0 +1,16 @@
+{
+  "modelId": "claude-sonnet-4-5",
+  "messages": [{ "role": "user", "content": [{ "text": "Return JSON." }] }],
+  "system": [],
+  "inferenceConfig": { "maxTokens": 2048 },
+  "outputConfig": {
+    "textFormat": {
+      "type": "json_schema",
+      "structure": {
+        "jsonSchema": {
+          "schema": "{\"type\":\"object\"}"
+        }
+      }
+    }
+  }
+}

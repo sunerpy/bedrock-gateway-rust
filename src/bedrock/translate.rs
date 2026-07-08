@@ -54,8 +54,8 @@ use serde_json::{json, Map, Value};
 use crate::domain::{Capability, ModelCapabilities};
 use crate::error::AppError;
 use crate::openai::schema::{
-    ChatRequest, ContentInput, ContentPart, Message, StringOrVec, SystemContentInput,
-    ToolContentInput,
+    ChatRequest, ContentInput, ContentPart, Message, ResponseFormat, StringOrVec,
+    SystemContentInput, ToolContentInput,
 };
 
 /// The fully-built Converse request arguments (pure translation output).
@@ -80,6 +80,9 @@ pub struct ConverseArgs {
     /// `toolConfig` slot — populated by the tool task (17). Translation leaves
     /// this `None`; the seam owner fills it.
     pub tool_config: Option<Value>,
+    /// `outputConfig` slot — native structured output (`textFormat`). `None`
+    /// unless the request carried a non-passthrough `response_format`.
+    pub output_config: Option<Value>,
 }
 
 impl ConverseArgs {
@@ -96,6 +99,9 @@ impl ConverseArgs {
         }
         if let Some(tc) = &self.tool_config {
             obj.insert("toolConfig".to_string(), tc.clone());
+        }
+        if let Some(oc) = &self.output_config {
+            obj.insert("outputConfig".to_string(), oc.clone());
         }
         Value::Object(obj)
     }
@@ -711,6 +717,8 @@ pub async fn to_converse_args(
         Some(Value::Object(additional))
     };
 
+    let output_config = build_output_config(req, caps)?;
+
     Ok(ConverseArgs {
         model_id: req.model.clone(),
         messages,
@@ -719,7 +727,62 @@ pub async fn to_converse_args(
         additional_model_request_fields,
         // Tool config is the task-17 seam; translation never builds it.
         tool_config: extras.tool_config.clone(),
+        output_config,
     })
+}
+
+/// Build the Bedrock `outputConfig` from an OpenAI `response_format`.
+///
+/// Returns `None` for an absent or `text` (passthrough) format — byte-stable
+/// with the pre-feature behavior. For `json_object` / `json_schema`, gates on
+/// [`Capability::StructuredOutput`] (clean 400 when unsupported) and emits a
+/// native `outputConfig.textFormat` with the JSON schema STRINGIFIED into the
+/// `jsonSchema.schema` string slot (grammar-constrained decoding — not
+/// tool-coercion).
+fn build_output_config(
+    req: &ChatRequest,
+    caps: &dyn ModelCapabilities,
+) -> Result<Option<Value>, AppError> {
+    let format = match &req.response_format {
+        None | Some(ResponseFormat::Text) => return Ok(None),
+        Some(other) => other,
+    };
+
+    if !caps.has(&req.model, Capability::StructuredOutput) {
+        return Err(AppError::BadRequest(format!(
+            "model `{}` does not support response_format (structured output)",
+            req.model
+        )));
+    }
+
+    let (schema, name) = match format {
+        ResponseFormat::Text => unreachable!("text handled above"),
+        ResponseFormat::JsonObject => (json!({ "type": "object" }), None),
+        ResponseFormat::JsonSchema { json_schema } => (
+            json_schema
+                .schema
+                .clone()
+                .unwrap_or_else(|| json!({ "type": "object" })),
+            json_schema.name.clone(),
+        ),
+    };
+
+    let schema_string = serde_json::to_string(&schema).map_err(|e| {
+        AppError::Internal(format!("failed to stringify response_format schema: {e}"))
+    })?;
+
+    let mut json_schema = Map::new();
+    json_schema.insert("schema".to_string(), Value::String(schema_string));
+    if let Some(name) = name {
+        json_schema.insert("name".to_string(), Value::String(name));
+    }
+
+    Ok(Some(json!({
+        "textFormat": {
+            "type": "json_schema",
+            "structure": { "jsonSchema": Value::Object(json_schema) }
+        }
+    })))
 }
 
 /// Merge a single beta header into `additional["anthropic_beta"]`, matching the
@@ -843,7 +906,8 @@ mod tests {
     use crate::bedrock::capabilities::ConfigModelCapabilities;
     use crate::config::ModelCapabilityConfig;
     use crate::openai::schema::{
-        ContentInput, ContentPart, ImageContent, ImageUrl, Message, SystemContentInput, TextContent,
+        ContentInput, ContentPart, ImageContent, ImageUrl, JsonSchemaSpec, Message, ResponseFormat,
+        SystemContentInput, TextContent,
     };
     use std::collections::HashMap;
 
@@ -898,6 +962,7 @@ mod tests {
             tools: None,
             tool_choice: Default::default(),
             stop: None,
+            response_format: None,
             extra_body: None,
             extra: HashMap::new(),
         }
@@ -1782,5 +1847,67 @@ mod tests {
     #[test]
     fn parse_image_data_uri_rejects_non_data() {
         assert_eq!(parse_image_data_uri("https://x/y.png").expect("ok"), None);
+    }
+
+    #[tokio::test]
+    async fn response_format_json_object_builds_output_config() {
+        let mut req = base_request("claude-sonnet-4-5", vec![user_text("hi")]);
+        req.response_format = Some(ResponseFormat::JsonObject);
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+        let oc = args.output_config.expect("output_config present");
+        assert!(oc["textFormat"].is_object());
+        assert_eq!(oc["textFormat"]["type"], "json_schema");
+    }
+
+    #[tokio::test]
+    async fn response_format_json_schema_stringifies_schema() {
+        let mut req = base_request("claude-sonnet-4-5", vec![user_text("hi")]);
+        req.response_format = Some(ResponseFormat::JsonSchema {
+            json_schema: JsonSchemaSpec {
+                name: Some("x".to_string()),
+                description: None,
+                strict: None,
+                schema: Some(json!({"type": "object", "properties": {"a": {"type": "string"}}})),
+            },
+        });
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+        let oc = args.output_config.expect("output_config present");
+        let schema = &oc["textFormat"]["structure"]["jsonSchema"]["schema"];
+        assert!(
+            schema.is_string(),
+            "schema must be stringified, got: {schema}"
+        );
+        assert_eq!(oc["textFormat"]["structure"]["jsonSchema"]["name"], "x");
+    }
+
+    #[tokio::test]
+    async fn response_format_unsupported_model_is_400() {
+        let mut req = base_request("deepseek.v3", vec![user_text("hi")]);
+        req.response_format = Some(ResponseFormat::JsonObject);
+        let c = caps();
+        let r = resolver(false);
+        let err = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect_err("must reject unsupported model");
+        assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn response_format_absent_is_noop() {
+        let req = base_request("claude-sonnet-4-5", vec![user_text("hi")]);
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+        assert!(args.output_config.is_none());
     }
 }

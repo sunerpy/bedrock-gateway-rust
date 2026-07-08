@@ -1,0 +1,12 @@
+{
+  "model": "claude-sonnet-4-5",
+  "messages": [{ "role": "user", "content": "Extract the person." }],
+  "max_tokens": 2048,
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "person",
+      "schema": { "type": "object" }
+    }
+  }
+}

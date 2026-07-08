@@ -39,6 +39,12 @@
 #                               request. Stronger than temperature_topp_conflict
 #                               (which only drops top_p when temperature is present).
 #                               Applies to Claude Opus 4.7+, Sonnet 5, Fable/Mythos 5.
+#   structured_output         – this model supports native structured output via
+#                               Bedrock Converse outputConfig.textFormat (grammar-
+#                               constrained decoding); when set, an OpenAI
+#                               response_format (json_object / json_schema) is
+#                               honored by emitting outputConfig. Models without
+#                               this flag reject response_format with HTTP 400.
 #
 # reasoning_path — selects the shape of the reasoning config the gateway emits:
 #   adaptive_thinking – additionalModelRequestFields.thinking={type:"adaptive"}
@@ -101,7 +107,7 @@ high = -1.0 # sentinel meaning "max_tokens - 1" (the maximum thinking budget)
 
 [[model]]
 match = "claude-sonnet-4-5"
-capabilities = ["temperature_topp_conflict"]
+capabilities = ["temperature_topp_conflict", "structured_output"]
 # Non-adaptive Claude: reasoning uses the budget_tokens form (see budget_ratios).
 [model.params]
 cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Sonnet
@@ -109,28 +115,28 @@ reasoning_path = "budget_tokens"
 
 [[model]]
 match = "claude-sonnet-4-6"
-capabilities = ["temperature_topp_conflict", "context_1m_beta"]
+capabilities = ["temperature_topp_conflict", "context_1m_beta", "structured_output"]
 [model.params]
 cache_min_tokens = 1024 # Minimum cacheable prefix tokens; Anthropic-on-Bedrock standard for Sonnet family
 reasoning_path = "budget_tokens"
 
 [[model]]
 match = "claude-haiku-4-5"
-capabilities = ["temperature_topp_conflict"]
+capabilities = ["temperature_topp_conflict", "structured_output"]
 [model.params]
 cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Haiku
 reasoning_path = "budget_tokens"
 
 [[model]]
 match = "claude-opus-4-5"
-capabilities = ["temperature_topp_conflict"]
+capabilities = ["temperature_topp_conflict", "structured_output"]
 [model.params]
 cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Opus
 reasoning_path = "budget_tokens"
 
 [[model]]
 match = "claude-opus-4-6"
-capabilities = ["context_1m_beta", "no_assistant_prefill", "adaptive_thinking"]
+capabilities = ["context_1m_beta", "no_assistant_prefill", "adaptive_thinking", "structured_output"]
 # Adaptive-thinking Claude: reasoning uses the thinking.type=adaptive form.
 [model.params]
 cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
@@ -138,7 +144,7 @@ reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-opus-4-7"
-capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params"]
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "structured_output"]
 # Opus 4.7 and later deprecate temperature/top_p (HTTP 400 on non-default values).
 [model.params]
 cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
@@ -146,21 +152,21 @@ reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-opus-4-8"
-capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params"]
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "structured_output"]
 [model.params]
 cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
 reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-mythos-5"
-capabilities = ["adaptive_thinking", "drop_sampling_params"]
+capabilities = ["adaptive_thinking", "drop_sampling_params", "structured_output"]
 [model.params]
 cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
 reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-fable-5"
-capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params"]
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "structured_output"]
 [model.params]
 cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
 reasoning_path = "adaptive_thinking"
@@ -171,7 +177,7 @@ reasoning_path = "adaptive_thinking"
 # MUST stay LAST among claude entries — matching is first-match substring, so
 # specific claude-* entries above win; this only catches NEW/unlisted Claude ids.
 match = "anthropic.claude"
-capabilities = []
+capabilities = ["structured_output"]
 [model.params]
 cache_min_tokens = 4096 # conservative floor for unlisted Claude versions
 
