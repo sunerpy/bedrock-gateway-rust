@@ -555,7 +555,10 @@ fn collect_passthrough_fields(req: &ChatRequest) -> Map<String, Value> {
 ///
 /// `maxTokens` always; `temperature`/`topP` only when set; drop `topP` when
 /// both are present and the model has the temperature/topP conflict capability
-/// (bedrock.py:1134-1138); `stop` (string or list) → `stopSequences`.
+/// (bedrock.py:1134-1138); drop BOTH `temperature` and `topP` when the model
+/// has [`Capability::DropSamplingParams`] (Opus 4.7+, Sonnet 5, Fable/Mythos 5
+/// reject non-default sampling params with HTTP 400); `stop` (string or list)
+/// → `stopSequences`.
 fn build_inference_config(req: &ChatRequest, caps: &dyn ModelCapabilities) -> Value {
     let mut cfg = Map::new();
 
@@ -575,6 +578,14 @@ fn build_inference_config(req: &ChatRequest, caps: &dyn ModelCapabilities) -> Va
         && cfg.contains_key("topP")
         && caps.has(&req.model, Capability::TemperatureToppConflict)
     {
+        cfg.remove("topP");
+    }
+
+    // Models that deprecate all sampling parameters (Claude Opus 4.7+, Sonnet 5,
+    // Fable/Mythos 5) return HTTP 400 for any non-default temperature/topP, so
+    // strip both unconditionally.
+    if caps.has(&req.model, Capability::DropSamplingParams) {
+        cfg.remove("temperature");
         cfg.remove("topP");
     }
 
@@ -1145,6 +1156,74 @@ mod tests {
         assert!((temp - 0.7).abs() < 1e-6, "temperature ~0.7, got {temp}");
         let topp = args.inference_config["topP"].as_f64().unwrap();
         assert!((topp - 0.9).abs() < 1e-6, "topP ~0.9, got {topp}");
+    }
+
+    #[tokio::test]
+    async fn drop_sampling_params_strips_both_temperature_and_topp() {
+        // Opus 4.7+ / Sonnet 5 / Fable/Mythos 5 reject any non-default sampling
+        // param with HTTP 400, so drop_sampling_params must strip BOTH.
+        for model in [
+            "us.anthropic.claude-opus-4-7",
+            "anthropic.claude-opus-4-8",
+            "claude-mythos-5",
+            "claude-fable-5",
+        ] {
+            let mut req = base_request(model, vec![user_text("hi")]);
+            req.temperature = Some(0.7);
+            req.top_p = Some(0.9);
+            let c = caps();
+            let r = resolver(false);
+            let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+                .await
+                .expect("translate");
+            assert!(
+                args.inference_config.get("temperature").is_none(),
+                "{model}: temperature must be dropped"
+            );
+            assert!(
+                args.inference_config.get("topP").is_none(),
+                "{model}: topP must be dropped"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn drop_sampling_params_strips_temperature_even_without_topp() {
+        // Regression for issue #248: a lone temperature (no top_p) still 400s on
+        // Opus 4.7, so it must be stripped even when top_p is absent.
+        let mut req = base_request("us.anthropic.claude-opus-4-7", vec![user_text("hi")]);
+        req.temperature = Some(0.7);
+        req.top_p = None;
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+        assert!(
+            args.inference_config.get("temperature").is_none(),
+            "lone temperature must be dropped on drop_sampling_params models"
+        );
+    }
+
+    #[tokio::test]
+    async fn opus_4_6_keeps_sampling_params() {
+        // Opus 4.6 predates the deprecation and still accepts temperature/top_p —
+        // it must NOT carry drop_sampling_params.
+        let mut req = base_request("us.anthropic.claude-opus-4-6", vec![user_text("hi")]);
+        req.temperature = Some(0.7);
+        req.top_p = Some(0.9);
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+        let temp = args.inference_config["temperature"].as_f64().unwrap();
+        assert!(
+            (temp - 0.7).abs() < 1e-6,
+            "4.6 keeps temperature, got {temp}"
+        );
+        let topp = args.inference_config["topP"].as_f64().unwrap();
+        assert!((topp - 0.9).abs() < 1e-6, "4.6 keeps topP, got {topp}");
     }
 
     #[tokio::test]

@@ -333,22 +333,25 @@ mod tests {
                 "claude-opus-4-6",
                 &[Context1mBeta, NoAssistantPrefill, AdaptiveThinking],
             ),
-            ("claude-opus-4-7", &[NoAssistantPrefill, AdaptiveThinking]),
-            ("claude-opus-4-8", &[NoAssistantPrefill, AdaptiveThinking]),
-            ("claude-mythos-5", &[AdaptiveThinking]),
+            (
+                "claude-opus-4-7",
+                &[NoAssistantPrefill, AdaptiveThinking, DropSamplingParams],
+            ),
+            (
+                "claude-opus-4-8",
+                &[NoAssistantPrefill, AdaptiveThinking, DropSamplingParams],
+            ),
+            ("claude-mythos-5", &[AdaptiveThinking, DropSamplingParams]),
             (
                 "claude-fable-5",
-                &[
-                    TemperatureToppConflict,
-                    NoAssistantPrefill,
-                    AdaptiveThinking,
-                ],
+                &[NoAssistantPrefill, AdaptiveThinking, DropSamplingParams],
             ),
         ];
         let all = [
             TemperatureToppConflict,
             NoAssistantPrefill,
             AdaptiveThinking,
+            DropSamplingParams,
             Context1mBeta,
         ];
         for (substr, expected) in table {

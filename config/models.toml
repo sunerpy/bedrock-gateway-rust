@@ -33,6 +33,12 @@
 #                               form; when set, reasoning is configured as
 #                               thinking.type=adaptive + output_config.effort
 #                               (it rejects the budget_tokens form with HTTP 400).
+#   drop_sampling_params      – this model deprecates ALL sampling parameters and
+#                               returns HTTP 400 on any non-default temperature or
+#                               top_p; when set, the gateway strips both from the
+#                               request. Stronger than temperature_topp_conflict
+#                               (which only drops top_p when temperature is present).
+#                               Applies to Claude Opus 4.7+, Sonnet 5, Fable/Mythos 5.
 #
 # reasoning_path — selects the shape of the reasoning config the gateway emits:
 #   adaptive_thinking – additionalModelRequestFields.thinking={type:"adaptive"}
@@ -132,28 +138,29 @@ reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-opus-4-7"
-capabilities = ["no_assistant_prefill", "adaptive_thinking"]
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params"]
+# Opus 4.7 and later deprecate temperature/top_p (HTTP 400 on non-default values).
 [model.params]
 cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
 reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-opus-4-8"
-capabilities = ["no_assistant_prefill", "adaptive_thinking"]
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params"]
 [model.params]
 cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
 reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-mythos-5"
-capabilities = ["adaptive_thinking"]
+capabilities = ["adaptive_thinking", "drop_sampling_params"]
 [model.params]
 cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
 reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-fable-5"
-capabilities = ["temperature_topp_conflict", "no_assistant_prefill", "adaptive_thinking"]
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params"]
 [model.params]
 cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
 reasoning_path = "adaptive_thinking"
