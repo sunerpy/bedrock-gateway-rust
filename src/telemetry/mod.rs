@@ -34,6 +34,9 @@ use tracing_subscriber::{
     filter::EnvFilter, layer::SubscriberExt, reload, util::SubscriberInitExt, Registry,
 };
 
+#[cfg(feature = "otel")]
+pub mod otel;
+
 /// Service name attached as a standard field to every log event.
 pub const SERVICE_NAME: &str = "bedrock-gateway";
 
@@ -61,6 +64,15 @@ static RELOAD_HANDLE: OnceLock<ReloadHandle> = OnceLock::new();
 /// construct layers in isolation instead, but `init_telemetry` itself is also
 /// made idempotent: the second and later calls are no-ops returning `Ok`.
 static INITIALIZED: OnceLock<()> = OnceLock::new();
+
+/// Holds the OTLP providers for the process lifetime so their background export
+/// pipelines stay alive. Populated only under the `otel` feature when an
+/// endpoint is configured; otherwise never set.
+#[cfg(feature = "otel")]
+static OTEL_PROVIDERS: OnceLock<(
+    opentelemetry_sdk::trace::TracerProvider,
+    opentelemetry_sdk::metrics::SdkMeterProvider,
+)> = OnceLock::new();
 
 /// Build the [`EnvFilter`] used as the base verbosity directive.
 ///
@@ -96,6 +108,18 @@ fn build_reloadable_filter(level: &str) -> (reload::Layer<EnvFilter, Registry>, 
     reload::Layer::new(filter)
 }
 
+/// Opt-in OpenTelemetry knobs threaded from configuration into telemetry init.
+///
+/// `endpoint` is the OTLP collector URL (`OTEL_EXPORTER_OTLP_ENDPOINT`);
+/// `capture_content` mirrors `OTEL_CAPTURE_CONTENT`. Both are consumed only when
+/// the crate is built with the `otel` feature — the fields exist unconditionally
+/// so callers (`main`, tests) compile identically regardless of the feature.
+#[derive(Debug, Clone, Default)]
+pub struct OtelConfig {
+    pub endpoint: Option<String>,
+    pub capture_content: bool,
+}
+
 /// Initialize the global tracing subscriber exactly once.
 ///
 /// * `debug` — when `true`, logs are emitted as pretty, multi-line, colourised
@@ -104,6 +128,10 @@ fn build_reloadable_filter(level: &str) -> (reload::Layer<EnvFilter, Registry>, 
 ///   aggregation.
 /// * `level` — the fallback filter directive used when `RUST_LOG` is unset
 ///   (see [`build_env_filter`]).
+/// * `otel` — opt-in OpenTelemetry configuration. With the `otel` feature and a
+///   configured `endpoint`, an OTLP tracer/meter provider is initialized and an
+///   `OpenTelemetryLayer` is composed into the registry. Without the feature, or
+///   with no endpoint, behavior is IDENTICAL to before this argument existed.
 ///
 /// Returns the [`ReloadHandle`] so the caller may adjust the level at runtime.
 /// The handle is also stored globally (see [`set_global_level`]).
@@ -111,7 +139,7 @@ fn build_reloadable_filter(level: &str) -> (reload::Layer<EnvFilter, Registry>, 
 /// This function is idempotent: calling it more than once is a no-op that
 /// returns the previously installed handle, guarding against the double-init
 /// panic that `tracing` would otherwise raise.
-pub fn init_telemetry(debug: bool, level: &str) -> Result<ReloadHandle> {
+pub fn init_telemetry(debug: bool, level: &str, otel: &OtelConfig) -> Result<ReloadHandle> {
     // If already initialized, return the stored handle rather than panicking.
     if INITIALIZED.get().is_some() {
         return RELOAD_HANDLE
@@ -122,6 +150,12 @@ pub fn init_telemetry(debug: bool, level: &str) -> Result<ReloadHandle> {
 
     let (filter_layer, handle) = build_reloadable_filter(level);
 
+    // Build the optional OTLP tracing layer for the exact subscriber type it is
+    // composed over (`Registry` + the reload filter). `None` (feature off OR no
+    // endpoint) adds nothing, so the default build is byte-identical. An
+    // `Option<Layer>` is itself a `Layer` that is inert when `None`.
+    let otel_layer = build_otel_layer::<OtelBaseSubscriber>(otel)?;
+
     if debug {
         // Development: pretty, human-friendly console output.
         let fmt_layer = tracing_subscriber::fmt::layer()
@@ -131,6 +165,7 @@ pub fn init_telemetry(debug: bool, level: &str) -> Result<ReloadHandle> {
 
         Registry::default()
             .with(filter_layer)
+            .with(otel_layer)
             .with(fmt_layer)
             .try_init()
             .map_err(|e| anyhow!("failed to initialize telemetry (pretty): {e}"))?;
@@ -146,6 +181,7 @@ pub fn init_telemetry(debug: bool, level: &str) -> Result<ReloadHandle> {
 
         Registry::default()
             .with(filter_layer)
+            .with(otel_layer)
             .with(fmt_layer)
             .try_init()
             .map_err(|e| anyhow!("failed to initialize telemetry (json): {e}"))?;
@@ -164,7 +200,95 @@ pub fn init_telemetry(debug: bool, level: &str) -> Result<ReloadHandle> {
         "telemetry initialized"
     );
 
+    emit_otel_startup_events(otel);
+
     Ok(handle)
+}
+
+/// Feature-off build: OTEL is inert. Returns `None` so the registry composes
+/// exactly as before. Any `endpoint` in config is ignored (no OTLP deps exist).
+/// The `S` type parameter mirrors the feature-on signature so the single call
+/// site (`build_otel_layer::<OtelBaseSubscriber>`) compiles either way.
+#[cfg(not(feature = "otel"))]
+fn build_otel_layer<S>(_otel: &OtelConfig) -> Result<Option<tracing_subscriber::layer::Identity>> {
+    let _ = std::marker::PhantomData::<S>;
+    Ok(None::<tracing_subscriber::layer::Identity>)
+}
+
+/// The subscriber base type over which the OTLP layer is composed: the bare
+/// [`Registry`] wrapped by the reloadable [`EnvFilter`]. Both fmt branches layer
+/// over this same type, so building the OTLP layer once (generic over it) is
+/// sound.
+type OtelBaseSubscriber =
+    tracing_subscriber::layer::Layered<reload::Layer<EnvFilter, Registry>, Registry>;
+
+/// Feature-on build: when an endpoint is configured, stand up the OTLP providers
+/// and return the tracing layer; otherwise `None` (no layer, no exporters).
+#[cfg(feature = "otel")]
+fn build_otel_layer<S>(
+    otel: &OtelConfig,
+) -> Result<Option<tracing_opentelemetry::OpenTelemetryLayer<S, otel::GatewayTracer>>>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    match otel.endpoint.as_deref().filter(|e| !e.is_empty()) {
+        Some(endpoint) => {
+            let init = otel::init_otel(endpoint)?;
+            let layer = tracing_opentelemetry::OpenTelemetryLayer::new(init.tracer);
+            let _ = OTEL_PROVIDERS.set((init.tracer_provider, init.meter_provider));
+            Ok(Some(layer))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Emit the loud opt-in WARN when content capture is enabled, and an info line
+/// noting the OTLP endpoint. Both are metadata-only (no content, no secrets).
+#[cfg(feature = "otel")]
+fn emit_otel_startup_events(otel: &OtelConfig) {
+    if let Some(endpoint) = otel.endpoint.as_deref().filter(|e| !e.is_empty()) {
+        tracing::info!(otlp_endpoint = %endpoint, "OTLP export enabled");
+        if otel.capture_content {
+            tracing::warn!(
+                "OTEL_CAPTURE_CONTENT=true: prompt/completion TEXT will be attached to OTLP spans. \
+                 This overrides the default REDACTED privacy posture — enable ONLY in trusted, \
+                 access-controlled environments; message content may contain PII/secrets."
+            );
+        }
+    }
+}
+
+#[cfg(not(feature = "otel"))]
+fn emit_otel_startup_events(_otel: &OtelConfig) {}
+
+/// Record a completed request into OTLP metrics, labeled ONLY by
+/// `{model, finish_reason}` (NEVER `request_id`). This is the single public
+/// entry the handlers call at their existing per-request metadata log sites.
+///
+/// Feature-off build: a total no-op (arguments unused), so the non-otel build is
+/// byte-identical to today. Feature-on with no configured endpoint: the global
+/// no-op meter swallows the records, so it is still effectively free.
+#[cfg(feature = "otel")]
+pub fn record_request_metrics(
+    model: &str,
+    finish_reason: Option<&str>,
+    duration_ms: u64,
+    prompt_tokens: i32,
+    completion_tokens: i32,
+) {
+    let labels = otel::RequestMetricLabels::new(model, finish_reason.map(str::to_string));
+    otel::record_request_metrics(&labels, duration_ms, prompt_tokens, completion_tokens);
+}
+
+/// Feature-off no-op: identical signature so call sites compile unchanged.
+#[cfg(not(feature = "otel"))]
+pub fn record_request_metrics(
+    _model: &str,
+    _finish_reason: Option<&str>,
+    _duration_ms: u64,
+    _prompt_tokens: i32,
+    _completion_tokens: i32,
+) {
 }
 
 /// Change the effective log level/filter at runtime via a reload handle.

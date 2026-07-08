@@ -569,6 +569,8 @@ mod tests {
             mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
                 .to_string(),
             allowed_models: None,
+            otel_exporter_otlp_endpoint: None,
+            otel_capture_content: false,
         };
         let clients = BedrockClients::from_settings(&settings).await;
         let provider = BedrockEmbeddingProvider::new(clients, EmbeddingRegistry::default());

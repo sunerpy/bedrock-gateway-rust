@@ -106,6 +106,23 @@ pub struct AppSettings {
     /// or empty ⇒ allow all (backward compatible).
     #[serde(default)]
     pub allowed_models: Option<String>,
+
+    /// OTLP exporter endpoint (env: standard `OTEL_EXPORTER_OTLP_ENDPOINT`).
+    /// When `Some` AND the crate is built with the `otel` feature, an OTLP
+    /// tracer + meter provider is initialized and an OpenTelemetry tracing layer
+    /// is added. `None` (or a build without the `otel` feature) ⇒ behavior is
+    /// identical to a build with no OpenTelemetry export at all.
+    #[serde(default)]
+    pub otel_exporter_otlp_endpoint: Option<String>,
+
+    /// Explicit opt-in to attach prompt/completion text as span attributes (env:
+    /// `OTEL_CAPTURE_CONTENT`, default `false`). This is the SINGLE place the
+    /// logging-privacy contract is intentionally relaxed: when `true` (and the
+    /// `otel` feature is compiled in), the OTLP span-attribute builder may carry
+    /// message content. Default `false` keeps spans REDACTED (metadata/counts
+    /// only). Enabling it emits a loud startup WARN.
+    #[serde(default)]
+    pub otel_capture_content: bool,
 }
 
 impl AppSettings {
@@ -139,6 +156,7 @@ impl AppSettings {
                 "mantle_base_url_template",
                 "https://bedrock-mantle.{region}.api.aws/openai/v1",
             )?
+            .set_default("otel_capture_content", false)?
             .add_source(File::with_name("config/app").required(false))
             .add_source(
                 Environment::with_prefix("APP")
@@ -171,7 +189,8 @@ impl AppSettings {
 /// `DISABLE_MANTLE`, `API_KEY`, `API_KEY_SECRET_ARN`, `API_KEY_PARAM_NAME`,
 /// `AWS_BEARER_TOKEN_BEDROCK` (alias `BEDROCK_API_KEY`), plus the operational
 /// knobs `PORT`, `BIND_ADDR`, `LOG_LEVEL`, `MANTLE_BASE_URL_TEMPLATE`,
-/// `ALLOWED_MODELS`, `PROMPT_CACHE_TTL`.
+/// `ALLOWED_MODELS`, `PROMPT_CACHE_TTL`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
+/// `OTEL_CAPTURE_CONTENT`.
 fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder> {
     // String-valued overrides.
     for (env_name, field) in [
@@ -187,6 +206,7 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
         ("MANTLE_BASE_URL_TEMPLATE", "mantle_base_url_template"),
         ("ALLOWED_MODELS", "allowed_models"),
         ("PROMPT_CACHE_TTL", "prompt_cache_ttl"),
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", "otel_exporter_otlp_endpoint"),
     ] {
         if let Some(value) = non_empty_env(env_name) {
             builder = builder.set_override(field, value)?;
@@ -215,6 +235,7 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
         ),
         ("ENABLE_PROMPT_CACHING", "enable_prompt_caching"),
         ("DISABLE_MANTLE", "disable_mantle"),
+        ("OTEL_CAPTURE_CONTENT", "otel_capture_content"),
     ] {
         if let Some(value) = non_empty_env(env_name) {
             builder = builder.set_override(field, parse_bool(&value))?;
@@ -798,5 +819,49 @@ mod tests {
         assert_eq!(settings.aws_max_retry_attempts, 8);
 
         clear_timeout_retry_vars();
+    }
+
+    #[test]
+    fn otel_settings_parse_from_env() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        std::env::remove_var("OTEL_CAPTURE_CONTENT");
+
+        // Unset ⇒ endpoint None, capture false (default REDACTED).
+        let settings = AppSettings::load().unwrap();
+        assert_eq!(settings.otel_exporter_otlp_endpoint, None);
+        assert!(!settings.otel_capture_content);
+
+        // Set both ⇒ endpoint captured verbatim, capture flag true.
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317");
+        std::env::set_var("OTEL_CAPTURE_CONTENT", "true");
+        let settings = AppSettings::load().unwrap();
+        assert_eq!(
+            settings.otel_exporter_otlp_endpoint,
+            Some("http://collector:4317".to_string())
+        );
+        assert!(settings.otel_capture_content);
+
+        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+        std::env::remove_var("OTEL_CAPTURE_CONTENT");
+    }
+
+    #[test]
+    fn capture_content_defaults_false() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::remove_var("OTEL_CAPTURE_CONTENT");
+
+        // Default must be false — content capture is opt-in only.
+        let settings = AppSettings::load().unwrap();
+        assert!(!settings.otel_capture_content);
+
+        // The minimal builder (no env) must also default to false.
+        let settings: AppSettings = minimal_builder()
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert!(!settings.otel_capture_content);
+        assert_eq!(settings.otel_exporter_otlp_endpoint, None);
     }
 }
