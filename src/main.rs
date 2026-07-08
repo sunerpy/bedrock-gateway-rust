@@ -21,7 +21,11 @@ async fn main() -> Result<()> {
 
     let settings = AppSettings::load().context("failed to load application settings")?;
 
-    telemetry::init_telemetry(settings.debug, &settings.log_level)
+    let otel = telemetry::OtelConfig {
+        endpoint: settings.otel_exporter_otlp_endpoint.clone(),
+        capture_content: settings.otel_capture_content,
+    };
+    telemetry::init_telemetry(settings.debug, &settings.log_level, &otel)
         .context("failed to initialize telemetry")?;
 
     server::serve(settings).await

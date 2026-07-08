@@ -44,6 +44,28 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 bytes = "1"
 base64 = "0.22"
 
+# Optional OpenTelemetry stack, pulled in ONLY by the `otel` feature (below).
+# HTTP/protobuf transport over the project's existing reqwest+rustls stack —
+# deliberately NOT gRPC/tonic, so the build needs no protoc and adds no new TLS
+# backend. When the feature is off none of these compile into the binary.
+opentelemetry = { version = "0.27", optional = true }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.27", default-features = false, features = ["trace", "metrics", "http-proto", "reqwest-client", "reqwest-rustls"], optional = true }
+opentelemetry-semantic-conventions = { version = "0.27", optional = true }
+tracing-opentelemetry = { version = "0.28", optional = true }
+
+[features]
+# Opt-in OTLP traces + metrics. CI runs `--all-features`, so this path is
+# exercised. Default builds pull none of the OTLP deps and are byte-compatible
+# with a build that has no OpenTelemetry code at all.
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry-semantic-conventions",
+    "dep:tracing-opentelemetry",
+]
+
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
 wiremock = "0.6"

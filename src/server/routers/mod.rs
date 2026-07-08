@@ -195,6 +195,13 @@ pub async fn chat_completions(
                     latency_ms = received_at.elapsed().as_millis(),
                     "chat completed"
                 );
+                crate::telemetry::record_request_metrics(
+                    &client_model,
+                    finish_reason,
+                    received_at.elapsed().as_millis() as u64,
+                    response.usage.prompt_tokens,
+                    response.usage.completion_tokens,
+                );
                 Ok(Json(response).into_response())
             }
             Err(e) => {
@@ -352,6 +359,13 @@ pub async fn completions(
                     cache_hit,
                     latency_ms = received_at.elapsed().as_millis(),
                     "completions completed"
+                );
+                crate::telemetry::record_request_metrics(
+                    &client_model,
+                    finish_reason.as_deref(),
+                    received_at.elapsed().as_millis() as u64,
+                    prompt_tokens,
+                    completion_tokens,
                 );
                 Ok(Json(resp).into_response())
             }
@@ -566,6 +580,13 @@ pub async fn responses(
                     cache_hit,
                     latency_ms = received_at.elapsed().as_millis(),
                     "responses completed"
+                );
+                crate::telemetry::record_request_metrics(
+                    &client_model,
+                    Some(response.status.as_str()),
+                    received_at.elapsed().as_millis() as u64,
+                    response.usage.input_tokens,
+                    response.usage.output_tokens,
                 );
                 Ok(with_model_header(
                     Json(response).into_response(),
@@ -1048,6 +1069,8 @@ mod tests {
             mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
                 .to_string(),
             allowed_models: None,
+            otel_exporter_otlp_endpoint: None,
+            otel_capture_content: false,
         }
     }
 
