@@ -1,0 +1,17 @@
+{
+  "modelId": "claude-sonnet-4-5",
+  "messages": [{ "role": "user", "content": [{ "text": "Extract the person." }] }],
+  "system": [],
+  "inferenceConfig": { "maxTokens": 2048 },
+  "outputConfig": {
+    "textFormat": {
+      "type": "json_schema",
+      "structure": {
+        "jsonSchema": {
+          "schema": "{\"type\":\"object\"}",
+          "name": "person"
+        }
+      }
+    }
+  }
+}

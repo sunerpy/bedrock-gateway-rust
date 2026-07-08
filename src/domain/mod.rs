@@ -353,6 +353,7 @@ mod tests {
                 tools: None,
                 tool_choice: Default::default(),
                 stop: None,
+                response_format: None,
                 extra_body: None,
                 extra: HashMap::new(),
             },

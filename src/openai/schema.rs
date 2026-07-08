@@ -283,6 +283,37 @@ fn default_true() -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Response format (structured output)
+// ---------------------------------------------------------------------------
+
+/// The `json_schema` payload of `response_format` (OpenAI structured output).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonSchemaSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+}
+
+/// OpenAI `response_format`, internally tagged by `type`.
+///
+/// A real top-level OpenAI request field (the sanctioned Option-B exception).
+/// [`ResponseFormat::Text`] is the default/passthrough shape and produces no
+/// Bedrock `outputConfig`; `json_object` / `json_schema` request native
+/// structured output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseFormat {
+    Text,
+    JsonObject,
+    JsonSchema { json_schema: JsonSchemaSpec },
+}
+
+// ---------------------------------------------------------------------------
 // Chat request
 // ---------------------------------------------------------------------------
 
@@ -326,6 +357,8 @@ pub struct ChatRequest {
     pub tool_choice: ToolChoice,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop: Option<StringOrVec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_body: Option<Value>,
     /// Controlled passthrough of unknown top-level fields (`extra="allow"`).

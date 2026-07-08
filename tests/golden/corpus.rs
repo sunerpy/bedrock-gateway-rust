@@ -271,6 +271,16 @@ async fn translation_prompt_cache_system_point() {
     run_translation("prompt_cache_system_point").await;
 }
 
+#[tokio::test]
+async fn translation_response_format_json_object() {
+    run_translation("response_format_json_object").await;
+}
+
+#[tokio::test]
+async fn translation_response_format_json_schema() {
+    run_translation("response_format_json_schema").await;
+}
+
 // ===========================================================================
 // Response fixtures — Bedrock Converse output → OpenAI chat.completion
 // ===========================================================================

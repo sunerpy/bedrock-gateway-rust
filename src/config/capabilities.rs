@@ -44,6 +44,13 @@ pub enum Capability {
     /// Auto-inject the 1M-context beta header.
     #[serde(rename = "context_1m_beta")]
     Context1mBeta,
+    /// This model supports native structured output via Bedrock Converse
+    /// `outputConfig.textFormat` (grammar-constrained decoding). When set, the
+    /// gateway honors an OpenAI `response_format` (`json_object` / `json_schema`)
+    /// by emitting an `outputConfig`; when a model lacks this flag, a
+    /// `response_format` request is rejected with HTTP 400 rather than silently
+    /// ignored.
+    StructuredOutput,
 }
 
 /// The strategy used to express reasoning/extended-thinking to Bedrock.
@@ -355,6 +362,7 @@ mod tests {
             Capability::NoAssistantPrefill,
             Capability::AdaptiveThinking,
             Capability::DropSamplingParams,
+            Capability::StructuredOutput,
         ]
         .into_iter()
         .collect();
@@ -370,8 +378,12 @@ mod tests {
             .entry_for_match("claude-sonnet-4-5")
             .expect("claude-sonnet-4-5 entry must exist");
         let caps: HashSet<Capability> = entry.capabilities.iter().copied().collect();
-        let expected: HashSet<Capability> =
-            [Capability::TemperatureToppConflict].into_iter().collect();
+        let expected: HashSet<Capability> = [
+            Capability::TemperatureToppConflict,
+            Capability::StructuredOutput,
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(caps, expected);
     }
 
@@ -471,6 +483,16 @@ mod tests {
         assert_eq!(entry.params, ModelParams::default());
         // Header defaults when omitted.
         assert_eq!(cfg.context_1m_beta_header, "context-1m-2025-08-07");
+    }
+
+    #[test]
+    fn structured_output_capability_parses() {
+        let cfg = ModelCapabilityConfig::from_toml_str(
+            "[[model]]\nmatch = \"x.y\"\ncapabilities = [\"structured_output\"]\n",
+        )
+        .expect("config with structured_output must parse");
+        let entry = cfg.entry_for_match("x.y").unwrap();
+        assert!(entry.has_capability(Capability::StructuredOutput));
     }
 
     #[test]
