@@ -1,0 +1,142 @@
+# Default values for bedrock-gateway.
+# This is a YAML-formatted file.
+
+replicaCount: 1
+
+image:
+  # [MANUAL-2] Replace REPLACE_ME_ECR_ALIAS with your ECR Public alias once the
+  # image is published (see PR-A). This is the release image from public ECR.
+  repository: public.ecr.aws/REPLACE_ME_ECR_ALIAS/bedrock-gateway-rust
+  # Empty tag falls back to .Chart.AppVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# --- Application config -----------------------------------------------------
+# apiRoutePrefix drives both the container API_ROUTE_PREFIX env and the health
+# probe path ({{ .Values.apiRoutePrefix }}/health).
+apiRoutePrefix: /api/v1
+
+# containerPort is the port the gateway binds (PORT env). Mirrors settings.rs
+# default 8080.
+containerPort: 8080
+
+# config: directory (CONFIG_DIR) where the bundled config/*.toml ConfigMap is
+# mounted read-only. Read directly in src/server/mod.rs:99.
+config:
+  # Mount path for the config ConfigMap; also exported as CONFIG_DIR env.
+  dir: /config
+
+# env: container environment variables. Keys here MUST mirror the bare-name
+# override list in src/config/settings.rs (apply_bare_env_overrides, lines
+# 149-213), plus the documented exception CONFIG_DIR (server/mod.rs:99, injected
+# from config.dir above — do NOT set it here). Set a value to enable it; leave
+# null/omit to fall back to the binary's built-in default. API_KEY is NEVER set
+# here — it is delivered exclusively via the apiKey.* Secret paths below.
+env:
+  # --- String-valued (settings.rs) ---
+  API_ROUTE_PREFIX: null # defaults from apiRoutePrefix above; see deployment.yaml
+  AWS_REGION: us-east-1
+  DEFAULT_MODEL: null
+  DEFAULT_EMBEDDING_MODEL: null
+  BIND_ADDR: null
+  LOG_LEVEL: info
+  MANTLE_BASE_URL_TEMPLATE: null
+  # --- Boolean-valued (settings.rs) ---
+  DEBUG: null
+  ENABLE_CROSS_REGION_INFERENCE: null
+  ENABLE_APPLICATION_INFERENCE_PROFILES: null
+  ENABLE_PROMPT_CACHING: null
+  DISABLE_MANTLE: null
+  # --- Integer-valued (settings.rs) ---
+  PORT: null # defaults from containerPort above; see deployment.yaml
+  AWS_CONNECT_TIMEOUT_SECS: null
+  AWS_READ_TIMEOUT_SECS: null
+  AWS_MAX_RETRY_ATTEMPTS: null
+  # --- Secret-store paths / gateway->Bedrock auth (settings.rs) ---
+  # API_KEY_SECRET_ARN: Secrets Manager ARN for the client->gateway API key.
+  API_KEY_SECRET_ARN: null
+  # API_KEY_PARAM_NAME: SSM Parameter Store name for the client->gateway API key.
+  API_KEY_PARAM_NAME: null
+  # AWS_BEARER_TOKEN_BEDROCK: gateway->Bedrock bearer token. Leave unset when
+  # using IRSA (SigV4 via the pod's role).
+  AWS_BEARER_TOKEN_BEDROCK: null
+
+# --- API_KEY (client -> gateway) delivery -----------------------------------
+# Two mutually-exclusive modes. API_KEY is NEVER placed in the ConfigMap or a
+# plaintext env var.
+#   (a) apiKey.value      -> chart renders a plain Secret; Deployment references
+#                            it via secretKeyRef.
+#   (b) apiKey.existingSecret (+ apiKey.existingSecretKey) -> reference a
+#                            pre-existing Secret; chart renders NO Secret.
+# If both are empty, no API_KEY env is injected (rely on env.API_KEY_SECRET_ARN
+# / env.API_KEY_PARAM_NAME secret-store paths instead).
+apiKey:
+  value: ""
+  existingSecret: ""
+  existingSecretKey: API_KEY
+
+serviceAccount:
+  # Specifies whether a ServiceAccount should be created.
+  create: true
+  # Annotations to add to the ServiceAccount. Set the IRSA role here, e.g.:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/bedrock-gateway
+  annotations: {}
+  # The name of the ServiceAccount to use. If not set and create is true, a name
+  # is generated using the fullname template.
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 80
+
+resources: {}
+  # limits:
+  #   cpu: 500m
+  #   memory: 512Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: bedrock-gateway.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+livenessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

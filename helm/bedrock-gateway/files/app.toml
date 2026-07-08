@@ -1,0 +1,55 @@
+# Bedrock Access Gateway Configuration
+# ======================================
+# 
+# This file provides application-level defaults that can be overridden by:
+# 1. Environment variables with APP_ prefix (highest priority)
+# 2. This file's values (medium priority)
+# 3. Hardcoded defaults in src/config/settings.rs (lowest priority)
+#
+# All settings can be overridden via environment variables:
+# - Use APP_ prefix for environment variables
+# - Example: APP_DEBUG=true, APP_PORT=3000, APP_AWS_REGION=eu-west-1
+
+# API Configuration
+# ==================
+api_route_prefix = "/api/v1" # API route prefix for OpenAI-compatible endpoints
+
+# Application Settings
+# ====================
+debug = false # Enable debug mode (INFO logging, verbose errors)
+log_level = "info" # Log level: trace, debug, info, warn, error
+
+# AWS Configuration
+# =================
+aws_region = "us-west-2" # AWS region for Bedrock service
+default_model = "anthropic.claude-3-5-sonnet-20241022-v2:0" # Default Claude model (latest)
+default_embedding_model = "cohere.embed-multilingual-v3" # Default embedding model
+
+# Feature Flags
+# =============
+enable_cross_region_inference = true # Allow inference across AWS regions
+enable_application_inference_profiles = true # Support application inference profiles
+enable_prompt_caching = true # Master switch: auto-inject cachePoints for supported models so clients that omit extra_body.prompt_caching still get cache hits; false disables all caching; per-request extra_body.prompt_caching overrides
+
+# Server Configuration
+# ====================
+bind_addr = "0.0.0.0" # Server bind address
+port = 8080 # Server port
+
+# AWS Client Timeouts & Retries
+# ==============================
+# Tune how the underlying AWS SDK client handles slow or transient failures.
+aws_connect_timeout_secs = 60 # max seconds to establish a TCP connection to AWS before failing
+aws_read_timeout_secs = 900 # max seconds to wait for response bytes (900 = 15 min, accommodates long streams)
+aws_max_retry_attempts = 8 # how many times to retry a request on transient (throttling/5xx) failures
+
+# Secrets Configuration (Optional)
+# ================================
+# Uncomment and set these if using Secrets Manager or Parameter Store for API key
+# api_key_secret_arn = "arn:aws:secretsmanager:us-west-2:123456789012:secret:bedrock-key-xxx"
+# api_key_param_name = "/bedrock/gateway/api-key"
+
+# Example: Override defaults locally
+# ===================================
+# Copy this file to config/app.toml and modify values as needed.
+# Environment variables will still override these values.
