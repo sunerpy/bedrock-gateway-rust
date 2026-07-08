@@ -90,6 +90,10 @@ struct ToolAccum {
     arguments: String,
     /// The `output_index` assigned to this item's `output_item.added`.
     output_index: u32,
+    /// Whether the matching `output_item.done` was already emitted (on
+    /// `contentBlockStop`). A truncated stream may leave this false, in which
+    /// case `finish()` flushes the item so the tool call is not dropped (#8).
+    closed: bool,
 }
 
 /// The streaming Responses lifecycle state machine.
@@ -300,6 +304,7 @@ impl ResponsesStreamState {
                         name: tu.name().to_string(),
                         arguments: String::new(),
                         output_index,
+                        closed: false,
                     };
                     let seq = self.next_seq();
                     out.push(ResponseStreamEvent::OutputItemAdded {
@@ -568,6 +573,10 @@ impl ResponsesStreamState {
         let Some(pos) = self.tools.iter().position(|(idx, _)| *idx == block_index) else {
             return;
         };
+        if self.tools[pos].1.closed {
+            return;
+        }
+        self.tools[pos].1.closed = true;
         let accum = self.tools[pos].1.clone();
         let seq = self.next_seq();
         out.push(ResponseStreamEvent::OutputItemDone {
@@ -575,6 +584,22 @@ impl ResponsesStreamState {
             output_index: accum.output_index,
             sequence_number: seq,
         });
+    }
+
+    /// Flush any tool blocks that were opened (`output_item.added`) but never
+    /// received a `contentBlockStop` — a truncated stream (e.g. a `max_tokens`
+    /// cut mid tool call) may omit the stop. Emits the pending
+    /// `output_item.done` for each so the function_call is never dropped (#8).
+    fn close_all_open_tool_blocks(&mut self, out: &mut Vec<ResponseStreamEvent>) {
+        let open: Vec<i32> = self
+            .tools
+            .iter()
+            .filter(|(_, accum)| !accum.closed)
+            .map(|(idx, _)| *idx)
+            .collect();
+        for block_index in open {
+            self.close_tool_block(block_index, out);
+        }
     }
 
     /// Finalize the stream after the receiver is exhausted: close any items
@@ -588,9 +613,12 @@ impl ResponsesStreamState {
             return out;
         }
         // Defensive: close anything still open (a well-formed stream closes
-        // these on messageStop, but a truncated stream may not).
+        // these on messageStop / contentBlockStop, but a truncated stream may
+        // not). Order mirrors the non-stream mapper: reasoning, message, then
+        // function_call items (#8 flushes tool blocks left open at truncation).
         self.close_message_item(&mut out);
         self.close_reasoning_item(&mut out);
+        self.close_all_open_tool_blocks(&mut out);
         self.finalized = true;
 
         let response = self.build_final_response();
@@ -1672,6 +1700,79 @@ mod tests {
         // Sanity: the lock guards a single terminal completion, not many.
         let completed = tags.iter().filter(|t| **t == "response.completed").count();
         assert_eq!(completed, 1, "exactly one response.completed expected");
+    }
+
+    // -- #8: open tool block at truncation is flushed through finish() -------
+
+    /// A tool block that receives its input but NO `contentBlockStop` before a
+    /// `max_tokens` truncation must still be flushed: `finish()` (via
+    /// `messageStop`) emits the `output_item.done` for the open tool so the
+    /// function_call is not dropped, and the completed Response carries the
+    /// tool call with `incomplete_details.reason == "max_output_tokens"`.
+    #[test]
+    fn tool_block_open_at_stop_is_flushed() {
+        let events = drive(&[
+            ev_message_start(),
+            ev_tool_start(0, "call-open", "get_weather"),
+            ev_tool_input(0, "{\"city\":\"Paris\"}"),
+            ev_message_stop(StopReason::MaxTokens),
+            ev_metadata(12, 6, 18),
+        ]);
+
+        let types: Vec<String> = events.iter().map(type_of).collect();
+        assert_eq!(
+            types,
+            vec![
+                "response.created",
+                "response.in_progress",
+                "response.output_item.added",
+                "response.output_item.done",
+                "response.completed",
+            ],
+            "open tool block must be closed with output_item.done before completed"
+        );
+
+        assert_monotonic_from_zero(&events);
+        assert_no_done_no_argdelta(&events);
+
+        // output_item.done carries the complete call_id + JSON-parseable args.
+        match &events[3] {
+            ResponseStreamEvent::OutputItemDone { item, .. } => match item {
+                ResponseOutputItem::FunctionCall {
+                    call_id,
+                    arguments,
+                    status,
+                    ..
+                } => {
+                    assert_eq!(call_id, "call-open");
+                    assert_eq!(status.as_deref(), Some("completed"));
+                    let parsed: Value =
+                        serde_json::from_str(arguments).expect("arguments JSON-parseable");
+                    assert_eq!(parsed, json!({ "city": "Paris" }));
+                }
+                other => panic!("expected function_call item, got {other:?}"),
+            },
+            other => panic!("expected output_item.done, got {other:?}"),
+        }
+
+        // The completed Response carries the tool call and the incomplete
+        // status from the max_tokens truncation.
+        match events.last().unwrap() {
+            ResponseStreamEvent::Completed { response, .. } => {
+                assert_eq!(response.status, "incomplete");
+                assert_eq!(
+                    response.incomplete_details.as_ref().expect("details")["reason"],
+                    "max_output_tokens"
+                );
+                match &response.output[0] {
+                    ResponseOutputItem::FunctionCall { call_id, .. } => {
+                        assert_eq!(call_id, "call-open");
+                    }
+                    other => panic!("expected function_call in final output, got {other:?}"),
+                }
+            }
+            other => panic!("expected completed, got {other:?}"),
+        }
     }
 
     // -- finish() is idempotent ----------------------------------------------

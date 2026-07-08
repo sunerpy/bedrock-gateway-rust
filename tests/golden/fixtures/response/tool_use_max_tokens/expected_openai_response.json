@@ -1,0 +1,28 @@
+{
+  "id": "chatcmpl-x",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "anthropic.claude-3-sonnet-v1:0",
+  "system_fingerprint": "fp",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "index": 0,
+            "id": "tool-mt",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Paris\",\"unit\":\"c\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "length"
+    }
+  ],
+  "usage": { "prompt_tokens": 12, "completion_tokens": 6, "total_tokens": 18 }
+}

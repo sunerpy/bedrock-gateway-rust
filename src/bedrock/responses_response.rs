@@ -110,9 +110,15 @@ pub fn from_converse_output_to_responses(
         });
     }
 
-    if stop_reason == Some("tool_use") {
-        // One function_call item per Bedrock toolUse block.
-        for part in content.iter().filter_map(|p| p.get("toolUse")) {
+    // Emit one function_call item per toolUse block whenever present,
+    // DECOUPLED from stopReason (#8): a max_tokens / malformed_tool_use
+    // truncation still surfaces whatever toolUse blocks landed. A message text
+    // item is emitted when text exists (spec order: reasoning, message text,
+    // then function_call items).
+    let mut text = String::new();
+    let mut tool_items: Vec<ResponseOutputItem> = Vec::new();
+    for c in content {
+        if let Some(part) = c.get("toolUse") {
             let call_id = part
                 .get("toolUseId")
                 .and_then(Value::as_str)
@@ -127,22 +133,19 @@ pub fn from_converse_output_to_responses(
             let arguments = serde_json::to_string(&input).map_err(|e| {
                 AppError::Internal(format!("failed to serialize toolUse input: {e}"))
             })?;
-            items.push(ResponseOutputItem::FunctionCall {
+            tool_items.push(ResponseOutputItem::FunctionCall {
                 id: Some(format!("fc_{call_id}")),
                 call_id,
                 name,
                 arguments,
                 status: None,
             });
+        } else if let Some(t) = c.get("text").and_then(Value::as_str) {
+            text.push_str(t);
         }
-    } else {
-        // Coalesce every Bedrock text block into ONE output_text part.
-        let mut text = String::new();
-        for c in content {
-            if let Some(t) = c.get("text").and_then(Value::as_str) {
-                text.push_str(t);
-            }
-        }
+    }
+
+    if !text.is_empty() {
         items.push(ResponseOutputItem::Message {
             id: format!("msg_{}", response_id.trim_start_matches("resp_")),
             status: "completed".to_string(),
@@ -153,7 +156,21 @@ pub fn from_converse_output_to_responses(
                 logprobs: None,
             }],
         });
+    } else if tool_items.is_empty() {
+        // Neither text nor tool calls: keep the (empty) message item so the
+        // output array is never empty (matches the prior non-tool_use branch).
+        items.push(ResponseOutputItem::Message {
+            id: format!("msg_{}", response_id.trim_start_matches("resp_")),
+            status: "completed".to_string(),
+            role: "assistant".to_string(),
+            content: vec![OutputContentPart::OutputText {
+                text: String::new(),
+                annotations: Vec::new(),
+                logprobs: None,
+            }],
+        });
     }
+    items.extend(tool_items);
 
     let (status, incomplete_details) = map_status(stop_reason);
 
@@ -496,6 +513,48 @@ mod tests {
             "usage": { "inputTokens": 1, "outputTokens": 1, "totalTokens": 2 }
         });
         let resp = from_converse_output_to_responses(&output, &req(), "m", "resp_t").expect("map");
+        assert_eq!(resp.status, "incomplete");
+        assert_eq!(
+            resp.incomplete_details.expect("details")["reason"],
+            "max_output_tokens"
+        );
+    }
+
+    #[test]
+    fn max_tokens_with_tooluse_emits_function_call_item() {
+        let output = json!({
+            "output": { "message": { "role": "assistant", "content": [
+                { "toolUse": {
+                    "toolUseId": "call-mt",
+                    "name": "get_weather",
+                    "input": { "city": "Paris" }
+                }}
+            ] } },
+            "stopReason": "max_tokens",
+            "usage": { "inputTokens": 12, "outputTokens": 6, "totalTokens": 18 }
+        });
+        let resp = from_converse_output_to_responses(&output, &req(), "m", "resp_mt").expect("map");
+
+        let fc = resp
+            .output
+            .iter()
+            .find(|item| matches!(item, ResponseOutputItem::FunctionCall { .. }))
+            .expect("a function_call output item on a max_tokens truncation");
+        match fc {
+            ResponseOutputItem::FunctionCall {
+                call_id,
+                name,
+                arguments,
+                ..
+            } => {
+                assert_eq!(call_id, "call-mt");
+                assert_eq!(name, "get_weather");
+                let args: Value = serde_json::from_str(arguments).expect("args json");
+                assert_eq!(args, json!({ "city": "Paris" }));
+            }
+            other => panic!("expected function_call item, got {other:?}"),
+        }
+        // status/incomplete_details for max_tokens unchanged.
         assert_eq!(resp.status, "incomplete");
         assert_eq!(
             resp.incomplete_details.expect("details")["reason"],

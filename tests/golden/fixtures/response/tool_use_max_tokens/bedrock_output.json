@@ -1,0 +1,18 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "toolUse": {
+            "toolUseId": "tool-mt",
+            "name": "get_weather",
+            "input": { "city": "Paris", "unit": "c" }
+          }
+        }
+      ]
+    }
+  },
+  "stopReason": "max_tokens",
+  "usage": { "inputTokens": 12, "outputTokens": 6, "totalTokens": 18 }
+}

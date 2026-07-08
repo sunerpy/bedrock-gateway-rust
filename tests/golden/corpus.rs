@@ -338,6 +338,13 @@ fn response_finish_reason_length() {
 }
 
 #[test]
+fn response_tool_use_max_tokens() {
+    // #8: tool_calls extracted even on a max_tokens truncation; finish_reason
+    // stays "length" (convert_finish_reason unchanged).
+    run_response("tool_use_max_tokens", "anthropic.claude-3-sonnet-v1:0", &[]);
+}
+
+#[test]
 fn response_finish_reason_content_filter() {
     run_response(
         "finish_reason_content_filter",
@@ -601,6 +608,19 @@ fn stream_tool_use_sequence() {
     );
 }
 
+#[test]
+fn stream_tool_use_max_tokens_no_blockstop() {
+    // #8: a tool block with input but NO contentBlockStop before a max_tokens
+    // messageStop — the tool-call deltas are emitted at arrival, the finish
+    // chunk is "length", nothing is dropped.
+    run_stream(
+        "tool_use_max_tokens_no_blockstop",
+        "anthropic.claude-3-sonnet-v1:0",
+        true,
+        &[],
+    );
+}
+
 // ===========================================================================
 // Embeddings fixtures — codec encode/decode + base64 (Cohere / Titan)
 // ===========================================================================
@@ -766,6 +786,13 @@ fn responses_response_tool_call() {
     // tool_use stop reason → a single function_call item with call_id/name and
     // JSON-string arguments; no message item.
     run_responses_response("responses_tool_call", &[]);
+}
+
+#[test]
+fn responses_response_tool_call_max_tokens() {
+    // #8: a toolUse block on a max_tokens truncation still emits a function_call
+    // item; status is "incomplete" with reason "max_output_tokens".
+    run_responses_response("tool_use_max_tokens", &[]);
 }
 
 #[test]

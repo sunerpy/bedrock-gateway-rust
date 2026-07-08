@@ -1,0 +1,33 @@
+{
+  "id": "resp_x",
+  "object": "response",
+  "created_at": 1700000000,
+  "status": "incomplete",
+  "output": [
+    {
+      "type": "function_call",
+      "id": "fc_call-mt",
+      "call_id": "call-mt",
+      "name": "get_weather",
+      "arguments": "{\"city\":\"Paris\",\"unit\":\"c\"}"
+    }
+  ],
+  "usage": {
+    "input_tokens": 12,
+    "input_tokens_details": { "cached_tokens": 0 },
+    "output_tokens": 6,
+    "output_tokens_details": { "reasoning_tokens": 0 },
+    "total_tokens": 18
+  },
+  "model": "resolved.model-id",
+  "max_output_tokens": 6,
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_weather",
+      "description": "Get the weather",
+      "parameters": { "type": "object", "properties": { "city": { "type": "string" } } }
+    }
+  ],
+  "incomplete_details": { "reason": "max_output_tokens" }
+}
