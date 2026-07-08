@@ -107,12 +107,15 @@ pub fn from_converse_output(
         ..Default::default()
     };
 
-    let finish_is_tool_use = stop_reason == Some("tool_use");
-
-    if finish_is_tool_use {
-        // tool_use: build tool_calls[] from toolUse blocks (bedrock.py:1331-1350).
-        let mut tool_calls: Vec<ToolCall> = Vec::new();
-        for (tool_index, part) in content.iter().filter_map(|p| p.get("toolUse")).enumerate() {
+    // Iterate the content ONCE, collecting toolUse blocks into tool_calls and
+    // text/reasoning separately. Tool extraction is DECOUPLED from stopReason
+    // (#8): any toolUse block present yields a tool call, whatever the stop
+    // reason (tool_use, max_tokens truncation, malformed_tool_use, ...).
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    for c in content {
+        if let Some(part) = c.get("toolUse") {
             let id = part.get("toolUseId").and_then(Value::as_str);
             let name = part.get("name").and_then(Value::as_str);
             // arguments = json.dumps(tool["input"]) (bedrock.py:1344).
@@ -121,7 +124,7 @@ pub fn from_converse_output(
                 AppError::Internal(format!("failed to serialize toolUse input: {e}"))
             })?;
             tool_calls.push(ToolCall {
-                index: Some(tool_index as i32),
+                index: Some(tool_calls.len() as i32),
                 id: id.map(str::to_string),
                 r#type: "function".to_string(),
                 function: ResponseFunction {
@@ -129,37 +132,35 @@ pub fn from_converse_output(
                     arguments,
                 },
             });
-        }
-        message.tool_calls = Some(tool_calls);
-        // content stays None for tool_use (bedrock.py:1350).
-        message.content = None;
-    } else {
-        // Text / reasoning path (bedrock.py:1351-1362).
-        let mut text = String::new();
-        let mut reasoning = String::new();
-        for c in content {
-            if let Some(reasoning_block) = c.get("reasoningContent") {
-                if let Some(t) = reasoning_block
-                    .get("reasoningText")
-                    .and_then(|rt| rt.get("text"))
-                    .and_then(Value::as_str)
-                {
-                    reasoning.push_str(t);
-                }
-            } else if let Some(t) = c.get("text").and_then(Value::as_str) {
-                // Mirrors Python: last text block wins (assignment, not append).
-                text = t.to_string();
+        } else if let Some(reasoning_block) = c.get("reasoningContent") {
+            if let Some(t) = reasoning_block
+                .get("reasoningText")
+                .and_then(|rt| rt.get("text"))
+                .and_then(Value::as_str)
+            {
+                reasoning.push_str(t);
             }
-            // Unknown blocks are ignored (Python logs a warning; parity-neutral).
+        } else if let Some(t) = c.get("text").and_then(Value::as_str) {
+            // Mirrors Python: last text block wins (assignment, not append).
+            text = t.to_string();
         }
+        // Unknown blocks are ignored (Python logs a warning; parity-neutral).
+    }
 
-        if !reasoning.is_empty() {
-            // <think> inline rendering (bedrock.py:1360-1362). The wire
-            // reasoning_content field stays None (Option B).
-            message.content = Some(format!("<think>{reasoning}</think>{text}"));
-        } else {
-            message.content = Some(text);
-        }
+    if !tool_calls.is_empty() {
+        message.tool_calls = Some(tool_calls);
+    }
+
+    // content is set from reasoning/text as before. It is left None ONLY when
+    // there is neither text nor reasoning AND tool_calls exist (the pure
+    // tool_use shape). Otherwise the <think> inline rendering / plain text path
+    // is unchanged.
+    if !reasoning.is_empty() {
+        // <think> inline rendering (bedrock.py:1360-1362). The wire
+        // reasoning_content field stays None (Option B).
+        message.content = Some(format!("<think>{reasoning}</think>{text}"));
+    } else if !text.is_empty() || message.tool_calls.is_none() {
+        message.content = Some(text);
     }
 
     // --- prompt_tokens_details: cached_tokens = cacheRead (bedrock.py:1364-1372) ---
@@ -433,6 +434,97 @@ mod tests {
         assert_eq!(calls[1].index, Some(1));
         assert_eq!(calls[1].id.as_deref(), Some("b"));
         assert_eq!(calls[1].function.arguments, "{\"k\":1}");
+    }
+
+    // -- #8: tool_calls extraction is DECOUPLED from stopReason --------------
+
+    #[test]
+    fn max_tokens_with_tooluse_returns_tool_calls_and_length() {
+        // stopReason "max_tokens" (a truncation) + one toolUse block. The tool
+        // call MUST be extracted (decoupled from stop reason) AND finish_reason
+        // stays wire-faithful "length" — convert_finish_reason is unchanged.
+        let output = json!({
+            "output": { "message": { "role": "assistant", "content": [
+                { "toolUse": {
+                    "toolUseId": "call-mt",
+                    "name": "get_weather",
+                    "input": { "city": "Paris" }
+                }}
+            ] } },
+            "stopReason": "max_tokens",
+            "usage": { "inputTokens": 12, "outputTokens": 6, "totalTokens": 18 }
+        });
+
+        let resp = from_converse_output(&output, "m", "id").expect("map max_tokens+tool");
+        let choice = &resp.choices[0];
+        // finish_reason stays "length" (max_tokens truncation, wire-faithful).
+        assert_eq!(choice.finish_reason.as_deref(), Some("length"));
+        // tool_calls populated regardless of the truncation stop reason.
+        let calls = choice
+            .message
+            .tool_calls
+            .as_ref()
+            .expect("tool_calls present on max_tokens truncation");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].index, Some(0));
+        assert_eq!(calls[0].id.as_deref(), Some("call-mt"));
+        assert_eq!(calls[0].function.name.as_deref(), Some("get_weather"));
+        let args: Value = serde_json::from_str(&calls[0].function.arguments).expect("args json");
+        assert_eq!(args, json!({ "city": "Paris" }));
+        // No text/reasoning → content is None.
+        assert!(choice.message.content.is_none());
+    }
+
+    #[test]
+    fn malformed_tool_use_still_extracts_tool_calls() {
+        // stopReason "malformed_tool_use": the toolUse block(s) that landed must
+        // still be extracted; convert_finish_reason maps it via the lowercased
+        // passthrough arm (unchanged).
+        let output = json!({
+            "output": { "message": { "role": "assistant", "content": [
+                { "toolUse": {
+                    "toolUseId": "call-mal",
+                    "name": "do_thing",
+                    "input": { "k": 1 }
+                }}
+            ] } },
+            "stopReason": "malformed_tool_use",
+            "usage": { "inputTokens": 3, "outputTokens": 2, "totalTokens": 5 }
+        });
+
+        let resp = from_converse_output(&output, "m", "id").expect("map malformed_tool_use");
+        let choice = &resp.choices[0];
+        // Lowercased passthrough — convert_finish_reason table unchanged.
+        assert_eq!(choice.finish_reason.as_deref(), Some("malformed_tool_use"));
+        let calls = choice.message.tool_calls.as_ref().expect("tool_calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id.as_deref(), Some("call-mal"));
+        assert_eq!(calls[0].function.arguments, "{\"k\":1}");
+    }
+
+    #[test]
+    fn tool_use_with_text_keeps_both_content_and_tool_calls() {
+        // Rare shape: a text block AND a toolUse block with an end_turn stop.
+        // Decoupled extraction keeps BOTH — content from the text, tool_calls
+        // from the toolUse. content is only None when there is neither text nor
+        // reasoning.
+        let output = json!({
+            "output": { "message": { "role": "assistant", "content": [
+                { "text": "Let me check the weather." },
+                { "toolUse": { "toolUseId": "call-both", "name": "get_weather", "input": {} } }
+            ] } },
+            "stopReason": "tool_use",
+            "usage": { "inputTokens": 5, "outputTokens": 4, "totalTokens": 9 }
+        });
+        let resp = from_converse_output(&output, "m", "id").expect("map both");
+        let choice = &resp.choices[0];
+        assert_eq!(
+            choice.message.content.as_deref(),
+            Some("Let me check the weather.")
+        );
+        let calls = choice.message.tool_calls.as_ref().expect("tool_calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id.as_deref(), Some("call-both"));
     }
 
     // -- reasoning → <think>...</think> in content, no reasoning_content key ---

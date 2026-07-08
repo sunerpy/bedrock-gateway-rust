@@ -825,6 +825,59 @@ mod tests {
         assert_eq!(c.choices[0].finish_reason.as_deref(), Some("length"));
     }
 
+    // -- #8: open tool block at truncation is not dropped --------------------
+
+    #[test]
+    fn tool_block_open_at_stop_is_flushed() {
+        let mut st = StreamState::new();
+        let mut chunks = Vec::new();
+        // contentBlockStart(toolUse) → contentBlockDelta(input) → messageStop
+        // (max_tokens) with NO contentBlockStop. Each tool piece is emitted as
+        // its own chunk at arrival, so a missing contentBlockStop drops nothing.
+        let events = vec![
+            ev_tool_start(0, "call-open", "get_weather"),
+            ev_tool_input(0, "{\"city\":\"Paris\"}"),
+            ev_message_stop(StopReason::MaxTokens),
+        ];
+        for e in &events {
+            if let Some(c) = st.map_event(e, MODEL, MID, true, RID, t0()) {
+                chunks.push(c);
+            }
+        }
+
+        // The tool-call delta chunk(s) carry the id/name and the accumulated
+        // arguments.
+        let tool_chunks: Vec<&ChatStreamResponse> = chunks
+            .iter()
+            .filter(|c| {
+                c.choices
+                    .first()
+                    .is_some_and(|ch| ch.delta.tool_calls.is_some())
+            })
+            .collect();
+        assert!(
+            !tool_chunks.is_empty(),
+            "at least one tool-call delta chunk must be emitted"
+        );
+        let start = tool_chunks[0].choices[0].delta.tool_calls.as_ref().unwrap();
+        assert_eq!(start[0].id.as_deref(), Some("call-open"));
+        assert_eq!(start[0].function.name.as_deref(), Some("get_weather"));
+        let frag = tool_chunks[1].choices[0].delta.tool_calls.as_ref().unwrap();
+        assert_eq!(frag[0].function.arguments, "{\"city\":\"Paris\"}");
+
+        // The finish chunk carries finish_reason "length" (max_tokens).
+        let finish = chunks
+            .iter()
+            .find(|c| {
+                c.choices
+                    .first()
+                    .and_then(|ch| ch.finish_reason.as_deref())
+                    .is_some()
+            })
+            .expect("a finish chunk");
+        assert_eq!(finish.choices[0].finish_reason.as_deref(), Some("length"));
+    }
+
     // -- content block stop is inert -----------------------------------------
 
     #[test]

@@ -1,0 +1,6 @@
+data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
+data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}
+data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]}}]}
+data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[{"index":0,"finish_reason":"length","delta":{}}]}
+data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":6,"total_tokens":18}}
+data: [DONE]

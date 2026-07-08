@@ -1,0 +1,13 @@
+{
+  "model": "incoming-model-id",
+  "input": "What is the weather in Paris?",
+  "max_output_tokens": 6,
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_weather",
+      "description": "Get the weather",
+      "parameters": { "type": "object", "properties": { "city": { "type": "string" } } }
+    }
+  ]
+}

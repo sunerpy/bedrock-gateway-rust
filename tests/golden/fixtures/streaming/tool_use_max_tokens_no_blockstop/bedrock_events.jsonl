@@ -1,0 +1,5 @@
+{"messageStart": {"role": "assistant"}}
+{"contentBlockStart": {"toolUse": {"toolUseId": "call_1", "name": "get_weather"}, "contentBlockIndex": 0}}
+{"contentBlockDelta": {"toolUseInput": "{\"city\":\"Paris\"}", "contentBlockIndex": 0}}
+{"messageStop": {"stopReason": "max_tokens"}}
+{"metadata": {"usage": {"inputTokens": 12, "outputTokens": 6, "totalTokens": 18}}}
