@@ -35,6 +35,12 @@ pub enum Capability {
     /// Only supports `thinking.type=adaptive` + `output_config.effort`
     /// (rejects legacy `reasoning_config` budget_tokens with HTTP 400).
     AdaptiveThinking,
+    /// Drop BOTH `temperature` and `topP` from `inferenceConfig` — this model
+    /// deprecates all sampling parameters and returns HTTP 400 if any
+    /// non-default value is sent (Claude Opus 4.7+, Sonnet 5, Fable/Mythos 5).
+    /// Stronger than [`Capability::TemperatureToppConflict`], which only drops
+    /// `topP` and only when `temperature` is also present.
+    DropSamplingParams,
     /// Auto-inject the 1M-context beta header.
     #[serde(rename = "context_1m_beta")]
     Context1mBeta,
@@ -329,17 +335,20 @@ mod tests {
 
     #[test]
     fn test_opus_4_8_capabilities() {
-        // Parity with Python MODEL_CAPABILITIES (bedrock.py:154):
-        // "claude-opus-4-8": {"no_assistant_prefill", "adaptive_thinking"}
+        // Opus 4.7+ deprecate all sampling params (drop_sampling_params) on top
+        // of the adaptive-thinking + no-prefill flags.
         let cfg = load_project_config();
         let entry = cfg
             .entry_for_match("claude-opus-4-8")
             .expect("claude-opus-4-8 entry must exist");
         let caps: HashSet<Capability> = entry.capabilities.iter().copied().collect();
-        let expected: HashSet<Capability> =
-            [Capability::NoAssistantPrefill, Capability::AdaptiveThinking]
-                .into_iter()
-                .collect();
+        let expected: HashSet<Capability> = [
+            Capability::NoAssistantPrefill,
+            Capability::AdaptiveThinking,
+            Capability::DropSamplingParams,
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(caps, expected);
     }
 

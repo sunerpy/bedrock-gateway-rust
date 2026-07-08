@@ -182,3 +182,6 @@ legacy/
 
 # Local-only proxy build (not for publish)
 Dockerfile.local
+
+# Kiro IDE local directory
+.kiro
