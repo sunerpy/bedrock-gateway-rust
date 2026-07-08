@@ -393,6 +393,7 @@ When you add a new translation path, add a golden fixture alongside the implemen
 | Responses `namespace` / `custom` tools     | N/A                                                 | SUPPORTED — `custom` → one `toolSpec`; `namespace` is FLATTENED into one `toolSpec` per inner tool with `{ns}__{fn}` prefixed names (round-tripped unchanged) |
 | Responses hosted server tools              | N/A                                                 | SILENTLY DROPPED (`web_search` / `file_search` / `code_interpreter` / `tool_search` / `mcp` / `computer` / `image_generation` + any unknown type) — never a 400, so codex sessions bundling hosted tools survive; `ResponsesTool` has a `#[serde(other)] Unknown` catch-all |
 | GPT-5.x (`gpt-5.4` / `gpt-5.5`) models   | N/A                                                 | Served via AWS bedrock-mantle (`responses_backend = "mantle"`), **Responses API only** — `/chat/completions` returns 400. Byte-level raw SSE passthrough; no Converse translation. Listed in `GET /models` by bare alias name (`gpt-5.4` / `gpt-5.5`), surfaced from config since the control plane omits mantle models. Region-gated: `gpt-5.5` = `us-east-2` only; `gpt-5.4` = `us-east-2` + `us-west-2`. Clients use bare alias names (`gpt-5.4` / `gpt-5.5`); the `[[alias]]` table in `config/models.toml` rewrites them to `openai.gpt-5.4` / `openai.gpt-5.5` before dispatch. |
+| Legacy text completions (`POST /completions`) | N/A (surface did not exist)                    | Added for Zed edit-prediction. Reuses the Chat/Converse path (prompt wrapped as one user message), wire shape `text_completion`. `suffix` → 400 (no Bedrock mapping); token-array `prompt` → 400 (send a string); `logprobs` / `best_of` / `logit_bias` accepted and ignored. |
 
 ---
 
@@ -820,6 +821,7 @@ BEDROCK_INTEGRATION=1 AWS_PROFILE=us cargo test -- --ignored
 | Responses `namespace` / `custom` 工具      | N/A                                          | 支持 —— `custom` → 一个 `toolSpec`；`namespace` 扁平化为每个内部工具一个 `toolSpec`，名称加前缀 `{ns}__{fn}`（原样回传）          |
 | Responses 内置服务端工具                   | N/A                                          | 静默丢弃（`web_search` / `file_search` / `code_interpreter` / `tool_search` / `mcp` / `computer` / `image_generation` 及任何未知类型）—— 绝不返回 400，捆绑内置工具的 codex 会话得以存活；`ResponsesTool` 带 `#[serde(other)] Unknown` 兜底 |
 | GPT-5.x（`gpt-5.4` / `gpt-5.5`）模型      | N/A                                          | 通过 AWS bedrock-mantle 提供（`responses_backend = "mantle"`），**仅支持 Responses API** — `/chat/completions` 返回 400。字节级原始 SSE 透传，无 Converse 翻译。在 `GET /models` 中以裸别名（`gpt-5.4` / `gpt-5.5`）列出，因控制面不含 mantle 模型，由配置补充。区域门控：`gpt-5.5` = `us-east-2`；`gpt-5.4` = `us-east-2` + `us-west-2`。客户端使用裸别名（`gpt-5.4` / `gpt-5.5`），`config/models.toml` 的 `[[alias]]` 表在分发前将其改写为 `openai.gpt-5.4` / `openai.gpt-5.5`。 |
+| 传统文本补全（`POST /completions`）        | N/A（接口不存在）                            | 为 Zed edit-prediction 新增。复用 Chat/Converse 路径（prompt 包装为单条 user 消息），协议形状 `text_completion`。`suffix` → 400（无 Bedrock 映射）；token 数组形式的 `prompt` → 400（需发送字符串）；`logprobs` / `best_of` / `logit_bias` 接受但忽略。 |
 
 ---
 

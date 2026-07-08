@@ -17,6 +17,7 @@
 - **100% Rust** — 单静态链接二进制，distroless Docker 镜像（~12 MB 压缩），无 GC，低内存，高并发。
 - **字节级 OpenAI 兼容** — 现有 OpenAI SDK、客户端和 Agent 零改造接入。不引入自定义顶层字段；Bedrock 专属特性走标准 `extra_body` 机制。
 - **OpenAI Responses API** — 完整支持 `POST /api/v1/responses`，含流式输出。`codex` 必需（`wire_api = "responses"`）。无状态；`store` 和 `previous_response_id` 接受但静默忽略。
+- **传统文本补全** — `POST /api/v1/completions`，供 Zed edit-prediction 等编辑器使用；复用 Converse 路径，返回 `text_completion` 形状（流式 + 非流式）。
 - **自动 Prompt 缓存** — 缓存点注入默认开启。网关自动在 tools、system prompt、messages 区注入缓存点（每模型最多 `max_cache_checkpoints` 个），客户端无感知。阈值按模型配置；兜底条目自动覆盖新 Claude 模型。
 - **扩展思考 / Reasoning** — 支持 Claude `budget_tokens`、`adaptive_thinking` 及 DeepSeek 字符串形式推理。通过 `extra_body` 映射 OpenAI `reasoning_effort` 级别；网关按模型自动选择正确的 Bedrock wire 格式。
 - **跨区域 Inference Profile** — 7 个地理前缀（`us.` / `eu.` / `apac.` / `jp.` / `au.` / `ca.` / `global.`）全部透明支持。能力匹配去掉前缀；发往 Bedrock 的调用始终使用原始模型 ID。
@@ -31,25 +32,27 @@
 
 所有端点以 `API_ROUTE_PREFIX` 为前缀（默认 `/api/v1`）。
 
-| 方法   | 路径                       | 说明                                        |
-| ------ | -------------------------- | ------------------------------------------- |
-| `POST` | `/api/v1/chat/completions` | 聊天补全 — 流式（SSE）和非流式              |
-| `POST` | `/api/v1/responses`        | OpenAI Responses API — 无状态，流式和非流式 |
-| `POST` | `/api/v1/embeddings`       | 嵌入向量 — Cohere、Titan 和 Nova 系列       |
-| `GET`  | `/api/v1/models`           | 从 Bedrock 控制面实时获取模型目录           |
-| `GET`  | `/api/v1/models/{id}`      | 单个模型查询（支持 inference profile ID）   |
-| `GET`  | `/api/v1/health`           | 存活探针 — 返回 `200 OK`                    |
+| 方法   | 路径                       | 说明                                                                          |
+| ------ | -------------------------- | ----------------------------------------------------------------------------- |
+| `POST` | `/api/v1/chat/completions` | 聊天补全 — 流式（SSE）和非流式                                                |
+| `POST` | `/api/v1/completions`      | 传统文本补全（text_completion）——用于 Zed edit-prediction；复用 Converse 路径 |
+| `POST` | `/api/v1/responses`        | OpenAI Responses API — 无状态，流式和非流式                                   |
+| `POST` | `/api/v1/embeddings`       | 嵌入向量 — Cohere、Titan 和 Nova 系列                                         |
+| `GET`  | `/api/v1/models`           | 从 Bedrock 控制面实时获取模型目录                                             |
+| `GET`  | `/api/v1/models/{id}`      | 单个模型查询（支持 inference profile ID）                                     |
+| `GET`  | `/api/v1/health`           | 存活探针 — 返回 `200 OK`                                                      |
 
 ---
 
 ## 客户端兼容矩阵
 
-| 客户端          | Wire API                | 端点                            | 状态      |
-| --------------- | ----------------------- | ------------------------------- | --------- |
-| **opencode**    | OpenAI Chat Completions | `POST /api/v1/chat/completions` | ✅ 已支持 |
-| **hermes**      | OpenAI Chat Completions | `POST /api/v1/chat/completions` | ✅ 已支持 |
-| **codex**       | OpenAI Responses API    | `POST /api/v1/responses`        | ✅ 已支持 |
-| **claude code** | Anthropic Messages      | `POST /v1/messages`             | ⏳ 规划中 |
+| 客户端              | Wire API                | 端点                            | 状态      |
+| ------------------- | ----------------------- | ------------------------------- | --------- |
+| **opencode**        | OpenAI Chat Completions | `POST /api/v1/chat/completions` | ✅ 已支持 |
+| **hermes**          | OpenAI Chat Completions | `POST /api/v1/chat/completions` | ✅ 已支持 |
+| **Zed**（编辑预测） | OpenAI 传统补全         | `POST /api/v1/completions`      | ✅ 已支持 |
+| **codex**           | OpenAI Responses API    | `POST /api/v1/responses`        | ✅ 已支持 |
+| **claude code**     | Anthropic Messages      | `POST /v1/messages`             | ⏳ 规划中 |
 
 ---
 
