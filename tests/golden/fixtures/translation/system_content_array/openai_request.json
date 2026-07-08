@@ -1,0 +1,14 @@
+{
+  "model": "anthropic.claude-3-sonnet-v1:0",
+  "messages": [
+    {
+      "role": "system",
+      "content": [
+        { "type": "text", "text": "You are helpful." },
+        { "type": "text", "text": "Be terse." }
+      ]
+    },
+    { "role": "user", "content": "Hi" }
+  ],
+  "max_tokens": 2048
+}

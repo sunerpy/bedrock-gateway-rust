@@ -1,0 +1,6 @@
+{
+  "modelId": "anthropic.claude-3-sonnet-v1:0",
+  "messages": [{ "role": "user", "content": [{ "text": "Hi" }] }],
+  "system": [{ "text": "You are helpful.\nBe terse." }],
+  "inferenceConfig": { "maxTokens": 2048 }
+}

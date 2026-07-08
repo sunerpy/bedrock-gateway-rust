@@ -217,6 +217,11 @@ async fn translation_system_developer_blocks() {
 }
 
 #[tokio::test]
+async fn translation_system_content_array() {
+    run_translation("system_content_array").await;
+}
+
+#[tokio::test]
 async fn translation_multimodal_data_uri_image() {
     run_translation("multimodal_data_uri_image").await;
 }
