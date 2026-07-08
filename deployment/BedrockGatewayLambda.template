@@ -5,6 +5,33 @@ Description: >-
   Function URL with response streaming (SSE). The container ships the
   AWS Lambda Web Adapter (LWA) extension and runs the unmodified bedrock-gateway
   axum server. See docs/deploy/lambda.md and deployment/lambda/Dockerfile.
+  The gateway requires Amazon Bedrock, which is available only in AWS commercial
+  regions, so deploy this template in a Bedrock-enabled commercial region. (Lambda
+  Function URLs are also a commercial-region feature.)
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        # AWS::Lambda::Url (Function URLs) is not available in every region in
+        # cfn-lint's default region set (e.g. some non-Bedrock regions), so cfn-lint
+        # flags E3006 for this resource. This gateway is deployed only in Bedrock-enabled
+        # commercial regions where Function URLs exist, so this is a region-availability
+        # false positive. Suppress the expected finding.
+        - E3006
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Gateway
+        Parameters:
+          - ContainerImageUri
+          - ApiKeySecretArn
+          - DisableMantle
+          - BedrockApiKey
+          - DefaultModelId
+          - DefaultEmbeddingModelId
+          - EnablePromptCaching
+          - LogLevel
 
 Parameters:
   ApiKeySecretArn:
@@ -21,6 +48,7 @@ Parameters:
       The ECR image URI for the Lambda function, built from
       deployment/lambda/Dockerfile (e.g.
       123456789012.dkr.ecr.us-east-1.amazonaws.com/bedrock-gateway-lambda:latest).
+      The image must live in an ECR repository the Lambda can pull from.
 
   DefaultModelId:
     Type: String
@@ -47,6 +75,31 @@ Parameters:
     Description: >-
       Auto-inject prompt cache points for Claude and Nova models. On by default.
 
+  DisableMantle:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >-
+      "true" (default): skip the GPT-5.x mantle backend startup validation so the
+      default published image boots without a Bedrock API key (SigV4-only). Set to
+      "false" only if you also provide BedrockApiKey to enable GPT-5.x
+      (gpt-5.4 / gpt-5.5) via the bedrock-mantle upstream.
+
+  BedrockApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: >-
+      (Optional) A Bedrock API key (bearer token) for the GPT-5.x mantle backend,
+      supplied directly by the deployer. When non-empty it is injected as the
+      AWS_BEARER_TOKEN_BEDROCK environment variable. Leave blank for SigV4-only
+      deployments (the execution role already grants Bedrock access). Lambda has
+      no ECS-style secret injection, and the gateway reads the bedrock key only
+      from the raw AWS_BEARER_TOKEN_BEDROCK env (no secret-ARN indirection), so a
+      NoEcho deployer-supplied value is the correct wiring for Lambda.
+
   LogLevel:
     Type: String
     Default: info
@@ -61,6 +114,7 @@ Parameters:
 Conditions:
   HasDefaultModelId: !Not [!Equals [!Ref DefaultModelId, ""]]
   HasDefaultEmbeddingModelId: !Not [!Equals [!Ref DefaultEmbeddingModelId, ""]]
+  HasBedrockApiKey: !Not [!Equals [!Ref BedrockApiKey, ""]]
 
 Resources:
   # ---------------------------------------------------------------------------
@@ -135,6 +189,15 @@ Resources:
           API_ROUTE_PREFIX: /api/v1
           LOG_LEVEL: !Ref LogLevel
           ENABLE_PROMPT_CACHING: !Ref EnablePromptCaching
+          # Skip GPT-5.x mantle startup validation by default so the default
+          # published image (which bakes mantle models) boots on a SigV4-only
+          # deploy without a Bedrock API key. Set DisableMantle=false + supply
+          # BedrockApiKey to enable GPT-5.x.
+          DISABLE_MANTLE: !Ref DisableMantle
+          # Optional gateway -> Bedrock bearer token for the GPT-5.x mantle
+          # backend, injected only when the deployer supplies a NoEcho value.
+          # Absent by default (SigV4 credential chain via the execution role).
+          AWS_BEARER_TOKEN_BEDROCK: !If [HasBedrockApiKey, !Ref BedrockApiKey, !Ref "AWS::NoValue"]
           DEFAULT_MODEL: !If [HasDefaultModelId, !Ref DefaultModelId, !Ref "AWS::NoValue"]
           DEFAULT_EMBEDDING_MODEL: !If [HasDefaultEmbeddingModelId, !Ref DefaultEmbeddingModelId, !Ref "AWS::NoValue"]
           # NOTE: AWS_REGION is a reserved Lambda runtime variable and is

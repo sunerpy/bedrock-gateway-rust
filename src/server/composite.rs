@@ -120,10 +120,10 @@ impl ResponsesProvider for CompositeResponsesProvider {
 
 /// Validate the mantle-backend configuration at boot.
 ///
-/// Fail-fast rule: if ANY model entry declares `params.responses_backend =
-/// "mantle"` but no `bedrock_api_key` is configured, return an error (the mantle
-/// upstream requires that bearer; booting without it would 401 every GPT request
-/// at runtime with a confusing error).
+/// Fail-fast rule (unless `disable_mantle` is true): if ANY model entry declares
+/// `params.responses_backend = "mantle"` but no `bedrock_api_key` is configured,
+/// return an error (the mantle upstream requires that bearer; booting without it
+/// would 401 every GPT request at runtime with a confusing error).
 ///
 /// Soft rule: for each mantle model whose `available_regions` allow-list is set
 /// and does NOT contain the gateway's running region, log a WARNING. This surfaces
@@ -139,6 +139,13 @@ pub fn validate_mantle_startup(
         .iter()
         .filter(|e| e.params.responses_backend.as_deref() == Some(MANTLE_BACKEND))
         .collect();
+
+    if settings.disable_mantle {
+        tracing::warn!(
+            "mantle backend disabled (DISABLE_MANTLE=true); GPT-5.x models will be unavailable"
+        );
+        return Ok(());
+    }
 
     if mantle_models.is_empty() {
         return Ok(());
@@ -357,6 +364,7 @@ mod tests {
             enable_cross_region_inference: false,
             enable_application_inference_profiles: false,
             enable_prompt_caching: false,
+            disable_mantle: false,
             api_key: Some("k".to_string()),
             api_key_secret_arn: None,
             api_key_param_name: None,
@@ -470,6 +478,15 @@ mod tests {
         let err =
             validate_mantle_startup(&config, &settings).expect_err("missing bearer must fail boot");
         assert!(matches!(err, AppError::Internal(_)));
+    }
+
+    #[test]
+    fn startup_passes_when_mantle_disabled_without_bearer() {
+        let config = mantle_model_config(Some(vec!["us-east-2".to_string()]));
+        let mut settings = settings_with(None, "us-east-2");
+        settings.disable_mantle = true;
+
+        assert!(validate_mantle_startup(&config, &settings).is_ok());
     }
 
     /// A mantle model WITH a bearer configured passes validation.

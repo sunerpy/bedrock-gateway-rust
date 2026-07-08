@@ -8,6 +8,10 @@ separate binary, and no `main` function fork for Lambda. AWS Lambda Web Adapter 
 handles the translation layer — the unmodified axum HTTP server runs inside Lambda;
 LWA bridges the Lambda event protocol to plain HTTP.
 
+The gateway's only backend is Amazon Bedrock, which is available only in AWS commercial
+regions — deploy this template in any AWS commercial region where Amazon Bedrock is
+available.
+
 ---
 
 ## How It Works
@@ -92,12 +96,30 @@ aws cloudformation deploy \
   --stack-name bedrock-gateway-lambda \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
-    ImageUri="$ECR_URI:latest" \
-    ApiKeySecretArn=arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:BedrockProxyAPIKey
+    ContainerImageUri="$ECR_URI:latest" \
+    ApiKeySecretArn=arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:bedrock-gateway/api-key
 ```
 
-The template provisions a Lambda function, the necessary IAM execution role, and a
-Function URL with response streaming enabled.
+The template provisions the Lambda function, its IAM execution role (scoped to
+`bedrock:InvokeModel[WithResponseStream]` / `bedrock:ListFoundationModels` /
+`bedrock:ListInferenceProfiles` plus `secretsmanager:GetSecretValue` on the single
+`ApiKeySecretArn`), and a public Function URL with response streaming enabled.
+
+#### Template parameters
+
+| Parameter                 | Default | Description                                                                                                                     |
+| -------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `ApiKeySecretArn`         | *(required)* | Secrets Manager ARN whose `api_key` field authenticates clients of the gateway.                                            |
+| `ContainerImageUri`       | *(required)* | ECR image URI built from `deployment/lambda/Dockerfile`.                                                                    |
+| `DisableMantle`           | `"true"` | `"true"` skips GPT-5.x mantle startup validation so the default image boots without a Bedrock API key. Set `"false"` only alongside `BedrockApiKey`. |
+| `BedrockApiKey`           | `""` (`NoEcho`) | (Optional) A raw Bedrock API key (bearer token), injected directly as the `AWS_BEARER_TOKEN_BEDROCK` env var to enable GPT-5.x. Unlike the ECS template, this is a plaintext `NoEcho` parameter, not a secret ARN — Lambda has no ECS-style secret injection, and the gateway reads the bedrock key only from the raw env var. Leave blank for SigV4-only. |
+| `DefaultModelId`          | `""` | (Optional) Default Bedrock model ID when a client omits `model`.                                                                |
+| `DefaultEmbeddingModelId` | `""` | (Optional) Default embedding model ID.                                                                                          |
+| `EnablePromptCaching`     | `"true"` | Auto-inject prompt cache points for Claude and Nova models.                                                                     |
+| `LogLevel`                | `info` | `trace` / `debug` / `info` / `warn` / `error`.                                                                                    |
+
+Outputs: `APIBaseUrl` (`https://<id>.lambda-url.<region>.on.aws/api/v1`), `FunctionUrl`,
+`LambdaFunctionArn`.
 
 ### 4. Create the function manually (alternative)
 
@@ -111,7 +133,7 @@ aws lambda create-function \
   --memory-size 1024 \
   --environment "Variables={
     AWS_LWA_INVOKE_MODE=response_stream,
-    API_KEY_SECRET_ARN=arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:BedrockProxyAPIKey
+    API_KEY_SECRET_ARN=arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:bedrock-gateway/api-key
   }"
 ```
 
@@ -138,7 +160,7 @@ If using Secrets Manager for the API key:
 {
   "Effect": "Allow",
   "Action": ["secretsmanager:GetSecretValue"],
-  "Resource": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:BedrockProxyAPIKey*"
+  "Resource": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:bedrock-gateway/api-key*"
 }
 ```
 

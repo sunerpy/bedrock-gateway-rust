@@ -273,7 +273,7 @@ responses_backend = "mantle"
 available_regions = ["us-east-2"]
 ```
 
-**Startup behavior:** if any model carries `responses_backend = "mantle"` and `bedrock_api_key` (env `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY`) is absent, the gateway **fails to start** (fail-fast). Region mismatches between the running instance's `AWS_REGION` and a model's `available_regions` emit a WARN at boot but don't hard-fail (the per-request gate returns 400 instead).
+**Startup behavior:** if any model carries `responses_backend = "mantle"` and `bedrock_api_key` (env `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY`) is absent, the gateway **fails to start** (fail-fast). Set `DISABLE_MANTLE=true` to skip mantle validation for SigV4-only/one-click deployments that do not use GPT-5.x; fail-fast remains the default. Region mismatches between the running instance's `AWS_REGION` and a model's `available_regions` emit a WARN at boot but don't hard-fail (the per-request gate returns 400 instead).
 
 **Mantle endpoint template:** the upstream URL is controlled by `MANTLE_BASE_URL_TEMPLATE` (default `https://bedrock-mantle.{region}.api.aws/openai/v1`). The literal `{region}` placeholder is replaced with the gateway's `AWS_REGION` at call time. Change this env var to point at a private or test mantle endpoint without recompiling.
 
@@ -701,7 +701,7 @@ responses_backend = "mantle"
 available_regions = ["us-east-2"]
 ```
 
-**启动行为：** 如果任何模型配置了 `responses_backend = "mantle"` 且 `bedrock_api_key`（环境变量 `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY`）未设置，网关**启动失败**（快速失败）。运行实例的 `AWS_REGION` 与模型 `available_regions` 不匹配时，启动时发出 WARN 但不硬失败（每请求门控返回 400）。
+**启动行为：** 如果任何模型配置了 `responses_backend = "mantle"` 且 `bedrock_api_key`（环境变量 `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY`）未设置，网关**启动失败**（快速失败）。设置 `DISABLE_MANTLE=true` 可为不使用 GPT-5.x 的 SigV4-only/一键部署跳过 mantle 校验；默认仍保留快速失败。运行实例的 `AWS_REGION` 与模型 `available_regions` 不匹配时，启动时发出 WARN 但不硬失败（每请求门控返回 400）。
 
 **Mantle 端点模板：** 上游 URL 由 `MANTLE_BASE_URL_TEMPLATE` 控制（默认 `https://bedrock-mantle.{region}.api.aws/openai/v1`）。字面占位符 `{region}` 在调用时替换为网关的 `AWS_REGION`。修改此环境变量可指向私有或测试 mantle 端点，无需重新编译。
 

@@ -2,7 +2,42 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Bedrock Access Gateway (Rust) - OpenAI-compatible RESTful APIs for Amazon
   Bedrock, deployed as an ECS/Fargate service behind an internet-facing
-  Application Load Balancer. Brings your own VPC and subnets.
+  Application Load Balancer. Supports one-click network creation (a new VPC with
+  two public subnets) or bring-your-own existing VPC and subnets. Deploy in any
+  AWS commercial region where Amazon Bedrock is available.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        # VpcId / Subnets carry blank defaults for one-click mode (CreateNetwork=true),
+        # where the network is created and these params are intentionally unused. cfn-lint
+        # resolves the empty defaults in the CreateNet=false branch of each Fn::If and warns
+        # they are not valid vpc-/subnet- ids; that only matters in bring-your-own mode where
+        # the operator supplies real ids (validated at deploy time by the AWS::EC2 types the
+        # console prompt enforces). These W1030 findings are expected for the dual-mode design.
+        - W1030
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Networking
+        Parameters:
+          - CreateNetwork
+          - VpcCidr
+          - VpcId
+          - Subnets
+      - Label:
+          default: Gateway
+        Parameters:
+          - ContainerImageUri
+          - ApiKeySecretArn
+          - DisableMantle
+          - BedrockApiKeySecretArn
+          - DefaultModelId
+          - DefaultEmbeddingModelId
+          - EnablePromptCaching
+          - LogLevel
+          - DesiredCount
 
 Parameters:
   ContainerImageUri:
@@ -19,6 +54,24 @@ Parameters:
       The Secrets Manager secret ARN holding the API key (key "api_key") used to
       authenticate clients of the gateway.
     AllowedPattern: ^arn:aws[a-zA-Z-]*:secretsmanager:.*$
+  DisableMantle:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >-
+      "true" (default): skip the GPT-5.x mantle backend startup validation so the
+      default published image boots without a Bedrock API key (SigV4-only). Set to
+      "false" only if you also provide BedrockApiKeySecretArn to enable GPT-5.x
+      (gpt-5.4 / gpt-5.5) via the bedrock-mantle upstream.
+  BedrockApiKeySecretArn:
+    Type: String
+    Default: ""
+    Description: >-
+      (Optional) Secrets Manager secret ARN whose "bedrock_api_key" field holds a
+      Bedrock API key (bearer token) for the GPT-5.x mantle backend. Leave blank
+      for SigV4-only deployments (the task role already grants Bedrock access).
   DefaultModelId:
     Type: String
     Default: ""
@@ -49,15 +102,38 @@ Parameters:
       - warn
       - error
     Description: Log verbosity for the gateway.
-  VpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: The VPC into which the load balancer and Fargate tasks are deployed.
-  Subnets:
-    Type: List<AWS::EC2::Subnet::Id>
+  CreateNetwork:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
     Description: >-
-      At least two subnets (in different AZs) used for both the ALB and the
-      Fargate tasks. Use public subnets, or private subnets with a NAT gateway
-      for ECR/Bedrock egress.
+      "true" (one-click): create a new VPC with two public subnets, an internet
+      gateway, and public routing - no existing network needed. "false"
+      (bring-your-own): reuse an existing network - VpcId and Subnets become
+      required in that case.
+  VpcCidr:
+    Type: String
+    Default: 10.240.0.0/16
+    Description: >-
+      CIDR block for the VPC created in one-click mode (CreateNetwork=true).
+      Ignored when CreateNetwork=false. Two /24 public subnets are carved from
+      this block.
+  VpcId:
+    Type: String
+    Default: ""
+    Description: >-
+      Existing VPC ID for the load balancer and Fargate tasks. Required only when
+      CreateNetwork=false; leave blank in one-click mode.
+  Subnets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: >-
+      At least two existing subnets (in different AZs) for both the ALB and the
+      Fargate tasks. Required only when CreateNetwork=false; leave blank in
+      one-click mode. Use public subnets, or private subnets with a NAT gateway
+      for ECR/Bedrock/Secrets Manager egress.
   DesiredCount:
     Type: Number
     Default: 2
@@ -67,8 +143,80 @@ Parameters:
 Conditions:
   HasDefaultModelId: !Not [!Equals [!Ref DefaultModelId, ""]]
   HasDefaultEmbeddingModelId: !Not [!Equals [!Ref DefaultEmbeddingModelId, ""]]
+  HasBedrockApiKey: !Not [!Equals [!Ref BedrockApiKeySecretArn, ""]]
+  CreateNet: !Equals [!Ref CreateNetwork, "true"]
+  UseExistingNet: !Not [!Condition CreateNet]
 
 Resources:
+  # ----------------------------------------------------------------
+  # One-click networking (created only when CreateNetwork=true)
+  # ----------------------------------------------------------------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Condition: CreateNet
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: CreateNet
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CreateNet
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Condition: CreateNet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 4, 8]]
+      MapPublicIpOnLaunch: true
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Condition: CreateNet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 4, 8]]
+      MapPublicIpOnLaunch: true
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateNet
+    Properties:
+      VpcId: !Ref Vpc
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateNet
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNet
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateNet
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
   # ----------------------------------------------------------------
   # CloudWatch Logs
   # ----------------------------------------------------------------
@@ -100,7 +248,9 @@ Resources:
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
-                Resource: !Ref ApiKeySecretArn
+                Resource:
+                  - !Ref ApiKeySecretArn
+                  - !If [HasBedrockApiKey, !Ref BedrockApiKeySecretArn, !Ref AWS::NoValue]
 
   # ----------------------------------------------------------------
   # IAM: Task role (least-privilege Bedrock + secret read)
@@ -139,7 +289,9 @@ Resources:
                 Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
-                Resource: !Ref ApiKeySecretArn
+                Resource:
+                  - !Ref ApiKeySecretArn
+                  - !If [HasBedrockApiKey, !Ref BedrockApiKeySecretArn, !Ref AWS::NoValue]
 
   # ----------------------------------------------------------------
   # Security Groups
@@ -148,7 +300,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Bedrock Gateway ALB - allow inbound HTTP from anywhere
-      VpcId: !Ref VpcId
+      VpcId: !If [CreateNet, !Ref Vpc, !Ref VpcId]
       SecurityGroupIngress:
         - Description: Allow inbound HTTP from anywhere
           IpProtocol: tcp
@@ -160,7 +312,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Bedrock Gateway Fargate tasks - allow inbound only from ALB
-      VpcId: !Ref VpcId
+      VpcId: !If [CreateNet, !Ref Vpc, !Ref VpcId]
 
   AlbToTaskIngress:
     Type: AWS::EC2::SecurityGroupIngress
@@ -225,6 +377,11 @@ Resources:
           Secrets:
             - Name: API_KEY
               ValueFrom: !Sub "${ApiKeySecretArn}:api_key::"
+            - !If
+              - HasBedrockApiKey
+              - Name: AWS_BEARER_TOKEN_BEDROCK
+                ValueFrom: !Sub "${BedrockApiKeySecretArn}:bedrock_api_key::"
+              - !Ref AWS::NoValue
           Environment:
             - Name: API_KEY_SECRET_ARN
               Value: !Ref ApiKeySecretArn
@@ -238,6 +395,8 @@ Resources:
               Value: !Ref LogLevel
             - Name: ENABLE_PROMPT_CACHING
               Value: !Ref EnablePromptCaching
+            - Name: DISABLE_MANTLE
+              Value: !Ref DisableMantle
             - !If
               - HasDefaultModelId
               - Name: DEFAULT_MODEL
@@ -277,7 +436,10 @@ Resources:
           AssignPublicIp: ENABLED
           SecurityGroups:
             - !GetAtt TaskSecurityGroup.GroupId
-          Subnets: !Ref Subnets
+          Subnets: !If
+            - CreateNet
+            - [!Ref PublicSubnet1, !Ref PublicSubnet2]
+            - !Ref Subnets
       LoadBalancers:
         - ContainerName: bedrock-gateway
           ContainerPort: 8080
@@ -293,7 +455,10 @@ Resources:
       Type: application
       SecurityGroups:
         - !GetAtt AlbSecurityGroup.GroupId
-      Subnets: !Ref Subnets
+      Subnets: !If
+        - CreateNet
+        - [!Ref PublicSubnet1, !Ref PublicSubnet2]
+        - !Ref Subnets
       LoadBalancerAttributes:
         - Key: idle_timeout.timeout_seconds
           Value: "600"
@@ -304,7 +469,7 @@ Resources:
       TargetType: ip
       Protocol: HTTP
       Port: 8080
-      VpcId: !Ref VpcId
+      VpcId: !If [CreateNet, !Ref Vpc, !Ref VpcId]
       HealthCheckEnabled: true
       HealthCheckProtocol: HTTP
       HealthCheckPath: /api/v1/health
@@ -338,3 +503,15 @@ Outputs:
   ServiceName:
     Description: ECS service name
     Value: !GetAtt Service.Name
+  VpcId:
+    Description: VPC used by the gateway (created in one-click mode, or the provided VpcId)
+    Value: !If [CreateNet, !Ref Vpc, !Ref VpcId]
+  Subnets:
+    Description: Subnets used by the ALB and Fargate tasks
+    Value: !If
+      - CreateNet
+      - !Sub "${PublicSubnet1},${PublicSubnet2}"
+      - !Join [",", !Ref Subnets]
+  NetworkMode:
+    Description: Whether the stack created a new network or used an existing one
+    Value: !If [UseExistingNet, bring-your-own, one-click]
