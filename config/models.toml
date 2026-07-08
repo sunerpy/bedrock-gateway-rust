@@ -45,6 +45,16 @@
 #                               response_format (json_object / json_schema) is
 #                               honored by emitting outputConfig. Models without
 #                               this flag reject response_format with HTTP 400.
+#   cache_ttl_1h              – this model supports a 1-hour prompt-cache
+#                               cachePoint.ttl; when set, a requested 1h cache TTL
+#                               (per-request extra_body.prompt_caching.ttl or the
+#                               PROMPT_CACHE_TTL default) is honored. Models WITHOUT
+#                               this flag silently downgrade a requested 1h to 5m
+#                               (5m is always allowed for any caching-capable model).
+#                               The gate is this config flag — never a model-name
+#                               check in code. Set on the Claude 4.5-gen family
+#                               (Sonnet/Haiku/Opus 4-5), which supports extended
+#                               (1h) cache retention on Bedrock.
 #
 # reasoning_path — selects the shape of the reasoning config the gateway emits:
 #   adaptive_thinking – additionalModelRequestFields.thinking={type:"adaptive"}
@@ -107,7 +117,7 @@ high = -1.0 # sentinel meaning "max_tokens - 1" (the maximum thinking budget)
 
 [[model]]
 match = "claude-sonnet-4-5"
-capabilities = ["temperature_topp_conflict", "structured_output"]
+capabilities = ["temperature_topp_conflict", "structured_output", "cache_ttl_1h"]
 # Non-adaptive Claude: reasoning uses the budget_tokens form (see budget_ratios).
 [model.params]
 cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Sonnet
@@ -122,14 +132,14 @@ reasoning_path = "budget_tokens"
 
 [[model]]
 match = "claude-haiku-4-5"
-capabilities = ["temperature_topp_conflict", "structured_output"]
+capabilities = ["temperature_topp_conflict", "structured_output", "cache_ttl_1h"]
 [model.params]
 cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Haiku
 reasoning_path = "budget_tokens"
 
 [[model]]
 match = "claude-opus-4-5"
-capabilities = ["temperature_topp_conflict", "structured_output"]
+capabilities = ["temperature_topp_conflict", "structured_output", "cache_ttl_1h"]
 [model.params]
 cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Opus
 reasoning_path = "budget_tokens"

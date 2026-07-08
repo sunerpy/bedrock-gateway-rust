@@ -762,6 +762,27 @@ impl BedrockChatProvider {
                 .unwrap_or(DEFAULT_MAX_CACHE_CHECKPOINTS),
         );
 
+        // Resolve the UNIFORM per-request cache TTL: per-request
+        // `extra_body.prompt_caching.ttl` wins over the settings default; a `1h`
+        // request on a model lacking `Capability::CacheTtl1h` is silently
+        // downgraded to `5m` with a metadata-only WARN (no content).
+        let resolved_ttl = cache::resolve_cache_ttl(
+            caching.ttl.as_deref(),
+            &self.settings.prompt_cache_ttl,
+            resolved,
+            caps,
+        );
+        if resolved_ttl.downgraded {
+            tracing::warn!(
+                request_id = %req.request_id,
+                model = %resolved,
+                requested_ttl = %resolved_ttl.requested,
+                effective_ttl = %resolved_ttl.effective,
+                "prompt-cache 1h TTL not supported by model; downgraded to 5m"
+            );
+        }
+        let ttl = Some(resolved_ttl.effective.as_str());
+
         // Running grand total of cachePoints placed across all zones. assemble()
         // owns this; each zone consumes from it and must not push it over
         // `max_checkpoints`.
@@ -779,6 +800,7 @@ impl BedrockChatProvider {
                     tools_enabled,
                     used_checkpoints,
                     max_checkpoints,
+                    ttl,
                 );
                 used_checkpoints += count_cache_points(&decorated_tools);
                 tc.insert("tools".to_string(), decorated_tools);
@@ -791,6 +813,7 @@ impl BedrockChatProvider {
             resolved,
             caps,
             system_enabled,
+            ttl,
         );
         used_checkpoints += count_cache_points(&decorated_system);
         args.system = decorated_system;
@@ -803,6 +826,7 @@ impl BedrockChatProvider {
             messages_enabled,
             used_checkpoints,
             max_checkpoints,
+            ttl,
         );
         used_checkpoints += count_cache_points(&decorated_messages);
         args.messages = decorated_messages;
@@ -1120,6 +1144,7 @@ mod tests {
             enable_cross_region_inference: true,
             enable_application_inference_profiles: true,
             enable_prompt_caching: true,
+            prompt_cache_ttl: "5m".to_string(),
             api_key: None,
             api_key_secret_arn: None,
             api_key_param_name: None,
