@@ -1,0 +1,21 @@
+apiVersion: v2
+name: bedrock-gateway
+description: An OpenAI-compatible API gateway for AWS Bedrock, deployable on Kubernetes/EKS.
+type: application
+# Chart SemVer — bump on chart changes.
+version: 0.1.0
+# Mirrors the gateway application version; the image tag falls back to this when
+# image.tag is empty.
+appVersion: "0.8.1"
+home: https://github.com/sunerpy/bedrock-gateway-rust
+sources:
+  - https://github.com/sunerpy/bedrock-gateway-rust
+keywords:
+  - bedrock
+  - openai
+  - gateway
+  - aws
+  - llm
+maintainers:
+  - name: sunerpy
+    email: nkuzhangshn@gmail.com

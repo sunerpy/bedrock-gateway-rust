@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bedrock-gateway.fullname" . }}
+  labels:
+    {{- include "bedrock-gateway.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "bedrock-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "bedrock-gateway.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "bedrock-gateway.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.image.repository }}:{{ include "bedrock-gateway.imageTag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+              protocol: TCP
+          env:
+            # PORT and API_ROUTE_PREFIX are sourced from their dedicated values so
+            # the container port and health-probe path stay consistent. An explicit
+            # override in .Values.env wins over these.
+            - name: PORT
+              value: {{ (default .Values.containerPort .Values.env.PORT) | quote }}
+            - name: API_ROUTE_PREFIX
+              value: {{ (default .Values.apiRoutePrefix .Values.env.API_ROUTE_PREFIX) | quote }}
+            # CONFIG_DIR (read in src/server/mod.rs:99) points at the read-only
+            # ConfigMap mount. It is the one documented env var outside settings.rs.
+            - name: CONFIG_DIR
+              value: {{ .Values.config.dir | quote }}
+            {{- range $key, $value := .Values.env }}
+            {{- if and (ne $value nil) (ne $key "PORT") (ne $key "API_ROUTE_PREFIX") }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if or .Values.apiKey.value .Values.apiKey.existingSecret }}
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bedrock-gateway.apiKeySecretName" . }}
+                  key: {{ include "bedrock-gateway.apiKeySecretKey" . }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.apiRoutePrefix }}/health
+              port: http
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.apiRoutePrefix }}/health
+              port: http
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: {{ .Values.config.dir }}
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "bedrock-gateway.fullname" . }}-config
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

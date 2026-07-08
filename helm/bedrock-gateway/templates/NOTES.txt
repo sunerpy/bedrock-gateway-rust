@@ -1,0 +1,43 @@
+bedrock-gateway has been deployed.
+
+1. Get the application URL by running these commands:
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  {{- range .paths }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
+  {{- end }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "bedrock-gateway.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT{{ .Values.apiRoutePrefix }}/health
+{{- else if contains "LoadBalancer" .Values.service.type }}
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "bedrock-gateway.fullname" . }} -o jsonpath="{.status.loadBalancer.ingress[0].ip}")
+  echo http://$SERVICE_IP:{{ .Values.service.port }}{{ .Values.apiRoutePrefix }}/health
+{{- else if contains "ClusterIP" .Values.service.type }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "bedrock-gateway.fullname" . }} 8080:{{ .Values.service.port }}
+  curl http://127.0.0.1:8080{{ .Values.apiRoutePrefix }}/health
+{{- end }}
+
+2. Configuration notes:
+   - The gateway reads config/*.toml from CONFIG_DIR={{ .Values.config.dir }} (mounted read-only from a ConfigMap).
+   - Container listens on PORT={{ default .Values.containerPort .Values.env.PORT }}; health probes hit {{ .Values.apiRoutePrefix }}/health.
+{{- if or .Values.apiKey.value .Values.apiKey.existingSecret }}
+   - The client->gateway API_KEY is injected from Secret "{{ include "bedrock-gateway.apiKeySecretName" . }}" (key {{ include "bedrock-gateway.apiKeySecretKey" . }}).
+{{- else }}
+   - No API_KEY Secret configured. Set apiKey.value or apiKey.existingSecret, or use the env.API_KEY_SECRET_ARN / env.API_KEY_PARAM_NAME secret-store paths.
+{{- end }}
+
+3. AWS auth (gateway -> Bedrock):
+{{- if .Values.serviceAccount.annotations }}
+   - IRSA annotations detected on the ServiceAccount; the pod uses the SigV4 chain via its IAM role.
+{{- else }}
+   - Set serviceAccount.annotations."eks.amazonaws.com/role-arn" for IRSA, or provide env.AWS_BEARER_TOKEN_BEDROCK.
+{{- end }}
+
+{{- if eq .Values.image.repository "public.ecr.aws/REPLACE_ME_ECR_ALIAS/bedrock-gateway-rust" }}
+
+WARNING: image.repository still uses the placeholder ECR alias
+"REPLACE_ME_ECR_ALIAS". Set image.repository to your published image before a
+real deployment. [MANUAL-2]
+{{- end }}

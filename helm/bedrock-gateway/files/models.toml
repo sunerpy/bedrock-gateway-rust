@@ -1,0 +1,226 @@
+# Model Capability Registry
+# ==========================
+#
+# This file declares, per model, the quirks the gateway must compensate for when
+# it translates an OpenAI-shaped request into a Bedrock call. Keeping this data
+# in TOML means model knowledge lives entirely in config: adding or tuning a
+# model is a TOML-only edit and requires NO recompile. The Rust code holds only
+# the matching algorithm — never any model name or magic number.
+#
+# How the gateway uses it:
+#   Each [[model]] entry's `match` value is tested as a SUBSTRING against the
+#   lowercased resolved foundation model id. The first matching entry supplies
+#   that model's capability flags and parameters. The `default` entry below
+#   supplies fallback values (currently the budget ratios) for anything a model
+#   does not override.
+#
+# How to add a model:
+#   Append a new [[model]] table with a `match` substring, zero or more
+#   `capabilities`, and an optional [model.params] block. No code change needed.
+#
+# Capability flags (each toggles one translation behavior):
+#   temperature_topp_conflict – this model errors if it receives both temperature
+#                               and top_p; when set, the gateway keeps temperature
+#                               and drops top_p before sending the request.
+#   context_1m_beta           – this model supports the 1-million-token context
+#                               beta; when set, the gateway auto-injects the
+#                               anthropic_beta header (value below) on requests.
+#   no_assistant_prefill      – this model does not accept a conversation that
+#                               ends with an assistant message (prefill); when
+#                               set, the gateway appends a user continuation turn
+#                               so the conversation ends on a user message.
+#   adaptive_thinking         – this model only accepts the adaptive thinking
+#                               form; when set, reasoning is configured as
+#                               thinking.type=adaptive + output_config.effort
+#                               (it rejects the budget_tokens form with HTTP 400).
+#   drop_sampling_params      – this model deprecates ALL sampling parameters and
+#                               returns HTTP 400 on any non-default temperature or
+#                               top_p; when set, the gateway strips both from the
+#                               request. Stronger than temperature_topp_conflict
+#                               (which only drops top_p when temperature is present).
+#                               Applies to Claude Opus 4.7+, Sonnet 5, Fable/Mythos 5.
+#
+# reasoning_path — selects the shape of the reasoning config the gateway emits:
+#   adaptive_thinking – additionalModelRequestFields.thinking={type:"adaptive"}
+#                       plus output_config.effort derived from reasoning_effort.
+#   budget_tokens     – reasoning_config={type:"enabled",budget_tokens:N} where N
+#                       is computed from max_tokens via budget_ratios below.
+#   deepseek_string   – reasoning_config sent as a bare string "low"|"medium"|"high".
+#   none              – the model has no extended-thinking mode; reasoning_effort
+#                       is ignored.
+
+# anthropic_beta header value injected when a model carries the context_1m_beta
+# capability — this opt-in token enables the 1-million-token context window.
+context_1m_beta_header = "context-1m-2025-08-07"
+
+
+# ---------------------------------------------------------------------------
+# Model-id aliases
+# ---------------------------------------------------------------------------
+# Rewrite a client-facing model name to a canonical resolved id BEFORE any
+# capability/region lookup. Aliases win over the runtime inference-profile map,
+# so they resolve even with no live catalog. Adding an alias is a TOML-only edit.
+#   from = the name a client sends
+#   to   = the canonical id the gateway resolves it to
+[[alias]]
+from = "gpt-5.4"
+to = "openai.gpt-5.4"
+
+[[alias]]
+from = "gpt-5.5"
+to = "openai.gpt-5.5"
+
+
+# ---------------------------------------------------------------------------
+# Defaults entry
+# ---------------------------------------------------------------------------
+# Not a real model id. This fallback entry supplies the budget_ratios used to
+# convert a reasoning_effort level into a concrete budget_tokens value for any
+# model that does not declare its own. The ratios scale the request's max_tokens:
+#   low    -> budget_tokens = max_tokens * 0.3   (30% of max_tokens)
+#   medium -> budget_tokens = max_tokens * 0.6   (60% of max_tokens)
+#   high   -> budget_tokens = max_tokens - 1     (encoded by the -1.0 sentinel;
+#                                                 high/xhigh/max all map here)
+# The resulting budget_tokens is floored at 1,024.
+[[model]]
+match = "default"
+capabilities = []
+
+[model.params]
+min_budget_tokens = 1024 # Anthropic hard floor: thinking budget < 1024 → HTTP 400
+
+[model.params.budget_ratios]
+low = 0.3 # 30% of max_tokens
+medium = 0.6 # 60% of max_tokens
+high = -1.0 # sentinel meaning "max_tokens - 1" (the maximum thinking budget)
+
+
+# ---------------------------------------------------------------------------
+# Claude entries
+# ---------------------------------------------------------------------------
+
+[[model]]
+match = "claude-sonnet-4-5"
+capabilities = ["temperature_topp_conflict"]
+# Non-adaptive Claude: reasoning uses the budget_tokens form (see budget_ratios).
+[model.params]
+cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Sonnet
+reasoning_path = "budget_tokens"
+
+[[model]]
+match = "claude-sonnet-4-6"
+capabilities = ["temperature_topp_conflict", "context_1m_beta"]
+[model.params]
+cache_min_tokens = 1024 # Minimum cacheable prefix tokens; Anthropic-on-Bedrock standard for Sonnet family
+reasoning_path = "budget_tokens"
+
+[[model]]
+match = "claude-haiku-4-5"
+capabilities = ["temperature_topp_conflict"]
+[model.params]
+cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Haiku
+reasoning_path = "budget_tokens"
+
+[[model]]
+match = "claude-opus-4-5"
+capabilities = ["temperature_topp_conflict"]
+[model.params]
+cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Opus
+reasoning_path = "budget_tokens"
+
+[[model]]
+match = "claude-opus-4-6"
+capabilities = ["context_1m_beta", "no_assistant_prefill", "adaptive_thinking"]
+# Adaptive-thinking Claude: reasoning uses the thinking.type=adaptive form.
+[model.params]
+cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
+reasoning_path = "adaptive_thinking"
+
+[[model]]
+match = "claude-opus-4-7"
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params"]
+# Opus 4.7 and later deprecate temperature/top_p (HTTP 400 on non-default values).
+[model.params]
+cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
+reasoning_path = "adaptive_thinking"
+
+[[model]]
+match = "claude-opus-4-8"
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params"]
+[model.params]
+cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
+reasoning_path = "adaptive_thinking"
+
+[[model]]
+match = "claude-mythos-5"
+capabilities = ["adaptive_thinking", "drop_sampling_params"]
+[model.params]
+cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
+reasoning_path = "adaptive_thinking"
+
+[[model]]
+match = "claude-fable-5"
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params"]
+[model.params]
+cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
+reasoning_path = "adaptive_thinking"
+
+
+[[model]]
+# Family catch-all: any unlisted anthropic.claude-* id auto-gets caching support.
+# MUST stay LAST among claude entries — matching is first-match substring, so
+# specific claude-* entries above win; this only catches NEW/unlisted Claude ids.
+match = "anthropic.claude"
+capabilities = []
+[model.params]
+cache_min_tokens = 4096 # conservative floor for unlisted Claude versions
+
+
+# ---------------------------------------------------------------------------
+# Amazon Nova — prompt-cache token ceiling
+# ---------------------------------------------------------------------------
+# Caps how many tokens the gateway will mark with a prompt-cache point for the
+# Nova model family: cache points are only placed once the cacheable prefix
+# reaches this many tokens, and never beyond it.
+[[model]]
+match = "amazon.nova"
+capabilities = []
+[model.params]
+# AWS publishes no Nova minimum; conservative floor, tune via live test.
+cache_min_tokens = 1024
+max_cache_tokens = 20000 # Nova prompt-cache ceiling, in tokens
+
+
+# ---------------------------------------------------------------------------
+# DeepSeek v3 — string-form reasoning path
+# ---------------------------------------------------------------------------
+# DeepSeek v3 expects reasoning configured as a bare string ("low"|"medium"|
+# "high") rather than a budget_tokens object, so it uses the deepseek_string path.
+[[model]]
+match = "deepseek.v3"
+capabilities = []
+[model.params]
+reasoning_path = "deepseek_string"
+
+
+# ---------------------------------------------------------------------------
+# OpenAI GPT-5.x via bedrock-mantle
+# ---------------------------------------------------------------------------
+# Served through the bedrock-mantle OpenAI-compatible upstream (responses_backend
+# = "mantle"), NOT the Bedrock Converse path. Two entries because the two models
+# differ in regional availability; available_regions gates them at startup and
+# per request. The `openai.gpt-5.5`/`openai.gpt-5.4` match values are the canonical
+# ids the `[[alias]]` table above rewrites `gpt-5.5`/`gpt-5.4` to.
+[[model]]
+match = "openai.gpt-5.5"
+capabilities = []
+[model.params]
+responses_backend = "mantle"
+available_regions = ["us-east-2"]
+
+[[model]]
+match = "openai.gpt-5.4"
+capabilities = []
+[model.params]
+responses_backend = "mantle"
+available_regions = ["us-east-2", "us-west-2"]

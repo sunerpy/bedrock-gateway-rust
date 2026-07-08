@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bedrock-gateway.fullname" . }}-config
+  labels:
+    {{- include "bedrock-gateway.labels" . | nindent 4 }}
+data:
+  models.toml: |-
+{{ .Files.Get "files/models.toml" | indent 4 }}
+  regions.toml: |-
+{{ .Files.Get "files/regions.toml" | indent 4 }}
+  embeddings.toml: |-
+{{ .Files.Get "files/embeddings.toml" | indent 4 }}
+  app.toml: |-
+{{ .Files.Get "files/app.toml" | indent 4 }}
