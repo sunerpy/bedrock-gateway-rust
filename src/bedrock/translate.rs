@@ -54,7 +54,8 @@ use serde_json::{json, Map, Value};
 use crate::domain::{Capability, ModelCapabilities};
 use crate::error::AppError;
 use crate::openai::schema::{
-    ChatRequest, ContentInput, ContentPart, Message, StringOrVec, ToolContentInput,
+    ChatRequest, ContentInput, ContentPart, Message, StringOrVec, SystemContentInput,
+    ToolContentInput,
 };
 
 /// The fully-built Converse request arguments (pure translation output).
@@ -183,23 +184,52 @@ fn push_non_empty_text_block(blocks: &mut Vec<Value>, text: &str) {
     }
 }
 
+/// Flatten a system/developer message's content into a single text string.
+///
+/// A [`SystemContentInput::Text`] passes through unchanged; a
+/// [`SystemContentInput::Parts`] joins each text part's `.text` with `"\n"`.
+///
+/// # Errors
+/// Returns [`AppError::BadRequest`] if any part is a non-text (image) part.
+fn flatten_system_content(content: &SystemContentInput) -> Result<String, AppError> {
+    match content {
+        SystemContentInput::Text(text) => Ok(text.clone()),
+        SystemContentInput::Parts(parts) => {
+            let mut texts = Vec::with_capacity(parts.len());
+            for part in parts {
+                match part {
+                    ContentPart::Text(text_content) => texts.push(text_content.text.as_str()),
+                    ContentPart::Image(_) => {
+                        return Err(AppError::BadRequest(
+                            "system/developer message does not accept non-text content parts"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            Ok(texts.join("\n"))
+        }
+    }
+}
+
 /// Build the Bedrock `system` blocks from system/developer messages.
 ///
 /// Ports `_parse_system_prompts` (bedrock.py:709-744) for the translation
 /// scope: every `system`/`developer` message contributes a `{"text": ...}`
-/// block. Prompt-cache `cachePoint` insertion (bedrock.py:736-772) is a
+/// block. String content passes through; a text-part array is flattened with a
+/// `"\n"` join. Prompt-cache `cachePoint` insertion (bedrock.py:736-772) is a
 /// separate task (20) and is intentionally omitted here.
 ///
 /// # Errors
-/// Returns [`AppError::BadRequest`] if a system/developer message content is
-/// not a string (Python raises `TypeError`, bedrock.py:729-730, surfaced as a
-/// 400 to the client).
+/// Returns [`AppError::BadRequest`] if a system/developer array contains a
+/// non-text (image) content part.
 pub fn parse_system_prompts(req: &ChatRequest) -> Result<Value, AppError> {
     let mut blocks: Vec<Value> = Vec::new();
     for message in &req.messages {
         match message {
             Message::System { content, .. } | Message::Developer { content, .. } => {
-                push_non_empty_text_block(&mut blocks, content);
+                let text = flatten_system_content(content)?;
+                push_non_empty_text_block(&mut blocks, &text);
             }
             _ => continue,
         }
@@ -813,7 +843,7 @@ mod tests {
     use crate::bedrock::capabilities::ConfigModelCapabilities;
     use crate::config::ModelCapabilityConfig;
     use crate::openai::schema::{
-        ContentInput, ContentPart, ImageContent, ImageUrl, Message, TextContent,
+        ContentInput, ContentPart, ImageContent, ImageUrl, Message, SystemContentInput, TextContent,
     };
     use std::collections::HashMap;
 
@@ -909,11 +939,11 @@ mod tests {
             vec![
                 Message::System {
                     name: None,
-                    content: "You are helpful.".to_string(),
+                    content: SystemContentInput::Text("You are helpful.".to_string()),
                 },
                 Message::Developer {
                     name: None,
-                    content: "Be terse.".to_string(),
+                    content: SystemContentInput::Text("Be terse.".to_string()),
                 },
                 user_text("Hi"),
             ],
@@ -941,11 +971,11 @@ mod tests {
             vec![
                 Message::System {
                     name: None,
-                    content: "".to_string(),
+                    content: SystemContentInput::Text("".to_string()),
                 },
                 Message::Developer {
                     name: None,
-                    content: "Be terse.".to_string(),
+                    content: SystemContentInput::Text("Be terse.".to_string()),
                 },
                 user_text("Hi"),
             ],
@@ -1008,22 +1038,126 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_string_system_content_is_rejected() {
-        // The schema types System.content as String, so a JSON array fails to
-        // deserialize into a SystemMessage at the wire boundary — proving the
-        // parity guarantee (non-string system content never reaches Bedrock).
-        let raw = r#"{
-            "model": "anthropic.claude-3-sonnet-v1:0",
-            "messages": [
-                {"role": "system", "content": [{"type": "text", "text": "x"}]},
-                {"role": "user", "content": "hi"}
-            ]
-        }"#;
-        let parsed: Result<ChatRequest, _> = serde_json::from_str(raw);
-        assert!(
-            parsed.is_err(),
-            "non-string system content must not deserialize"
+    async fn array_system_content_flattens_with_newline() {
+        let req = base_request(
+            "anthropic.claude-3-sonnet-v1:0",
+            vec![
+                Message::System {
+                    name: None,
+                    content: SystemContentInput::Parts(vec![
+                        ContentPart::Text(TextContent {
+                            r#type: "text".to_string(),
+                            text: "a".to_string(),
+                        }),
+                        ContentPart::Text(TextContent {
+                            r#type: "text".to_string(),
+                            text: "b".to_string(),
+                        }),
+                    ]),
+                },
+                user_text("hi"),
+            ],
         );
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+
+        let sys = args.system.as_array().expect("system array");
+        assert_eq!(sys.len(), 1);
+        assert_eq!(sys[0]["text"], "a\nb");
+    }
+
+    #[tokio::test]
+    async fn image_part_in_system_content_is_rejected() {
+        let req = base_request(
+            "anthropic.claude-3-sonnet-v1:0",
+            vec![
+                Message::System {
+                    name: None,
+                    content: SystemContentInput::Parts(vec![ContentPart::Image(ImageContent {
+                        r#type: "image_url".to_string(),
+                        image_url: ImageUrl {
+                            url: "https://example.com/x.png".to_string(),
+                            detail: "auto".to_string(),
+                        },
+                    })]),
+                },
+                user_text("hi"),
+            ],
+        );
+        let c = caps();
+        let r = resolver(false);
+        let err = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect_err("image part in system content must reject");
+
+        match err {
+            AppError::BadRequest(message) => {
+                assert!(message.contains("does not accept non-text content parts"))
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_system_array_is_skipped() {
+        let req = base_request(
+            "anthropic.claude-3-sonnet-v1:0",
+            vec![
+                Message::System {
+                    name: None,
+                    content: SystemContentInput::Parts(vec![]),
+                },
+                Message::Developer {
+                    name: None,
+                    content: SystemContentInput::Text("Be terse.".to_string()),
+                },
+                user_text("Hi"),
+            ],
+        );
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+
+        let sys = args.system.as_array().expect("system array");
+        assert_eq!(sys.len(), 1);
+        assert_eq!(sys[0]["text"], "Be terse.");
+    }
+
+    #[tokio::test]
+    async fn developer_array_content_flattens() {
+        let req = base_request(
+            "anthropic.claude-3-sonnet-v1:0",
+            vec![
+                Message::Developer {
+                    name: None,
+                    content: SystemContentInput::Parts(vec![
+                        ContentPart::Text(TextContent {
+                            r#type: "text".to_string(),
+                            text: "one".to_string(),
+                        }),
+                        ContentPart::Text(TextContent {
+                            r#type: "text".to_string(),
+                            text: "two".to_string(),
+                        }),
+                    ]),
+                },
+                user_text("hi"),
+            ],
+        );
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+
+        let sys = args.system.as_array().expect("system array");
+        assert_eq!(sys.len(), 1);
+        assert_eq!(sys[0]["text"], "one\ntwo");
     }
 
     #[tokio::test]

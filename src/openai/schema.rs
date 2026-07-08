@@ -170,6 +170,19 @@ pub enum ContentInput {
     Parts(Vec<ContentPart>),
 }
 
+/// System/developer message content (`str | list[TextContent | ImageContent]`).
+///
+/// Not [`ContentInput`]: admitting `Vec<ContentPart>` (which structurally
+/// includes image parts) at the schema level lets `parse_system_prompts` return
+/// a clean 400 for a non-text part instead of a wire-boundary deser failure.
+/// Only text parts are accepted; image/non-text parts are rejected in translation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SystemContentInput {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
 /// Tool message content (`str | list[ToolContent] | list[dict]`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -192,7 +205,7 @@ pub enum Message {
     System {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-        content: String,
+        content: SystemContentInput,
     },
     User {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -214,7 +227,7 @@ pub enum Message {
     Developer {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-        content: String,
+        content: SystemContentInput,
     },
 }
 
@@ -601,7 +614,11 @@ mod tests {
         assert_eq!(reparsed.temperature, Some(0.7));
         assert_eq!(reparsed.tools.as_ref().expect("tools").len(), 1);
         match &reparsed.messages[0] {
-            Message::System { content, .. } => assert_eq!(content, "You are helpful."),
+            Message::System { content, .. } => {
+                assert!(
+                    matches!(content, SystemContentInput::Text(text) if text == "You are helpful.")
+                )
+            }
             other => panic!("expected system message, got {other:?}"),
         }
     }
