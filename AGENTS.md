@@ -15,6 +15,7 @@ Supported endpoints (prefix configurable via `API_ROUTE_PREFIX`, default `/api/v
 | Endpoint                        | Notes                                                       |
 | ------------------------------- | ----------------------------------------------------------- |
 | `POST /api/v1/chat/completions` | Streaming (SSE) + non-streaming                             |
+| `POST /api/v1/completions`      | OpenAI legacy text completions (Zed edit-prediction); reuses the Converse path, wire shape `text_completion` |
 | `POST /api/v1/responses`        | OpenAI Responses API surface (stateless; required by codex) |
 | `POST /api/v1/embeddings`       | Cohere / Titan / Nova                                       |
 | `GET  /api/v1/models`           | Catalog refresh from Bedrock control plane                  |
@@ -441,6 +442,7 @@ New documentation files must follow this layout. Do not add `.md` files to the r
 | 端点                            | 说明                                            |
 | ------------------------------- | ----------------------------------------------- |
 | `POST /api/v1/chat/completions` | 流式（SSE）+ 非流式                             |
+| `POST /api/v1/completions`      | OpenAI 传统文本补全（Zed edit-prediction）；复用 Converse 路径，协议形状 `text_completion` |
 | `POST /api/v1/responses`        | OpenAI Responses API 接口（无状态；codex 必需） |
 | `POST /api/v1/embeddings`       | Cohere / Titan / Nova                           |
 | `GET  /api/v1/models`           | 从 Bedrock 控制面刷新模型目录                   |

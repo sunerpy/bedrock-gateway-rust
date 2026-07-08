@@ -1,6 +1,6 @@
 //! HTTP route handlers and the router builder.
 //!
-//! This module wires the five OpenAI-compatible endpoints onto axum, dispatching
+//! This module wires the six OpenAI-compatible endpoints onto axum, dispatching
 //! through the domain trait objects ([`ChatProvider`]/[`EmbeddingProvider`]) and
 //! the [`ModelCatalog`] held in [`AppState`]. It contains NO provider logic and
 //! NO AWS SDK types — every handler is a thin adapter over the abstractions.
@@ -13,6 +13,9 @@
 //!   [`NormalizedChatRequest`], then dispatches: `stream: true` returns an SSE
 //!   [`Sse`] response built from the provider's [`ChatStream`] (each chunk →
 //!   `data: <json>`, terminated by `data: [DONE]`); otherwise `Json(ChatResponse)`.
+//! - `POST {prefix}/completions` — [`completions`]. Adapts legacy text-completions
+//!   requests onto the shared chat provider, returning `Json(CompletionResponse)`
+//!   or text-completion SSE chunks.
 //! - `POST {prefix}/embeddings` — [`embeddings`]. Dispatches via
 //!   [`EmbeddingProvider`] → `Json(EmbeddingsResponse)`.
 //! - `GET {prefix}/models` — [`list_models`]. Serves the cached catalog.
@@ -52,8 +55,9 @@ use crate::domain::{
     gen_request_id, NormalizedChatRequest, NormalizedResponsesRequest, ResponsesBackend,
 };
 use crate::error::AppError;
+use crate::openai::completions_schema::{CompletionChoice, CompletionRequest, CompletionResponse};
 use crate::openai::responses_schema::{ResponseStreamEvent, ResponsesRequest};
-use crate::openai::schema::{ChatRequest, EmbeddingsRequest};
+use crate::openai::schema::{ChatRequest, ContentInput, EmbeddingsRequest, Message};
 use crate::server::auth::require_bearer;
 use crate::server::state::AppState;
 
@@ -203,6 +207,200 @@ pub async fn chat_completions(
             }
         }
     }
+}
+
+/// `POST {prefix}/completions`.
+pub async fn completions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Response, AppError> {
+    let received_at = std::time::Instant::now();
+    let request_id = resolve_request_id(&headers);
+    let request: CompletionRequest =
+        serde_json::from_slice(&body).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    if request.suffix.is_some() {
+        return Err(AppError::Unsupported("suffix is not supported".to_string()));
+    }
+    let prompt = request.prompt.as_single_string()?;
+    let client_model = request.model.clone();
+    if state.caps.responses_backend(&client_model) == ResponsesBackend::Mantle {
+        return Err(AppError::BadRequest(format!(
+            "model {client_model} is only available on the /responses endpoint"
+        )));
+    }
+    let is_stream = request.stream.unwrap_or(false);
+    let echo = request.echo.unwrap_or(false);
+    let chat_request = ChatRequest {
+        messages: vec![Message::User {
+            name: None,
+            content: ContentInput::Text(prompt.clone()),
+        }],
+        model: client_model.clone(),
+        frequency_penalty: request.frequency_penalty,
+        presence_penalty: request.presence_penalty,
+        stream: request.stream,
+        stream_options: request.stream_options.clone(),
+        temperature: request.temperature,
+        top_p: request.top_p,
+        user: request.user.clone(),
+        max_tokens: request.max_tokens,
+        max_completion_tokens: None,
+        reasoning_effort: None,
+        n: request.n,
+        tools: None,
+        tool_choice: Default::default(),
+        stop: request.stop.clone(),
+        extra_body: None,
+        extra: Default::default(),
+    };
+    let resolved_model = state.caps.resolve_foundation(&client_model);
+    let normalized = NormalizedChatRequest {
+        request: chat_request,
+        resolved_model,
+        request_id: request_id.clone(),
+        received_at,
+    };
+    tracing::info!(
+        request_id = %request_id,
+        model = %client_model,
+        stream = is_stream,
+        "completions request received"
+    );
+
+    if is_stream {
+        match state.chat.chat_stream(&normalized).await {
+            Ok(stream) => {
+                tracing::info!(
+                    request_id = %request_id,
+                    model = %client_model,
+                    ttfb_ms = received_at.elapsed().as_millis(),
+                    "completions streaming started"
+                );
+                Ok(completions_sse_response(stream))
+            }
+            Err(e) => {
+                if e.is_server_error() {
+                    tracing::error!(request_id = %request_id, model = %client_model, error = %e, "completions request failed");
+                } else {
+                    tracing::warn!(request_id = %request_id, model = %client_model, error = %e, "completions request failed");
+                }
+                Err(e)
+            }
+        }
+    } else {
+        match state.chat.chat(&normalized).await {
+            Ok(chat) => {
+                let finish_reason = chat
+                    .choices
+                    .first()
+                    .and_then(|c| c.finish_reason.as_deref())
+                    .map(str::to_string);
+                let choices = match chat.choices.first() {
+                    Some(c) => {
+                        let mut text = c.message.content.clone().unwrap_or_default();
+                        if echo {
+                            text = format!("{prompt}{text}");
+                        }
+                        vec![CompletionChoice {
+                            text,
+                            index: 0,
+                            logprobs: None,
+                            finish_reason: c.finish_reason.clone(),
+                        }]
+                    }
+                    None => vec![CompletionChoice {
+                        text: String::new(),
+                        index: 0,
+                        logprobs: None,
+                        finish_reason: None,
+                    }],
+                };
+                let prompt_tokens = chat.usage.prompt_tokens;
+                let completion_tokens = chat.usage.completion_tokens;
+                let total_tokens = chat.usage.total_tokens;
+                let resp = CompletionResponse {
+                    id: format!(
+                        "cmpl-{}",
+                        chat.id.strip_prefix("chatcmpl-").unwrap_or(&chat.id)
+                    ),
+                    object: "text_completion".to_string(),
+                    created: chat.created,
+                    model: chat.model.clone(),
+                    system_fingerprint: Some(chat.system_fingerprint.clone()),
+                    choices,
+                    usage: Some(chat.usage),
+                };
+                tracing::info!(
+                    request_id = %request_id,
+                    model = %client_model,
+                    finish_reason = ?finish_reason,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    latency_ms = received_at.elapsed().as_millis(),
+                    "completions completed"
+                );
+                Ok(Json(resp).into_response())
+            }
+            Err(e) => {
+                if e.is_server_error() {
+                    tracing::error!(request_id = %request_id, model = %client_model, error = %e, "completions request failed");
+                } else {
+                    tracing::warn!(request_id = %request_id, model = %client_model, error = %e, "completions request failed");
+                }
+                Err(e)
+            }
+        }
+    }
+}
+
+fn completions_sse_response(chat_stream: crate::domain::ChatStream) -> Response {
+    let event_stream = chat_stream
+        .map(|item| -> Result<Event, Infallible> {
+            match item {
+                Ok(chunk) => {
+                    let choices = chunk
+                        .choices
+                        .into_iter()
+                        .map(|c| CompletionChoice {
+                            text: c.delta.content.unwrap_or_default(),
+                            index: c.index,
+                            logprobs: None,
+                            finish_reason: c.finish_reason,
+                        })
+                        .collect();
+                    let out = CompletionResponse {
+                        id: format!(
+                            "cmpl-{}",
+                            chunk.id.strip_prefix("chatcmpl-").unwrap_or(&chunk.id)
+                        ),
+                        object: "text_completion".to_string(),
+                        created: chunk.created,
+                        model: chunk.model,
+                        system_fingerprint: Some(chunk.system_fingerprint),
+                        choices,
+                        usage: chunk.usage,
+                    };
+                    let data = serde_json::to_string(&out).unwrap_or_else(|e| {
+                        error_envelope_json(&AppError::Internal(format!(
+                            "failed to serialize completion chunk: {e}"
+                        )))
+                    });
+                    Ok(Event::default().data(data))
+                }
+                Err(err) => Ok(Event::default().data(error_envelope_json(&err))),
+            }
+        })
+        .chain(futures::stream::once(async {
+            Ok(Event::default().data("[DONE]"))
+        }));
+
+    with_sse_headers(
+        Sse::new(event_stream)
+            .keep_alive(sse_keep_alive())
+            .into_response(),
+    )
 }
 
 /// Build an SSE response from a provider [`ChatStream`].
@@ -530,14 +728,14 @@ pub async fn health() -> Response {
     (axum::http::StatusCode::OK, "OK").into_response()
 }
 
-/// Build the application [`Router`] mounting all five endpoints under `prefix`.
+/// Build the application [`Router`] mounting all six endpoints under `prefix`.
 ///
-/// The protected subtree (chat, embeddings, models) carries the bearer
+/// The protected subtree (chat, completions, embeddings, models) carries the bearer
 /// middleware via `route_layer`; `/health` is mounted separately and is public.
 /// The whole router is parameterized by [`AppState`].
 ///
 /// `prefix` is the configured `api_route_prefix` (e.g. `/api/v1`). Routes are
-/// mounted at `{prefix}/chat/completions`, `{prefix}/embeddings`,
+/// mounted at `{prefix}/chat/completions`, `{prefix}/completions`, `{prefix}/embeddings`,
 /// `{prefix}/models`, `{prefix}/models/{id}`, `{prefix}/health`.
 pub fn build_router(state: AppState, prefix: &str) -> Router {
     let api_key = state.api_key.clone();
@@ -546,6 +744,7 @@ pub fn build_router(state: AppState, prefix: &str) -> Router {
     // still yields 405 (not 401).
     let protected = Router::new()
         .route("/chat/completions", post(chat_completions))
+        .route("/completions", post(completions))
         .route("/responses", post(responses))
         .route("/embeddings", post(embeddings))
         .route("/models", get(list_models))
@@ -1094,6 +1293,7 @@ mod tests {
     async fn protected_routes_reject_missing_auth() {
         for (method, uri, body) in [
             ("POST", "/api/v1/chat/completions", Some("{}")),
+            ("POST", "/api/v1/completions", Some("{}")),
             ("POST", "/api/v1/embeddings", Some("{}")),
             ("GET", "/api/v1/models", None),
         ] {
@@ -1153,6 +1353,21 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let value: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["error"]["type"], "invalid_request_error");
+    }
+
+    #[tokio::test]
+    async fn completions_suffix_returns_400() {
+        let (status, bytes, _ct) = send(
+            app(),
+            "POST",
+            "/api/v1/completions",
+            Some(&auth()),
+            Some(r#"{"model":"x","prompt":"hi","suffix":"tail"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["error"]["code"], "unsupported");
     }
 
     // ---- mantle-only models rejected on /chat/completions -----------------
