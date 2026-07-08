@@ -474,6 +474,7 @@ mod tests {
             enable_application_inference_profiles: true,
             enable_prompt_caching: false,
             bedrock_api_key: None,
+            disable_mantle: false,
             api_key,
             api_key_secret_arn: secret_arn,
             api_key_param_name: param_name,

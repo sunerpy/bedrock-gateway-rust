@@ -1025,6 +1025,7 @@ mod tests {
             api_key_secret_arn: None,
             api_key_param_name: None,
             bedrock_api_key: None,
+            disable_mantle: false,
             bind_addr: "0.0.0.0".to_string(),
             port: 8080,
             log_level: "info".to_string(),

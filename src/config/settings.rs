@@ -56,6 +56,9 @@ pub struct AppSettings {
     /// present *to the gateway* (client → gateway). The two are unrelated.
     pub bedrock_api_key: Option<String>,
 
+    /// Disable the bedrock-mantle backend and startup validation (default: false).
+    pub disable_mantle: bool,
+
     /// Server bind address (default: "0.0.0.0")
     pub bind_addr: String,
 
@@ -100,6 +103,7 @@ impl AppSettings {
             // supported models. ENABLE_PROMPT_CACHING=false disables all;
             // per-request `extra_body.prompt_caching` overrides either way.
             .set_default("enable_prompt_caching", true)?
+            .set_default("disable_mantle", false)?
             .set_default("bind_addr", "0.0.0.0")?
             .set_default("port", 8080)?
             .set_default("log_level", "info")?
@@ -138,10 +142,10 @@ impl AppSettings {
 /// Bare names honored (parity with the Python gateway + deployment templates):
 /// `API_ROUTE_PREFIX`, `AWS_REGION`, `DEBUG`, `DEFAULT_MODEL`,
 /// `DEFAULT_EMBEDDING_MODEL`, `ENABLE_CROSS_REGION_INFERENCE`,
-/// `ENABLE_APPLICATION_INFERENCE_PROFILES`, `ENABLE_PROMPT_CACHING`, `API_KEY`,
-/// `API_KEY_SECRET_ARN`, `API_KEY_PARAM_NAME`, `AWS_BEARER_TOKEN_BEDROCK`
-/// (alias `BEDROCK_API_KEY`), plus the operational knobs `PORT`, `BIND_ADDR`,
-/// `LOG_LEVEL`, `MANTLE_BASE_URL_TEMPLATE`.
+/// `ENABLE_APPLICATION_INFERENCE_PROFILES`, `ENABLE_PROMPT_CACHING`,
+/// `DISABLE_MANTLE`, `API_KEY`, `API_KEY_SECRET_ARN`, `API_KEY_PARAM_NAME`,
+/// `AWS_BEARER_TOKEN_BEDROCK` (alias `BEDROCK_API_KEY`), plus the operational
+/// knobs `PORT`, `BIND_ADDR`, `LOG_LEVEL`, `MANTLE_BASE_URL_TEMPLATE`.
 fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder> {
     // String-valued overrides.
     for (env_name, field) in [
@@ -182,6 +186,7 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
             "enable_application_inference_profiles",
         ),
         ("ENABLE_PROMPT_CACHING", "enable_prompt_caching"),
+        ("DISABLE_MANTLE", "disable_mantle"),
     ] {
         if let Some(value) = non_empty_env(env_name) {
             builder = builder.set_override(field, parse_bool(&value))?;
@@ -263,6 +268,8 @@ mod tests {
             .unwrap()
             .set_default("enable_prompt_caching", false)
             .unwrap()
+            .set_default("disable_mantle", false)
+            .unwrap()
             .set_default("bind_addr", "0.0.0.0")
             .unwrap()
             .set_default("port", 8080)
@@ -301,6 +308,8 @@ mod tests {
             .unwrap()
             .set_default("enable_prompt_caching", true)
             .unwrap()
+            .set_default("disable_mantle", false)
+            .unwrap()
             .set_default("bind_addr", "0.0.0.0")
             .unwrap()
             .set_default("port", 8080)
@@ -337,6 +346,7 @@ mod tests {
         assert!(settings.enable_cross_region_inference);
         assert!(settings.enable_application_inference_profiles);
         assert!(settings.enable_prompt_caching);
+        assert!(!settings.disable_mantle);
         assert_eq!(settings.bind_addr, "0.0.0.0");
         assert_eq!(settings.port, 8080);
         assert_eq!(settings.log_level, "info");
@@ -355,6 +365,7 @@ mod tests {
         builder = builder.set_default("port", 8080).unwrap();
         builder = builder.set_default("log_level", "info").unwrap();
         builder = builder.set_default("enable_prompt_caching", false).unwrap();
+        builder = builder.set_default("disable_mantle", false).unwrap();
         builder = builder.set_default("bind_addr", "0.0.0.0").unwrap();
         builder = builder
             .set_default("default_model", "anthropic.claude-3-5-sonnet-20241022-v2:0")
@@ -425,6 +436,8 @@ mod tests {
             .unwrap()
             .set_default("enable_prompt_caching", false)
             .unwrap()
+            .set_default("disable_mantle", false)
+            .unwrap()
             .set_default("aws_connect_timeout_secs", 60u64)
             .unwrap()
             .set_default("aws_read_timeout_secs", 900u64)
@@ -470,6 +483,7 @@ mod tests {
             .set_default("enable_application_inference_profiles", true)
             .unwrap();
         builder = builder.set_default("enable_prompt_caching", false).unwrap();
+        builder = builder.set_default("disable_mantle", false).unwrap();
         builder = builder
             .set_default("aws_connect_timeout_secs", 60u64)
             .unwrap();
@@ -529,6 +543,7 @@ mod tests {
             .set_default("enable_application_inference_profiles", true)
             .unwrap();
         builder = builder.set_default("enable_prompt_caching", false).unwrap();
+        builder = builder.set_default("disable_mantle", false).unwrap();
         builder = builder
             .set_default("aws_connect_timeout_secs", 60u64)
             .unwrap();
@@ -572,6 +587,30 @@ mod tests {
     }
 
     #[test]
+    fn disable_mantle_defaults_to_false() {
+        let settings: AppSettings = minimal_builder()
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+
+        assert!(!settings.disable_mantle);
+    }
+
+    #[test]
+    fn bare_disable_mantle_env_var_overrides_default() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::remove_var("DISABLE_MANTLE");
+
+        std::env::set_var("DISABLE_MANTLE", "true");
+        let settings = AppSettings::load().unwrap();
+
+        assert!(settings.disable_mantle);
+
+        std::env::remove_var("DISABLE_MANTLE");
+    }
+
+    #[test]
     fn bare_env_overrides_map_to_typed_fields() {
         let base = Config::builder()
             .set_default("api_route_prefix", "/api/v1")
@@ -589,6 +628,8 @@ mod tests {
             .set_default("enable_application_inference_profiles", true)
             .unwrap()
             .set_default("enable_prompt_caching", false)
+            .unwrap()
+            .set_default("disable_mantle", false)
             .unwrap()
             .set_default("bind_addr", "0.0.0.0")
             .unwrap()

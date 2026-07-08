@@ -1,22 +1,42 @@
 # ECS / Fargate Deployment (CloudFormation)
 
-Deploy the gateway on AWS ECS Fargate behind an Application Load Balancer using the
-provided CloudFormation template. The template provisions everything needed in a single
-stack: ALB, ECS service, IAM task role, and health check configuration.
+Deploy the gateway as an ECS Fargate service behind an internet-facing Application Load
+Balancer using the provided CloudFormation template. The gateway's only backend is Amazon
+Bedrock, which is available only in AWS commercial regions — deploy this template in any
+AWS commercial region where Amazon Bedrock is available.
 
 Template: `deployment/BedrockGatewayFargate.template`
 
 ---
 
-## Prerequisites
+## Two deploy modes
 
-- An existing VPC with at least two subnets (for ALB high-availability)
-- Bedrock model access enabled in your target region
-- A gateway API key ready (plaintext string or Secrets Manager ARN)
+The template supports two networking modes, controlled by the `CreateNetwork` parameter:
+
+- **One-click** (`CreateNetwork=true`, the default) — the stack creates a new VPC, two
+  public subnets (one per AZ), an internet gateway, and public routing. Nothing needs to
+  exist beforehand; you only need a Secrets Manager secret for the API key.
+- **Bring-your-own** (`CreateNetwork=false`) — the stack reuses an existing VPC. You must
+  also supply `VpcId` and at least two `Subnets` (in different AZs) for the ALB and the
+  Fargate tasks.
 
 ---
 
-## Deploy
+## Prerequisites
+
+- Bedrock model access enabled in the target commercial region.
+- A Secrets Manager secret containing an `api_key` field. This is the bearer token clients
+  present to the gateway:
+
+  ```bash
+  aws secretsmanager create-secret \
+    --name bedrock-gateway/api-key \
+    --secret-string '{"api_key":"sk-my-secret-key"}'
+  ```
+
+---
+
+## Deploy — one-click
 
 ```bash
 aws cloudformation deploy \
@@ -24,82 +44,132 @@ aws cloudformation deploy \
   --stack-name bedrock-gateway \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
-    ApiKey=sk-my-secret-key \
-    VpcId=vpc-... \
-    SubnetIds=subnet-...,subnet-...
+    ApiKeySecretArn=arn:aws:secretsmanager:us-east-1:123456789012:secret:bedrock-gateway/api-key
 ```
 
-### What the template creates
+`DisableMantle` defaults to `"true"`, so the default published image
+(`docker.io/sunerpy/bedrock-gateway-rust:latest`) boots on SigV4 alone, with no Bedrock API
+key required. `CreateNetwork` defaults to `"true"`, so this single command provisions a
+new VPC, subnets, ALB, and Fargate service end to end.
 
-- **Application Load Balancer** — internet-facing, ports 80 (redirect to 443) and 443
-- **ECS Fargate service** — pulls `sunerpy/bedrock-gateway-rust`, runs behind the ALB
-- **IAM task role** — with `bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream`,
-  `bedrock:ListFoundationModels`, `bedrock:ListInferenceProfiles`
-- **Security groups** — ALB ingress on 80/443, task ingress on 8080 from the ALB SG
-- **Health check** — ALB targets `GET /api/v1/health`, expects `200 OK`
-
----
-
-## Template Parameters
-
-| Parameter      | Required | Description                                             |
-| -------------- | -------- | ------------------------------------------------------- |
-| `ApiKey`       | Yes      | Bearer token your clients send to the gateway           |
-| `VpcId`        | Yes      | VPC to deploy into                                      |
-| `SubnetIds`    | Yes      | Comma-separated subnet IDs (at least two for HA)        |
-| `AwsRegion`    | No       | AWS region for Bedrock calls (defaults to stack region) |
-| `DefaultModel` | No       | Default model when the client omits `model`             |
-| `ImageTag`     | No       | Docker Hub image tag (defaults to `latest`)             |
-
----
-
-## Custom image
-
-To use a custom ECR image instead of the public Docker Hub image:
-
-1. Build and push:
-
-   ```bash
-   docker build -t <ECR_URI>:latest .
-   aws ecr get-login-password | docker login --username AWS --password-stdin <ECR_URI>
-   docker push <ECR_URI>:latest
-   ```
-
-2. Override `ImageUri` in the stack parameters (check the template for the exact
-   parameter name).
-
----
-
-## After deployment
-
-Find the ALB DNS name in the CloudFormation stack outputs, then verify:
+## Deploy — bring-your-own network
 
 ```bash
-curl https://<ALB_DNS>/api/v1/health
-# OK
+aws cloudformation deploy \
+  --template-file deployment/BedrockGatewayFargate.template \
+  --stack-name bedrock-gateway \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    ApiKeySecretArn=arn:aws:secretsmanager:us-east-1:123456789012:secret:bedrock-gateway/api-key \
+    CreateNetwork=false \
+    VpcId=vpc-0123456789abcdef0 \
+    Subnets=subnet-0aaa,subnet-0bbb
+```
 
-curl https://<ALB_DNS>/api/v1/chat/completions \
+Use public subnets, or private subnets with a NAT gateway for ECR / Bedrock / Secrets
+Manager egress.
+
+## Enabling GPT-5.x (optional)
+
+GPT-5.x (`gpt-5.4` / `gpt-5.5`) is served through the AWS Bedrock mantle upstream and
+needs a real Bedrock API key. Create a second secret with a `bedrock_api_key` field, then
+set `DisableMantle=false` and pass its ARN:
+
+```bash
+aws secretsmanager create-secret \
+  --name bedrock-gateway/bedrock-api-key \
+  --secret-string '{"bedrock_api_key":"<your-bedrock-api-key>"}'
+
+aws cloudformation deploy \
+  --template-file deployment/BedrockGatewayFargate.template \
+  --stack-name bedrock-gateway \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    ApiKeySecretArn=arn:aws:secretsmanager:us-east-1:123456789012:secret:bedrock-gateway/api-key \
+    DisableMantle=false \
+    BedrockApiKeySecretArn=arn:aws:secretsmanager:us-east-1:123456789012:secret:bedrock-gateway/bedrock-api-key
+```
+
+Leaving `DisableMantle=true` (or omitting `BedrockApiKeySecretArn`) is fine if you don't
+need GPT-5.x — every other model works over the standard SigV4 task role.
+
+---
+
+## Parameters
+
+| Parameter                | Default                                          | Description                                                                                                             |
+| ------------------------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `ContainerImageUri`      | `docker.io/sunerpy/bedrock-gateway-rust:latest`  | Container image for the gateway. Push your own build to ECR to override.                                               |
+| `ApiKeySecretArn`        | *(required)*                                      | Secrets Manager ARN holding the client→gateway bearer token (`api_key` field).                                         |
+| `DisableMantle`          | `"true"`                                          | `"true"` skips GPT-5.x mantle startup validation so the default image boots without a Bedrock API key. Set `"false"` only alongside `BedrockApiKeySecretArn`. |
+| `BedrockApiKeySecretArn` | `""`                                              | (Optional) Secrets Manager ARN whose `bedrock_api_key` field enables the GPT-5.x mantle backend.                        |
+| `DefaultModelId`         | `""`                                              | (Optional) Default Bedrock model ID when a client omits `model`.                                                        |
+| `DefaultEmbeddingModelId`| `""`                                              | (Optional) Default embedding model ID.                                                                                  |
+| `EnablePromptCaching`    | `"true"`                                          | Auto-inject prompt cache points for Claude and Nova models.                                                             |
+| `LogLevel`               | `info`                                            | `trace` / `debug` / `info` / `warn` / `error`.                                                                          |
+| `CreateNetwork`          | `"true"`                                          | `"true"` = one-click (new VPC + two public subnets + IGW + routing). `"false"` = bring-your-own (`VpcId` + `Subnets` become required). |
+| `VpcCidr`                | `10.240.0.0/16`                                   | CIDR for the VPC created in one-click mode. Ignored when `CreateNetwork=false`. Two `/24` public subnets are carved from it. |
+| `VpcId`                  | `""`                                              | Existing VPC ID. Required only when `CreateNetwork=false`.                                                              |
+| `Subnets`                | `""`                                              | Comma-separated list of at least two existing subnets in different AZs. Required only when `CreateNetwork=false`.       |
+| `DesiredCount`           | `2`                                                | Number of running Fargate tasks (minimum 1).                                                                            |
+
+### Outputs
+
+| Output        | Description                                                          |
+| ------------- | ---------------------------------------------------------------------- |
+| `APIBaseUrl`  | `http://<ALB-DNS>/api/v1` — use as `OPENAI_API_BASE`.                |
+| `ClusterName` | ECS cluster name.                                                    |
+| `ServiceName` | ECS service name.                                                    |
+| `VpcId`       | The VPC in use (created in one-click mode, or the provided `VpcId`). |
+| `Subnets`     | The subnets used by the ALB and Fargate tasks.                       |
+| `NetworkMode` | `one-click` or `bring-your-own`.                                     |
+
+---
+
+## After deployment / verify
+
+Grab the `APIBaseUrl` stack output and hit the health check first:
+
+```bash
+APIBASEURL=$(aws cloudformation describe-stacks \
+  --stack-name bedrock-gateway \
+  --query "Stacks[0].Outputs[?OutputKey=='APIBaseUrl'].OutputValue" \
+  --output text)
+
+curl "$APIBASEURL/health"
+# OK
+```
+
+Then send an authed chat request using the `api_key` value you put in `ApiKeySecretArn`:
+
+```bash
+curl "$APIBASEURL/chat/completions" \
   -H "Authorization: Bearer sk-my-secret-key" \
   -H "Content-Type: application/json" \
   -d '{"model":"anthropic.claude-3-5-sonnet-20241022-v2:0","messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
+Some models are only callable through a cross-region inference profile in a given
+region — if you get a Bedrock access error for an on-demand model ID, try the same model
+with the region's inference-profile prefix (e.g. `us.anthropic.claude-...` or
+`apac.anthropic.claude-...`) instead of the bare model ID.
+
 ---
 
 ## High availability
 
-Set `DesiredCount` to 2 or more for multi-AZ redundancy. The gateway is stateless —
-all replicas are identical and can be placed in different AZs behind the same ALB
-without any additional coordination.
+Set `DesiredCount` to 2 or more for multi-AZ redundancy. The gateway is stateless — all
+replicas are identical and can be placed across AZs behind the same ALB with no additional
+coordination.
 
 ---
 
 ## Logging
 
-The task logs to CloudWatch Logs. Set `LOG_LEVEL=debug` in the task definition
-environment to see upstream Bedrock call details. The default `info` level emits
-per-request business metadata (model, cached_tokens, cache_hit, duration_ms) without
-any prompt content.
+The task logs to CloudWatch Logs. Set `LogLevel=debug` to see upstream Bedrock call details
+(resolved model, target region). At every level the gateway logs metadata only (model,
+`cached_tokens`, `cache_hit`, `duration_ms`) — never prompt content, completion text, or the
+API key itself.
 
 ---
 
@@ -107,5 +177,3 @@ any prompt content.
 
 - Lambda has a 10-minute maximum timeout. For workloads with long streaming sessions,
   ECS/Fargate is the right choice — no timeout cap applies.
-- The task role uses `Resource: "*"` for Bedrock actions because model ARN formats
-  vary across regions and model families. Scope it down if your security policy requires.
