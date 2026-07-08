@@ -192,6 +192,29 @@ impl ModelCatalog {
         self
     }
 
+    /// Retain only models whose id contains any `patterns` entry as a
+    /// case-insensitive substring, filtering BOTH the control-plane `models`
+    /// map and the `extra_model_ids` (mantle aliases). Empty `patterns` is the
+    /// identity — the catalog is returned unchanged (allow-all, backward
+    /// compatible). `profile_metadata` is left untouched so capability/routing
+    /// resolution is unaffected; only the surfaces `list()`/`get()` iterate over
+    /// are narrowed. Applied once at catalog-build time, so `GET /models` and
+    /// `GET /models/{id}` are both filtered with zero per-request cost.
+    pub fn apply_allow_list(mut self, patterns: &[String]) -> Self {
+        if patterns.is_empty() {
+            return self;
+        }
+        let matches = |id: &str| {
+            let lower = id.to_ascii_lowercase();
+            patterns
+                .iter()
+                .any(|p| lower.contains(&p.to_ascii_lowercase()))
+        };
+        self.models.retain(|id, _| matches(id));
+        self.extra_model_ids.retain(|id| matches(id));
+        self
+    }
+
     /// Lookup a single model in OpenAI `Model` shape, if present.
     pub fn get(&self, id: &str) -> Option<Model> {
         if self.models.contains_key(id) || self.extra_model_ids.iter().any(|e| e == id) {
@@ -439,6 +462,7 @@ mod tests {
             aws_max_retry_attempts: 8,
             mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
                 .to_string(),
+            allowed_models: None,
         }
     }
 
@@ -894,6 +918,85 @@ mod tests {
         )];
         let catalog = assemble_catalog(&models, &[], &s);
         assert!(catalog.models().contains_key("vendor.lower-v1:0"));
+    }
+
+    #[test]
+    fn apply_allow_list_empty_is_identity() {
+        let s = settings("fallback.model-v1:0");
+        let models = [
+            fm(
+                "anthropic.claude-3-v1:0",
+                &["TEXT"],
+                &["ON_DEMAND"],
+                true,
+                "ACTIVE",
+            ),
+            fm(
+                "amazon.nova-pro-v1:0",
+                &["TEXT"],
+                &["ON_DEMAND"],
+                true,
+                "ACTIVE",
+            ),
+        ];
+        let catalog = assemble_catalog(&models, &[], &s);
+        let before = catalog.list().data.len();
+
+        let filtered = catalog.apply_allow_list(&[]);
+
+        assert_eq!(filtered.list().data.len(), before);
+        assert!(filtered.get("anthropic.claude-3-v1:0").is_some());
+        assert!(filtered.get("amazon.nova-pro-v1:0").is_some());
+    }
+
+    #[test]
+    fn apply_allow_list_substring_filters_list_and_get() {
+        let s = settings("fallback.model-v1:0");
+        let models = [
+            fm(
+                "anthropic.claude-3-v1:0",
+                &["TEXT"],
+                &["ON_DEMAND"],
+                true,
+                "ACTIVE",
+            ),
+            fm(
+                "amazon.nova-pro-v1:0",
+                &["TEXT"],
+                &["ON_DEMAND"],
+                true,
+                "ACTIVE",
+            ),
+        ];
+        let filtered = assemble_catalog(&models, &[], &s).apply_allow_list(&["claude".to_string()]);
+
+        let ids: Vec<String> = filtered.list().data.iter().map(|m| m.id.clone()).collect();
+        assert_eq!(ids, vec!["anthropic.claude-3-v1:0".to_string()]);
+        assert!(filtered.get("amazon.nova-pro-v1:0").is_none());
+        assert!(filtered.get("anthropic.claude-3-v1:0").is_some());
+    }
+
+    #[test]
+    fn apply_allow_list_matches_extra_model_ids() {
+        let s = settings("fallback.model-v1:0");
+        let models = [fm(
+            "anthropic.claude-3-v1:0",
+            &["TEXT"],
+            &["ON_DEMAND"],
+            true,
+            "ACTIVE",
+        )];
+        let catalog = assemble_catalog(&models, &[], &s)
+            .with_extra_models(vec!["gpt-5.5".to_string(), "gpt-5.4".to_string()]);
+
+        // A pattern that matches a mantle alias retains it; the non-matching
+        // alias and the non-matching foundation model are dropped.
+        let filtered = catalog.apply_allow_list(&["gpt-5.5".to_string()]);
+        let ids: Vec<String> = filtered.list().data.iter().map(|m| m.id.clone()).collect();
+        assert_eq!(ids, vec!["gpt-5.5".to_string()]);
+        assert!(filtered.get("gpt-5.5").is_some());
+        assert!(filtered.get("gpt-5.4").is_none());
+        assert!(filtered.get("anthropic.claude-3-v1:0").is_none());
     }
 
     /// Live integration test — skipped unless `BEDROCK_INTEGRATION` is set.

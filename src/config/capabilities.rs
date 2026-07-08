@@ -174,6 +174,14 @@ pub struct ModelCapabilityConfig {
     /// the runtime profile map during foundation resolution.
     #[serde(default, rename = "alias")]
     pub aliases: Vec<ModelAlias>,
+
+    /// Optional registry-level allow-list of model-id substrings (TOML
+    /// top-level `allowed_models = [...]`). Applied at catalog-build time to
+    /// filter both `GET /models` and `GET /models/{id}`. Overridden by the
+    /// `ALLOWED_MODELS` env var when that is set. Empty ⇒ allow all. This is a
+    /// registry-level list, NOT a per-model `Capability` flag.
+    #[serde(default)]
+    pub allowed_models: Vec<String>,
 }
 
 /// Default for `context_1m_beta_header` when omitted from TOML.
@@ -189,6 +197,7 @@ impl Default for ModelCapabilityConfig {
             context_1m_beta_header: default_context_1m_beta_header(),
             models: Vec::new(),
             aliases: Vec::new(),
+            allowed_models: Vec::new(),
         }
     }
 }
