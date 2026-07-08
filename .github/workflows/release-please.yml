@@ -213,8 +213,30 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ----------------------------------------------------------------
-  # docker: build & push multi-arch image to Docker Hub.
-  # Gated on release_created.
+  # docker: build the multi-arch image ONCE and push it to BOTH
+  # registries — Docker Hub and AWS ECR Public — in a single
+  # build-push-action step. A single docker/metadata-action lists both
+  # image references, so one build produces one manifest that is pushed
+  # to every tag ({version} + latest) across both registries.
+  #
+  # Docker Hub auth: docker/login-action with DOCKERHUB_USERNAME/TOKEN.
+  # ECR Public auth: GitHub OIDC — configure-aws-credentials assumes the
+  # IAM role in ECR_PUBLIC_ROLE_ARN (region us-east-1, where the ECR
+  # Public control plane lives), then amazon-ecr-login with
+  # registry-type: public. NO long-lived AWS keys — the job-level
+  # id-token: write permission below is what enables OIDC; keep it
+  # scoped to this job and do NOT broaden the workflow's top-level
+  # permissions. [MANUAL-1] is satisfied: the OIDC role + ECR Public
+  # repo + ECR_PUBLIC_ALIAS variable are provisioned, so this single
+  # build feeds both registries live.
+  #
+  # Tradeoff: merging the former sibling `docker` and `docker-ecr-public`
+  # jobs into one build sacrifices Docker-Hub-vs-ECR failure isolation —
+  # if either registry push fails the whole job fails. Re-run this
+  # workflow via workflow_dispatch (which re-pushes to both) to recover.
+  #
+  # Gated on build_artifacts, so the workflow_dispatch re-trigger path
+  # also re-pushes to both registries.
   # ----------------------------------------------------------------
   docker:
     name: Docker Multi-Arch Publish
@@ -222,6 +244,12 @@ jobs:
     if: needs.release-please.outputs.build_artifacts == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Scoped to this job only — OIDC (ECR Public login) needs
+    # id-token: write; do NOT broaden the workflow's top-level
+    # permissions.
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -240,70 +268,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.DOCKER_IMAGE }}
-          tags: |
-            type=raw,value=${{ needs.release-please.outputs.version }}
-            type=raw,value=latest
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # ----------------------------------------------------------------
-  # docker-ecr-public: build & push the same multi-arch image to AWS
-  # ECR Public (public.ecr.aws), mirroring the Docker Hub tags
-  # ({version} + latest). Authenticated via GitHub OIDC assuming an
-  # IAM role (no long-lived AWS keys). Kept as a SEPARATE job (sibling
-  # to `docker`) so a Docker Hub failure and an ECR failure stay
-  # isolated and each registry has its own login. Gated on the same
-  # build_artifacts output, so the workflow_dispatch re-trigger path
-  # also re-pushes to ECR Public.
-  #
-  # [MANUAL-1] Before this job can push live, the user MUST:
-  #   1. Create an ECR Public repository named `bedrock-gateway-rust`
-  #      (ECR Public control plane lives only in us-east-1).
-  #   2. Create an IAM role with a GitHub-OIDC trust policy scoped to
-  #      this repo, allowing ecr-public:GetAuthorizationToken,
-  #      sts:GetServiceBearerToken, and the ecr-public push actions.
-  #   3. Set the `ECR_PUBLIC_ROLE_ARN` repository secret to that role
-  #      ARN, and the `ECR_PUBLIC_ALIAS` repository variable to the
-  #      public registry alias. Until both exist, this job's live push
-  #      is inert but the workflow remains structurally valid.
-  # ----------------------------------------------------------------
-  docker-ecr-public:
-    name: Docker ECR Public Publish
-    needs: release-please
-    if: needs.release-please.outputs.build_artifacts == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    # Scoped to this job only — OIDC needs id-token: write; do NOT
-    # broaden the workflow's top-level permissions.
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -319,7 +283,9 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: public.ecr.aws/${{ vars.ECR_PUBLIC_ALIAS }}/bedrock-gateway-rust
+          images: |
+            ${{ env.DOCKER_IMAGE }}
+            public.ecr.aws/${{ vars.ECR_PUBLIC_ALIAS }}/bedrock-gateway-rust
           tags: |
             type=raw,value=${{ needs.release-please.outputs.version }}
             type=raw,value=latest
