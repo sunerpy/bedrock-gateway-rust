@@ -103,8 +103,8 @@ src/
     ├── composite.rs     # CompositeResponsesProvider: single Arc<dyn ResponsesProvider> that
     │                    #   dispatches to Converse (BedrockResponsesProvider) or Mantle
     │                    #   (MantleResponsesProvider) by caps.responses_backend(model);
-    │                    #   validate_mantle_startup: fail-fast if mantle model present but
-    │                    #   bedrock_api_key absent; soft WARN for region mismatches at boot
+    │                    #   resolve_mantle_enabled: disables mantle if no bedrock_api_key;
+    │                    #   soft WARN for region mismatches at boot
     ├── mod.rs           # serve(AppSettings) entrypoint, apply_layers (TraceLayer + CorsLayer)
     └── routers/
         └── mod.rs       # build_router: axum Router wiring all endpoints
@@ -273,7 +273,7 @@ responses_backend = "mantle"
 available_regions = ["us-east-2"]
 ```
 
-**Startup behavior:** if any model carries `responses_backend = "mantle"` and `bedrock_api_key` (env `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY`) is absent, the gateway **fails to start** (fail-fast). Set `DISABLE_MANTLE=true` to skip mantle validation for SigV4-only/one-click deployments that do not use GPT-5.x; fail-fast remains the default. Region mismatches between the running instance's `AWS_REGION` and a model's `available_regions` emit a WARN at boot but don't hard-fail (the per-request gate returns 400 instead).
+**Startup behavior:** if a model declares `responses_backend = "mantle"` but no `bedrock_api_key` (env `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY`) is set, the gateway logs a WARN and disables ONLY the GPT-5.x mantle models — it does NOT fail to start, and all other models keep working. Requests for a disabled mantle model return a clear 400. `DISABLE_MANTLE=true` explicitly disables the mantle backend the same way. (This replaced the earlier hard-fail behavior.) Region mismatches between the running instance's `AWS_REGION` and a model's `available_regions` emit a WARN at boot but don't hard-fail (the per-request gate returns 400 instead).
 
 **Mantle endpoint template:** the upstream URL is controlled by `MANTLE_BASE_URL_TEMPLATE` (default `https://bedrock-mantle.{region}.api.aws/openai/v1`). The literal `{region}` placeholder is replaced with the gateway's `AWS_REGION` at call time. Change this env var to point at a private or test mantle endpoint without recompiling.
 
@@ -531,7 +531,7 @@ src/
     ├── composite.rs     # CompositeResponsesProvider：单个 Arc<dyn ResponsesProvider>，
     │                    #   通过 caps.responses_backend(model) 在请求时分发至
     │                    #   Converse（BedrockResponsesProvider）或 Mantle（MantleResponsesProvider）；
-    │                    #   validate_mantle_startup：若存在 mantle 模型但 bedrock_api_key 缺失则快速失败；
+    │                    #   resolve_mantle_enabled：若缺少 bedrock_api_key 则禁用 mantle；
     │                    #   区域不匹配时启动 WARN（不硬失败）
     ├── mod.rs           # serve(AppSettings) 入口，apply_layers（TraceLayer + CorsLayer）
     └── routers/
@@ -701,7 +701,7 @@ responses_backend = "mantle"
 available_regions = ["us-east-2"]
 ```
 
-**启动行为：** 如果任何模型配置了 `responses_backend = "mantle"` 且 `bedrock_api_key`（环境变量 `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY`）未设置，网关**启动失败**（快速失败）。设置 `DISABLE_MANTLE=true` 可为不使用 GPT-5.x 的 SigV4-only/一键部署跳过 mantle 校验；默认仍保留快速失败。运行实例的 `AWS_REGION` 与模型 `available_regions` 不匹配时，启动时发出 WARN 但不硬失败（每请求门控返回 400）。
+**启动行为：** 如果模型声明了 `responses_backend = "mantle"`，但未设置 `bedrock_api_key`（环境变量 `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY`），网关会记录 WARN 并且只禁用 GPT-5.x mantle 模型 —— 不会启动失败，其他模型会继续工作。请求已禁用的 mantle 模型会返回清晰的 400。`DISABLE_MANTLE=true` 会以同样方式显式禁用 mantle 后端。（这取代了早先的硬失败行为。）运行实例的 `AWS_REGION` 与模型 `available_regions` 不匹配时，启动时发出 WARN 但不硬失败（每请求门控返回 400）。
 
 **Mantle 端点模板：** 上游 URL 由 `MANTLE_BASE_URL_TEMPLATE` 控制（默认 `https://bedrock-mantle.{region}.api.aws/openai/v1`）。字面占位符 `{region}` 在调用时替换为网关的 `AWS_REGION`。修改此环境变量可指向私有或测试 mantle 端点，无需重新编译。
 

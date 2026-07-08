@@ -182,3 +182,74 @@ export OPENAI_API_KEY="sk-my-secret-key"
 If your client hardcodes the upstream Lambda's `/v1` prefix, either set
 `API_ROUTE_PREFIX=/v1` on the new gateway or update the hardcoded path to `/api/v1` — see
 the route-prefix row in the caveats table above.
+
+---
+
+## Pointing your LLM tools at the gateway
+
+Migration boils down to one change for any OpenAI-compatible SDK or agent: set
+`base_url` and `api_key`, done. The gateway is byte-compatible with the OpenAI API, so
+whatever tool you're already using keeps working; you only swap the URL.
+
+The one thing worth knowing per tool is *which* wire API it speaks, since the answer
+decides whether you point it at `/chat/completions`, `/responses`, or `/completions`.
+
+| Tool | Wire API / endpoint | `base_url` to set | `api_key` |
+| --- | --- | --- | --- |
+| OpenAI SDK (generic) | Chat Completions — `/chat/completions` | `https://<APIBaseUrl>` | your gateway `api_key` |
+| LiteLLM | Chat Completions — `/chat/completions` | `https://<APIBaseUrl>` (as `api_base`) | your gateway `api_key` |
+| LangChain (`ChatOpenAI`) | Chat Completions — `/chat/completions` | `https://<APIBaseUrl>` | your gateway `api_key` |
+| opencode | Chat Completions — `/chat/completions` | `https://<APIBaseUrl>` | your gateway `api_key` |
+| codex | Responses API — `/responses` **(new — not on the upstream gateway)** | `https://<APIBaseUrl>` + `wire_api = "responses"` | your gateway `api_key` |
+| Zed (edit prediction) | Legacy Completions — `/completions` **(new — not on the upstream gateway)** | `https://<APIBaseUrl>/completions` (custom URL path) | your gateway `api_key` |
+
+`<APIBaseUrl>` is the same `APIBaseUrl` stack output used everywhere else in this guide —
+it already includes the `/api/v1` prefix, so don't append it again.
+
+### Config snippets (illustrative — adapt to your tool's current config format)
+
+**codex** (`~/.codex/config.toml`):
+
+```toml
+[model_providers.bgw]
+name = "Bedrock Gateway"
+base_url = "https://<APIBaseUrl>"
+wire_api = "responses"
+
+[model_providers.bgw.env_key]
+name = "BGW_API_KEY"
+```
+
+**Zed** edit prediction (Zed settings, `open_ai_compatible`-style provider):
+
+```json
+{
+  "edit_predictions": {
+    "provider": "open_ai_compatible",
+    "api_url": "https://<APIBaseUrl>/completions",
+    "api_key": "sk-my-secret-key"
+  }
+}
+```
+
+**LiteLLM:**
+
+```python
+import litellm
+
+response = litellm.completion(
+    model="openai/anthropic.claude-3-5-sonnet-20241022-v2:0",
+    api_base="https://<APIBaseUrl>",
+    api_key="sk-my-secret-key",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+```
+
+### Migration win: two clients that didn't work before
+
+The upstream `aws-samples` gateway has no `/responses` and no `/completions` endpoint.
+That means **codex** (which requires `wire_api = "responses"`) and **Zed's edit
+prediction** (which needs the legacy `/completions` shape) simply could not talk to the
+upstream gateway at all. After migrating, both work out of the box — same `api_key`, one
+extra line of config per tool. This migration isn't just parity with the Python gateway;
+it unlocks clients the old deployment couldn't serve.

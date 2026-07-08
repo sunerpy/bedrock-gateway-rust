@@ -22,13 +22,12 @@
 //! trait default (`None`) would win and the mantle raw passthrough would never
 //! fire.
 //!
-//! ## Startup validation
+//! ## Startup resolution
 //!
-//! [`validate_mantle_startup`] scans the model config for any entry declaring the
-//! mantle backend and fails boot fast if no `bedrock_api_key` is configured (the
-//! mantle upstream needs that bearer). It also emits a WARNING — not a hard fail —
-//! when a mantle model's region allow-list omits the gateway's running region, so
-//! a misconfiguration surfaces at boot while the per-request gate (T6) still 400s.
+//! [`resolve_mantle_enabled`] scans the model config for any entry declaring the
+//! mantle backend and decides whether mantle can serve requests on this instance.
+//! It emits WARNINGs for disabled mantle and for region allow-list mismatches, but
+//! never fails gateway boot.
 
 use std::sync::Arc;
 
@@ -62,6 +61,8 @@ pub struct CompositeResponsesProvider {
     /// SAME `Arc` the inner providers hold keeps routing consistent with their
     /// own alias/region resolution.
     caps: Arc<dyn ModelCapabilities>,
+    /// Whether mantle requests may be dispatched to the mantle provider.
+    mantle_enabled: bool,
 }
 
 impl CompositeResponsesProvider {
@@ -72,23 +73,33 @@ impl CompositeResponsesProvider {
         converse: Arc<dyn ResponsesProvider>,
         mantle: Arc<dyn ResponsesProvider>,
         caps: Arc<dyn ModelCapabilities>,
+        mantle_enabled: bool,
     ) -> Self {
         Self {
             converse,
             mantle,
             caps,
+            mantle_enabled,
         }
     }
 
+    fn backend(&self, req: &NormalizedResponsesRequest) -> ResponsesBackend {
+        self.caps.responses_backend(&req.request.model)
+    }
+
     /// Select the inner provider for a request by its configured backend.
-    ///
-    /// `responses_backend` resolves the alias internally, so the client's
-    /// requested model id is passed through unchanged.
-    fn select(&self, req: &NormalizedResponsesRequest) -> &Arc<dyn ResponsesProvider> {
-        match self.caps.responses_backend(&req.request.model) {
+    fn select(&self, backend: ResponsesBackend) -> &Arc<dyn ResponsesProvider> {
+        match backend {
             ResponsesBackend::Mantle => &self.mantle,
             ResponsesBackend::Converse => &self.converse,
         }
+    }
+
+    fn mantle_unavailable_err(req: &NormalizedResponsesRequest) -> AppError {
+        AppError::BadRequest(format!(
+            "model {} requires a Bedrock API key (set AWS_BEARER_TOKEN_BEDROCK) to enable the GPT-5.x mantle backend; it is disabled on this instance",
+            req.request.model
+        ))
     }
 }
 
@@ -98,14 +109,22 @@ impl ResponsesProvider for CompositeResponsesProvider {
         &self,
         req: &NormalizedResponsesRequest,
     ) -> Result<ResponsesResponse, AppError> {
-        self.select(req).respond(req).await
+        let backend = self.backend(req);
+        if backend == ResponsesBackend::Mantle && !self.mantle_enabled {
+            return Err(Self::mantle_unavailable_err(req));
+        }
+        self.select(backend).respond(req).await
     }
 
     async fn respond_stream(
         &self,
         req: &NormalizedResponsesRequest,
     ) -> Result<ResponsesStream, AppError> {
-        self.select(req).respond_stream(req).await
+        let backend = self.backend(req);
+        if backend == ResponsesBackend::Mantle && !self.mantle_enabled {
+            return Err(Self::mantle_unavailable_err(req));
+        }
+        self.select(backend).respond_stream(req).await
     }
 
     async fn respond_raw_stream(
@@ -114,26 +133,26 @@ impl ResponsesProvider for CompositeResponsesProvider {
     ) -> Option<RawResponsesStream> {
         // MUST delegate: the trait default returns `None`, so without this
         // override the mantle raw passthrough lane would never fire.
-        self.select(req).respond_raw_stream(req).await
+        let backend = self.backend(req);
+        if backend == ResponsesBackend::Mantle && !self.mantle_enabled {
+            return None;
+        }
+        self.select(backend).respond_raw_stream(req).await
     }
 }
 
-/// Validate the mantle-backend configuration at boot.
+/// Resolve whether the mantle backend is effectively enabled at boot.
 ///
-/// Fail-fast rule (unless `disable_mantle` is true): if ANY model entry declares
-/// `params.responses_backend = "mantle"` but no `bedrock_api_key` is configured,
-/// return an error (the mantle upstream requires that bearer; booting without it
-/// would 401 every GPT request at runtime with a confusing error).
+/// If mantle models are configured but `DISABLE_MANTLE=true` or no
+/// `bedrock_api_key` is set, only mantle is disabled; the gateway still starts.
 ///
 /// Soft rule: for each mantle model whose `available_regions` allow-list is set
 /// and does NOT contain the gateway's running region, log a WARNING. This surfaces
 /// a likely misconfiguration at boot without hard-failing — the per-request region
 /// gate (T6) still returns a 400, and another region's deployment of the same
 /// config is legitimate.
-pub fn validate_mantle_startup(
-    config: &ModelCapabilityConfig,
-    settings: &AppSettings,
-) -> Result<(), AppError> {
+#[must_use]
+pub fn resolve_mantle_enabled(config: &ModelCapabilityConfig, settings: &AppSettings) -> bool {
     let mantle_models: Vec<&crate::config::capabilities::ModelEntry> = config
         .models
         .iter()
@@ -144,18 +163,18 @@ pub fn validate_mantle_startup(
         tracing::warn!(
             "mantle backend disabled (DISABLE_MANTLE=true); GPT-5.x models will be unavailable"
         );
-        return Ok(());
+        return false;
     }
 
     if mantle_models.is_empty() {
-        return Ok(());
+        return false;
     }
 
     if settings.bedrock_api_key.is_none() {
-        return Err(AppError::Internal(
-            "a model is configured for the mantle backend but no bedrock_api_key is set"
-                .to_string(),
-        ));
+        tracing::warn!(
+            "mantle models are configured but no bedrock_api_key is set (AWS_BEARER_TOKEN_BEDROCK); GPT-5.x models are disabled — set the key to enable them. Other models are unaffected."
+        );
+        return false;
     }
 
     for entry in mantle_models {
@@ -171,7 +190,7 @@ pub fn validate_mantle_startup(
         }
     }
 
-    Ok(())
+    true
 }
 
 #[cfg(test)]
@@ -400,6 +419,16 @@ mod tests {
         Arc<RecordingProvider>,
         Arc<RecordingProvider>,
     ) {
+        build_with_mantle_enabled(true)
+    }
+
+    fn build_with_mantle_enabled(
+        mantle_enabled: bool,
+    ) -> (
+        CompositeResponsesProvider,
+        Arc<RecordingProvider>,
+        Arc<RecordingProvider>,
+    ) {
         let converse = RecordingProvider::new("converse");
         let mantle = RecordingProvider::new("mantle");
         let caps: Arc<dyn ModelCapabilities> = Arc::new(RoutingCaps);
@@ -407,8 +436,20 @@ mod tests {
             converse.clone() as Arc<dyn ResponsesProvider>,
             mantle.clone() as Arc<dyn ResponsesProvider>,
             caps,
+            mantle_enabled,
         );
         (composite, converse, mantle)
+    }
+
+    fn assert_mantle_disabled_err(err: AppError) {
+        match err {
+            AppError::BadRequest(message) => {
+                assert!(message.contains("requires a Bedrock API key"));
+                assert!(message.contains("AWS_BEARER_TOKEN_BEDROCK"));
+                assert!(message.contains("disabled on this instance"));
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
     }
 
     /// Given a gpt model (Mantle backend),
@@ -436,6 +477,33 @@ mod tests {
         assert!(mantle.respond_hit.load(Ordering::SeqCst));
         assert!(mantle.respond_stream_hit.load(Ordering::SeqCst));
         assert!(mantle.respond_raw_hit.load(Ordering::SeqCst));
+        assert!(!converse.respond_hit.load(Ordering::SeqCst));
+        assert!(!converse.respond_stream_hit.load(Ordering::SeqCst));
+        assert!(!converse.respond_raw_hit.load(Ordering::SeqCst));
+    }
+
+    /// Given a mantle-routed model but mantle is disabled on this instance,
+    /// When composite methods are called,
+    /// Then typed paths return a clean 400 and no inner provider is hit.
+    #[tokio::test]
+    async fn mantle_model_returns_bad_request_when_mantle_disabled() {
+        let (composite, converse, mantle) = build_with_mantle_enabled(false);
+        let req = normalized("gpt-5.5");
+
+        match composite.respond(&req).await {
+            Err(err) => assert_mantle_disabled_err(err),
+            Ok(_) => panic!("respond should fail when mantle is disabled"),
+        }
+
+        match composite.respond_stream(&req).await {
+            Err(err) => assert_mantle_disabled_err(err),
+            Ok(_) => panic!("respond_stream should fail when mantle is disabled"),
+        }
+
+        assert!(composite.respond_raw_stream(&req).await.is_none());
+        assert!(!mantle.respond_hit.load(Ordering::SeqCst));
+        assert!(!mantle.respond_stream_hit.load(Ordering::SeqCst));
+        assert!(!mantle.respond_raw_hit.load(Ordering::SeqCst));
         assert!(!converse.respond_hit.load(Ordering::SeqCst));
         assert!(!converse.respond_stream_hit.load(Ordering::SeqCst));
         assert!(!converse.respond_raw_hit.load(Ordering::SeqCst));
@@ -469,15 +537,13 @@ mod tests {
     }
 
     /// Given a config with a mantle model but `bedrock_api_key: None`,
-    /// When `validate_mantle_startup` runs,
-    /// Then it returns `Err` (fail-fast at boot).
+    /// When `resolve_mantle_enabled` runs,
+    /// Then it disables mantle without failing boot.
     #[test]
-    fn startup_fails_when_mantle_model_but_no_bearer() {
+    fn startup_disables_mantle_when_model_but_no_bearer() {
         let config = mantle_model_config(Some(vec!["us-east-2".to_string()]));
         let settings = settings_with(None, "us-east-2");
-        let err =
-            validate_mantle_startup(&config, &settings).expect_err("missing bearer must fail boot");
-        assert!(matches!(err, AppError::Internal(_)));
+        assert!(!resolve_mantle_enabled(&config, &settings));
     }
 
     #[test]
@@ -486,7 +552,7 @@ mod tests {
         let mut settings = settings_with(None, "us-east-2");
         settings.disable_mantle = true;
 
-        assert!(validate_mantle_startup(&config, &settings).is_ok());
+        assert!(!resolve_mantle_enabled(&config, &settings));
     }
 
     /// A mantle model WITH a bearer configured passes validation.
@@ -494,7 +560,7 @@ mod tests {
     fn startup_passes_when_mantle_model_has_bearer() {
         let config = mantle_model_config(Some(vec!["us-east-2".to_string()]));
         let settings = settings_with(Some("bedrock-bearer".to_string()), "us-east-2");
-        assert!(validate_mantle_startup(&config, &settings).is_ok());
+        assert!(resolve_mantle_enabled(&config, &settings));
     }
 
     /// A config with NO mantle model passes regardless of the bearer (no gate).
@@ -509,7 +575,7 @@ mod tests {
             ..ModelCapabilityConfig::default()
         };
         let settings = settings_with(None, "us-east-2");
-        assert!(validate_mantle_startup(&config, &settings).is_ok());
+        assert!(!resolve_mantle_enabled(&config, &settings));
     }
 
     /// A mantle model whose region allow-list omits the running region passes
@@ -518,6 +584,6 @@ mod tests {
     fn startup_warns_but_passes_on_region_mismatch() {
         let config = mantle_model_config(Some(vec!["us-east-2".to_string()]));
         let settings = settings_with(Some("bedrock-bearer".to_string()), "us-west-2");
-        assert!(validate_mantle_startup(&config, &settings).is_ok());
+        assert!(resolve_mantle_enabled(&config, &settings));
     }
 }
