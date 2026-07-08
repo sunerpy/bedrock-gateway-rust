@@ -580,10 +580,18 @@ fn build_inference_config(req: &ChatRequest, caps: &dyn ModelCapabilities) -> Va
 
     if let Some(stop) = &req.stop {
         let seqs = match stop {
+            StringOrVec::String(s) if s.trim().is_empty() => Vec::new(),
             StringOrVec::String(s) => vec![Value::String(s.clone())],
-            StringOrVec::Vec(v) => v.iter().cloned().map(Value::String).collect(),
+            StringOrVec::Vec(v) => v
+                .iter()
+                .filter(|s| !s.trim().is_empty())
+                .cloned()
+                .map(Value::String)
+                .collect(),
         };
-        cfg.insert("stopSequences".to_string(), Value::Array(seqs));
+        if !seqs.is_empty() {
+            cfg.insert("stopSequences".to_string(), Value::Array(seqs));
+        }
     }
 
     Value::Object(cfg)
@@ -1021,6 +1029,67 @@ mod tests {
             .expect("stopSequences array");
         assert_eq!(seqs.len(), 1);
         assert_eq!(seqs[0], "STOP");
+    }
+
+    #[tokio::test]
+    async fn blank_stop_list_is_omitted() {
+        let mut req = base_request("anthropic.claude-3-sonnet-v1:0", vec![user_text("hi")]);
+        req.stop = Some(StringOrVec::Vec(vec!["\n".to_string()]));
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+        assert!(args.inference_config.get("stopSequences").is_none());
+    }
+
+    #[tokio::test]
+    async fn blank_stop_string_is_omitted() {
+        let mut req = base_request("anthropic.claude-3-sonnet-v1:0", vec![user_text("hi")]);
+        req.stop = Some(StringOrVec::String("\n".to_string()));
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+        assert!(args.inference_config.get("stopSequences").is_none());
+    }
+
+    #[tokio::test]
+    async fn blank_stop_list_entries_are_filtered() {
+        let mut req = base_request("anthropic.claude-3-sonnet-v1:0", vec![user_text("hi")]);
+        req.stop = Some(StringOrVec::Vec(vec![
+            "".to_string(),
+            "\n".to_string(),
+            "END".to_string(),
+        ]));
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+        let seqs = args.inference_config["stopSequences"]
+            .as_array()
+            .expect("array");
+        assert_eq!(seqs.len(), 1);
+        assert_eq!(seqs[0], "END");
+    }
+
+    #[tokio::test]
+    async fn non_blank_stop_list_preserves_order() {
+        let mut req = base_request("anthropic.claude-3-sonnet-v1:0", vec![user_text("hi")]);
+        req.stop = Some(StringOrVec::Vec(vec!["a".to_string(), "b".to_string()]));
+        let c = caps();
+        let r = resolver(false);
+        let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+            .await
+            .expect("translate");
+        let seqs = args.inference_config["stopSequences"]
+            .as_array()
+            .expect("array");
+        assert_eq!(seqs.len(), 2);
+        assert_eq!(seqs[0], "a");
+        assert_eq!(seqs[1], "b");
     }
 
     #[tokio::test]
