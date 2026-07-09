@@ -757,7 +757,10 @@ fn build_output_config(
 
     let (schema, name) = match format {
         ResponseFormat::Text => unreachable!("text handled above"),
-        ResponseFormat::JsonObject => (json!({ "type": "object" }), None),
+        ResponseFormat::JsonObject => (
+            json!({ "type": "object", "additionalProperties": false }),
+            None,
+        ),
         ResponseFormat::JsonSchema { json_schema } => (
             json_schema
                 .schema
@@ -1861,6 +1864,18 @@ mod tests {
         let oc = args.output_config.expect("output_config present");
         assert!(oc["textFormat"].is_object());
         assert_eq!(oc["textFormat"]["type"], "json_schema");
+        // The synthesized schema is STRINGIFIED into
+        // outputConfig.textFormat.structure.jsonSchema.schema. Bedrock rejects any
+        // `object`-type schema that omits `additionalProperties: false`, so the
+        // synthesized json_object schema MUST carry it.
+        let schema = &oc["textFormat"]["structure"]["jsonSchema"]["schema"];
+        let schema_str = schema
+            .as_str()
+            .unwrap_or_else(|| panic!("schema must be a string, got: {schema}"));
+        let parsed: Value =
+            serde_json::from_str(schema_str).expect("stringified schema must be valid JSON");
+        assert_eq!(parsed["type"], "object");
+        assert_eq!(parsed["additionalProperties"], false);
     }
 
     #[tokio::test]
