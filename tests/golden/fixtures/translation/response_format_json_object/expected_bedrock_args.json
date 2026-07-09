@@ -8,7 +8,7 @@
       "type": "json_schema",
       "structure": {
         "jsonSchema": {
-          "schema": "{\"type\":\"object\"}"
+          "schema": "{\"additionalProperties\":false,\"type\":\"object\"}"
         }
       }
     }
