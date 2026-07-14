@@ -55,10 +55,48 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # Coverage 为信息型：度量单元测试覆盖率并上传 Codecov，但刻意不进入
+  # ci-success 的 needs，因此永不阻塞合并；Codecov 状态本身也是
+  # informational（见 codecov.yml），低于目标 % 不会使 PR 变红。
+  # 遵循铁律「local green ⇒ CI green」。
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Generate coverage (lcov)
+        run: cargo llvm-cov --all-features --ignore-filename-regex 'src/main\.rs' --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          # 仅报告：Codecov 上传/处理错误绝不使 CI 失败（Req 4.7）。
+          fail_ci_if_error: false
+          # 公开仓库支持 tokenless 上传；token 可选（私有仓库必需）。
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
     if: always()
+    # 注意：coverage 有意不在此列出——覆盖率为信息型，永不阻塞合并。
     needs: [test, audit]
     steps:
       - name: Check job status
