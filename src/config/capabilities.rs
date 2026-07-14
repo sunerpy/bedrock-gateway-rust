@@ -357,6 +357,52 @@ mod tests {
     }
 
     #[test]
+    fn test_gpt_5_6_trio_aliases_and_region_gate() {
+        let cfg = load_project_config();
+        for (alias, canonical, regions) in [
+            (
+                "gpt-5.6-sol",
+                "openai.gpt-5.6-sol",
+                &["us-east-1", "us-east-2"][..],
+            ),
+            (
+                "gpt-5.6-terra",
+                "openai.gpt-5.6-terra",
+                &["us-east-1", "us-east-2", "us-west-2"][..],
+            ),
+            (
+                "gpt-5.6-luna",
+                "openai.gpt-5.6-luna",
+                &["us-east-1", "us-east-2", "us-west-2"][..],
+            ),
+        ] {
+            let resolved = cfg
+                .aliases
+                .iter()
+                .find(|a| a.from == alias)
+                .map(|a| a.to.as_str())
+                .unwrap_or_else(|| panic!("{alias} alias must exist"));
+            assert_eq!(resolved, canonical);
+            let entry = cfg
+                .entry_for_match(canonical)
+                .unwrap_or_else(|| panic!("{canonical} model entry must resolve"));
+            assert_eq!(entry.params.responses_backend.as_deref(), Some("mantle"));
+            let available = entry
+                .params
+                .available_regions
+                .as_deref()
+                .expect("available_regions must be set");
+            let got: HashSet<&str> = available.iter().map(String::as_str).collect();
+            let want: HashSet<&str> = regions.iter().copied().collect();
+            assert_eq!(got, want);
+            assert!(
+                !got.contains("eu-west-1"),
+                "region gate must reject an unlisted region"
+            );
+        }
+    }
+
+    #[test]
     fn test_opus_4_8_capabilities() {
         // Opus 4.7+ deprecate all sampling params (drop_sampling_params) on top
         // of the adaptive-thinking + no-prefill flags.
