@@ -10,6 +10,8 @@ pub mod client;
 
 pub mod embeddings;
 
+pub mod mantle_chat_provider;
+
 pub mod mantle_client;
 
 pub mod mantle_provider;

@@ -52,7 +52,8 @@ use axum::{Json, Router};
 use futures::StreamExt;
 
 use crate::domain::{
-    gen_request_id, NormalizedChatRequest, NormalizedResponsesRequest, ResponsesBackend,
+    gen_request_id, ChatBackend, NormalizedChatRequest, NormalizedResponsesRequest, RawChatStream,
+    ResponsesBackend,
 };
 use crate::error::AppError;
 use crate::openai::completions_schema::{CompletionChoice, CompletionRequest, CompletionResponse};
@@ -117,13 +118,15 @@ fn resolve_request_id(headers: &HeaderMap) -> std::sync::Arc<str> {
 pub async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
-    payload: Result<Json<ChatRequest>, JsonRejection>,
+    body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
     let received_at = std::time::Instant::now();
     let request_id = resolve_request_id(&headers);
     // Malformed JSON / wrong content-type → OpenAI 400 envelope (not axum's
-    // default plain-text rejection).
-    let Json(request) = payload.map_err(|rej| AppError::BadRequest(rej.body_text()))?;
+    // default plain-text rejection). The raw bytes are captured first so a
+    // raw-passthrough provider (mantle chat) can forward them verbatim.
+    let request: ChatRequest =
+        serde_json::from_slice(&body).map_err(|e| AppError::BadRequest(e.to_string()))?;
 
     let resolved_model = state.caps.resolve_foundation(&request.model);
     let is_stream = request.stream.unwrap_or(false);
@@ -134,7 +137,13 @@ pub async fn chat_completions(
         stream = is_stream,
         "chat request received"
     );
-    if state.caps.responses_backend(&client_model) == ResponsesBackend::Mantle {
+    // A model served by mantle ONLY on the Responses surface (responses_backend
+    // == Mantle) with no chat backend is Responses-API-only (GPT-5.x). Reject it
+    // here with a clean 400. A mantle CHAT model (chat_backend == Mantle) is
+    // allowed and served through the raw passthrough lane below.
+    if state.caps.responses_backend(&client_model) == ResponsesBackend::Mantle
+        && state.caps.chat_backend(&client_model) != ChatBackend::Mantle
+    {
         return Err(AppError::BadRequest(format!(
             "model {client_model} is only available on the /responses endpoint"
         )));
@@ -144,9 +153,23 @@ pub async fn chat_completions(
         resolved_model,
         request_id: request_id.clone(),
         received_at,
+        raw_body: body,
     };
 
     if is_stream {
+        // Raw-bytes passthrough lane (mantle chat): when the provider offers a
+        // raw SSE stream, forward its bytes verbatim, appending `data: [DONE]`
+        // at the tail (mantle chat does not emit it; OpenAI chat clients expect
+        // it — the one behavioral difference from the responses raw lane).
+        if let Some(raw) = state.chat.chat_raw_stream(&normalized).await {
+            tracing::info!(
+                request_id = %request_id,
+                model = %client_model,
+                ttfb_ms = received_at.elapsed().as_millis(),
+                "chat raw streaming started"
+            );
+            return Ok(chat_raw_sse_response(raw));
+        }
         match state.chat.chat_stream(&normalized).await {
             Ok(chat_stream) => {
                 tracing::info!(
@@ -167,6 +190,24 @@ pub async fn chat_completions(
             }
         }
     } else {
+        // Raw-bytes passthrough lane (mantle chat): forward the upstream
+        // `chat.completion` JSON verbatim, with NO usage recomputation.
+        if let Some(result) = state.chat.chat_raw_nonstream(&normalized).await {
+            let bytes = result.inspect_err(|e| {
+                if e.is_server_error() {
+                    tracing::error!(request_id = %request_id, model = %client_model, error = %e, "chat request failed");
+                } else {
+                    tracing::warn!(request_id = %request_id, model = %client_model, error = %e, "chat request failed");
+                }
+            })?;
+            tracing::info!(
+                request_id = %request_id,
+                model = %client_model,
+                latency_ms = received_at.elapsed().as_millis(),
+                "chat completed (raw passthrough)"
+            );
+            return Ok(chat_raw_json_response(bytes));
+        }
         match state.chat.chat(&normalized).await {
             Ok(response) => {
                 let finish_reason = response
@@ -236,6 +277,11 @@ pub async fn completions(
             "model {client_model} is only available on the /responses endpoint"
         )));
     }
+    if state.caps.chat_backend(&client_model) == ChatBackend::Mantle {
+        return Err(AppError::BadRequest(format!(
+            "model {client_model} is only available on the /chat/completions endpoint"
+        )));
+    }
     let is_stream = request.stream.unwrap_or(false);
     let echo = request.echo.unwrap_or(false);
     let chat_request = ChatRequest {
@@ -268,6 +314,7 @@ pub async fn completions(
         resolved_model,
         request_id: request_id.clone(),
         received_at,
+        raw_body: bytes::Bytes::new(),
     };
     tracing::info!(
         request_id = %request_id,
@@ -467,6 +514,40 @@ fn sse_response(chat_stream: crate::domain::ChatStream) -> Response {
             .keep_alive(sse_keep_alive())
             .into_response(),
     )
+}
+
+/// Build an SSE response from a raw-bytes chat stream (mantle passthrough).
+///
+/// The provider's upstream already emits the OpenAI chat `text/event-stream`
+/// wire format, so each [`bytes::Bytes`] chunk is forwarded verbatim. Unlike the
+/// responses raw lane, a terminal `data: [DONE]\n\n` sentinel IS appended at the
+/// tail: mantle chat does not emit it, but OpenAI chat clients expect it. A
+/// mid-stream error item cannot be envelope-mapped after the `200`/headers are
+/// flushed; it simply truncates the stream.
+fn chat_raw_sse_response(raw: RawChatStream) -> Response {
+    let with_done = raw.chain(futures::stream::once(async {
+        Ok::<bytes::Bytes, AppError>(bytes::Bytes::from_static(b"data: [DONE]\n\n"))
+    }));
+    let body = axum::body::Body::from_stream(with_done);
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/event-stream"),
+    );
+    with_sse_headers(response)
+}
+
+/// Build a JSON response from raw non-stream chat bytes (mantle passthrough).
+///
+/// The bytes are the upstream `chat.completion` JSON forwarded verbatim, with no
+/// deserialization and no usage recomputation.
+fn chat_raw_json_response(bytes: bytes::Bytes) -> Response {
+    let mut response = axum::body::Body::from(bytes).into_response();
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    response
 }
 
 /// Serialize an [`AppError`] into the OpenAI error-envelope JSON string used as
@@ -1068,6 +1149,7 @@ mod tests {
             aws_max_retry_attempts: 8,
             mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
                 .to_string(),
+            mantle_chat_base_url_template: "https://bedrock-mantle.{region}.api.aws/v1".to_string(),
             allowed_models: None,
             otel_exporter_otlp_endpoint: None,
             otel_capture_content: false,
@@ -1079,6 +1161,82 @@ mod tests {
         Arc::new(crate::bedrock::capabilities::ConfigModelCapabilities::new(
             config,
         ))
+    }
+
+    /// Self-contained caps with a `gpt-oss-120b → openai.gpt-oss-120b` alias +
+    /// a `chat_backend = "mantle"` entry, so T6 does NOT depend on T8's real
+    /// `config/models.toml` edits (same pattern as `composite_tests.rs`).
+    fn caps_with_gpt_oss() -> Arc<dyn ModelCapabilities> {
+        use crate::config::capabilities::{ModelAlias, ModelEntry, ModelParams};
+        let config = ModelCapabilityConfig {
+            models: vec![ModelEntry {
+                match_pattern: "openai.gpt-oss-120b".to_string(),
+                capabilities: Vec::new(),
+                params: ModelParams {
+                    chat_backend: Some("mantle".to_string()),
+                    available_regions: Some(vec!["us-west-2".to_string()]),
+                    ..ModelParams::default()
+                },
+            }],
+            aliases: vec![ModelAlias {
+                from: "gpt-oss-120b".to_string(),
+                to: "openai.gpt-oss-120b".to_string(),
+            }],
+            ..ModelCapabilityConfig::default()
+        };
+        Arc::new(crate::bedrock::capabilities::ConfigModelCapabilities::new(
+            config,
+        ))
+    }
+
+    const RAW_CHAT_SSE: &[u8] = b"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"reasoning\":\"t\"}}],\"obfuscation\":\"Zz\"}\n\n";
+    const RAW_CHAT_JSON: &[u8] =
+        b"{\"object\":\"chat.completion\",\"model\":\"openai.gpt-oss-120b\"}";
+
+    struct MockRawChat;
+
+    #[async_trait::async_trait]
+    impl ChatProvider for MockRawChat {
+        async fn chat(&self, _req: &NormalizedChatRequest) -> Result<ChatResponse, AppError> {
+            Err(AppError::Internal(
+                "typed path must not be used".to_string(),
+            ))
+        }
+
+        async fn chat_stream(&self, _req: &NormalizedChatRequest) -> Result<ChatStream, AppError> {
+            Err(AppError::Internal(
+                "typed path must not be used".to_string(),
+            ))
+        }
+
+        async fn chat_raw_stream(
+            &self,
+            _req: &NormalizedChatRequest,
+        ) -> Option<crate::domain::RawChatStream> {
+            let chunk: Result<bytes::Bytes, AppError> = Ok(bytes::Bytes::from_static(RAW_CHAT_SSE));
+            Some(Box::pin(futures::stream::iter(vec![chunk])))
+        }
+
+        async fn chat_raw_nonstream(
+            &self,
+            _req: &NormalizedChatRequest,
+        ) -> Option<Result<bytes::Bytes, AppError>> {
+            Some(Ok(bytes::Bytes::from_static(RAW_CHAT_JSON)))
+        }
+    }
+
+    fn app_with_raw_chat() -> Router {
+        let state = AppState::new(
+            Arc::new(MockRawChat),
+            Arc::new(MockResponses),
+            Arc::new(MockEmbeddings),
+            Arc::new(RwLock::new(catalog())),
+            caps_with_gpt_oss(),
+            Arc::new(KEY.to_string()),
+            Arc::new(settings()),
+            Arc::new(crate::bedrock::cache_support::CacheSupportRegistry::new()),
+        );
+        build_router(state, PREFIX)
     }
 
     fn catalog() -> ModelCatalog {
@@ -1437,6 +1595,117 @@ mod tests {
             "rejection message must point the caller to /responses, got: {message}"
         );
         assert!(value.get("detail").is_none());
+    }
+
+    /// A mantle-chat model (gpt-oss) streaming through the raw lane: the body
+    /// carries the upstream chunk verbatim AND ends with `data: [DONE]`, with
+    /// SSE content-type + anti-buffering headers.
+    #[tokio::test]
+    async fn chat_raw_stream_appends_done_sentinel() {
+        let body =
+            r#"{"model":"gpt-oss-120b","messages":[{"role":"user","content":"hi"}],"stream":true}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/chat/completions")
+            .header(AUTHORIZATION, auth())
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app_with_raw_chat().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(ct.contains("text/event-stream"), "got {ct}");
+
+        let accel = resp
+            .headers()
+            .get(ACCEL_BUFFERING_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(accel, "no");
+
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(
+            text.contains("chat.completion.chunk"),
+            "missing upstream chunk:\n{text}"
+        );
+        assert!(
+            text.contains("reasoning"),
+            "reasoning must survive:\n{text}"
+        );
+        assert!(
+            text.contains("obfuscation"),
+            "obfuscation must survive:\n{text}"
+        );
+        assert!(
+            text.trim_end().ends_with("data: [DONE]"),
+            "must end with [DONE]:\n{text}"
+        );
+    }
+
+    /// A mantle-chat model non-stream request: the body is the upstream bytes
+    /// verbatim, content-type application/json, no usage recomputation.
+    #[tokio::test]
+    async fn chat_raw_nonstream_passes_bytes_verbatim() {
+        let body = r#"{"model":"gpt-oss-120b","messages":[{"role":"user","content":"hi"}]}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/chat/completions")
+            .header(AUTHORIZATION, auth())
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app_with_raw_chat().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(ct.contains("application/json"), "got {ct}");
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(bytes.as_ref(), RAW_CHAT_JSON);
+    }
+
+    /// A mantle-chat model is NO LONGER blocked on `/chat/completions` — the old
+    /// "only available on /responses" 400 is gone for chat_backend models.
+    #[tokio::test]
+    async fn chat_mantle_model_not_blocked() {
+        let body = r#"{"model":"gpt-oss-120b","messages":[{"role":"user","content":"hi"}]}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/chat/completions")
+            .header(AUTHORIZATION, auth())
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app_with_raw_chat().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// A mantle-chat model sent to `/completions` gets a clean 400.
+    #[tokio::test]
+    async fn completions_mantle_chat_model_400() {
+        let body = r#"{"model":"gpt-oss-120b","prompt":"hi"}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/completions")
+            .header(AUTHORIZATION, auth())
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app_with_raw_chat().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["error"]["type"], "invalid_request_error");
+        let msg = value["error"]["message"].as_str().unwrap_or_default();
+        assert!(msg.contains("/chat/completions"), "got: {msg}");
     }
 
     /// A normal Converse model (claude/nova) MUST NOT be caught by the mantle

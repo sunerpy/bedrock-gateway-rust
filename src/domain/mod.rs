@@ -47,6 +47,24 @@ pub enum ResponsesBackend {
     Mantle,
 }
 
+/// Which upstream backend serves a model's chat-completions requests.
+///
+/// The chat-surface analogue of [`ResponsesBackend`], kept as a SEPARATE,
+/// independent field (never overloaded with `responses_backend`): a model may
+/// be chat-only on mantle while remaining Converse on the Responses surface, or
+/// vice versa. Config-driven (never inferred from the model name): a model entry
+/// in `config/models.toml` selects `Mantle` by declaring
+/// `params.chat_backend = "mantle"`; every other value — and the absence of the
+/// field — maps to `Converse`. `Converse` is the conceptual default so every
+/// existing model keeps routing through the Bedrock Converse path unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatBackend {
+    /// The default Bedrock Converse / ConverseStream path.
+    Converse,
+    /// The Bedrock Mantle (OpenAI-compatible) upstream path.
+    Mantle,
+}
+
 /// Generate a gateway request id of the form `req-{nanos:x}-{counter:x}`.
 ///
 /// Dependency-free (no `uuid`): a Unix-nanos timestamp combined with a
@@ -86,6 +104,12 @@ pub struct NormalizedChatRequest {
     /// Handler-entry instant, used by streaming providers to compute the
     /// end-to-end `duration_ms` at stream completion.
     pub received_at: Instant,
+    /// The verbatim request body bytes as received on the wire.
+    ///
+    /// Captured before deserialization so a raw-passthrough provider (the Mantle
+    /// OpenAI-compatible upstream) can forward the client's exact JSON body
+    /// unchanged. The Converse path ignores this field. NEVER logged.
+    pub raw_body: bytes::Bytes,
 }
 
 /// A boxed, `'static` stream of streaming chat chunks.
@@ -93,6 +117,17 @@ pub struct NormalizedChatRequest {
 /// `BoxStream` keeps [`ChatProvider`] object-safe while allowing each
 /// implementation to return its own concrete stream type.
 pub type ChatStream = BoxStream<'static, Result<ChatStreamResponse, AppError>>;
+
+/// A boxed, `'static` stream of raw SSE body bytes for the chat surface.
+///
+/// The passthrough analogue of [`ChatStream`]: instead of typed
+/// [`ChatStreamResponse`] chunks, each item is a verbatim chunk of the upstream
+/// `text/event-stream` body, forwarded to the client unparsed. Used by a
+/// raw-passthrough provider (Mantle) whose upstream already speaks the OpenAI
+/// chat SSE wire format, where round-tripping through the typed
+/// [`ChatStreamResponse`] would drop non-standard fields such as
+/// `delta.reasoning` and per-chunk `obfuscation`.
+pub type RawChatStream = BoxStream<'static, Result<bytes::Bytes, AppError>>;
 
 /// A chat-completion provider.
 ///
@@ -106,6 +141,32 @@ pub trait ChatProvider: Send + Sync {
 
     /// Handle a streaming chat completion request, yielding SSE-ready chunks.
     async fn chat_stream(&self, req: &NormalizedChatRequest) -> Result<ChatStream, AppError>;
+
+    /// Offer a raw-bytes SSE passthrough lane for a streaming request.
+    ///
+    /// Returns `Some` only for a provider whose upstream already emits the
+    /// OpenAI chat SSE wire format verbatim (Mantle): the handler then forwards
+    /// those bytes unparsed. The default returns `None`, so every Converse-based
+    /// provider keeps using the typed [`Self::chat_stream`] path with no change.
+    async fn chat_raw_stream(&self, req: &NormalizedChatRequest) -> Option<RawChatStream> {
+        let _ = req;
+        None
+    }
+
+    /// Offer a raw-bytes passthrough lane for a non-streaming request.
+    ///
+    /// Returns `Some` only for a provider whose upstream already emits the
+    /// OpenAI `chat.completion` JSON verbatim (Mantle): the handler then forwards
+    /// those bytes unparsed, with NO usage re-normalization. The default returns
+    /// `None`, so every Converse-based provider keeps using the typed
+    /// [`Self::chat`] path with no change.
+    async fn chat_raw_nonstream(
+        &self,
+        req: &NormalizedChatRequest,
+    ) -> Option<Result<bytes::Bytes, AppError>> {
+        let _ = req;
+        None
+    }
 }
 
 /// A provider-agnostic, normalized Responses-API request.
@@ -240,6 +301,11 @@ pub trait ModelCapabilities: Send + Sync {
     /// Defaults to [`ResponsesBackend::Converse`] for every model that does not
     /// declare `params.responses_backend = "mantle"` in config.
     fn responses_backend(&self, model: &str) -> ResponsesBackend;
+
+    /// Which upstream backend serves this model's chat-completions requests.
+    /// Defaults to [`ChatBackend::Converse`] for every model that does not
+    /// declare `params.chat_backend = "mantle"` in config.
+    fn chat_backend(&self, model: &str) -> ChatBackend;
 
     /// The region allow-list for this model, if configured. `None` means no
     /// region gate (the model is served everywhere); a non-empty list is the

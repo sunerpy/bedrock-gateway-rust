@@ -87,6 +87,7 @@ fn normalized() -> NormalizedChatRequest {
         resolved_model: "resolved-foundation-model".to_string(),
         request_id: Arc::from("req-test"),
         received_at: Instant::now(),
+        raw_body: bytes::Bytes::new(),
     }
 }
 
@@ -273,6 +274,29 @@ async fn default_respond_raw_stream_returns_none() {
     let provider: Arc<dyn ResponsesProvider> = Arc::new(MockResponsesProvider);
     let req = normalized_responses();
     assert!(provider.respond_raw_stream(&req).await.is_none());
+}
+
+#[tokio::test]
+async fn chat_raw_stream_defaults_to_none() {
+    let provider: Box<dyn ChatProvider> = Box::new(MockChatProvider);
+    let req = normalized();
+    assert!(provider.chat_raw_stream(&req).await.is_none());
+}
+
+#[tokio::test]
+async fn chat_raw_nonstream_defaults_to_none() {
+    let provider: Box<dyn ChatProvider> = Box::new(MockChatProvider);
+    let req = normalized();
+    assert!(provider.chat_raw_nonstream(&req).await.is_none());
+}
+
+#[test]
+fn chat_backend_enum_variants_exist() {
+    assert_ne!(ChatBackend::Converse, ChatBackend::Mantle);
+    let a = ChatBackend::Mantle;
+    let b = a;
+    assert_eq!(a, b);
+    assert_eq!(format!("{:?}", ChatBackend::Converse), "Converse");
 }
 
 /// `gen_request_id` produces the documented `req-…` prefix and the

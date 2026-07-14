@@ -477,6 +477,40 @@ fn responses_backend_converse_for_non_mantle_and_unknown() {
 }
 
 #[test]
+fn chat_backend_mantle_for_configured_model() {
+    use crate::domain::ChatBackend;
+    let raw = "[[alias]]\nfrom = \"gpt-oss-120b\"\nto = \"openai.gpt-oss-120b\"\n\n[[model]]\nmatch = \"openai.gpt-oss-120b\"\n[model.params]\nchat_backend = \"mantle\"\n";
+    let cfg = ModelCapabilityConfig::from_toml_str(raw).expect("parse");
+    let c = ConfigModelCapabilities::new(cfg);
+    assert_eq!(c.chat_backend("gpt-oss-120b"), ChatBackend::Mantle);
+    assert_eq!(c.chat_backend("openai.gpt-oss-120b"), ChatBackend::Mantle);
+}
+
+#[test]
+fn chat_backend_converse_default() {
+    use crate::domain::ChatBackend;
+    let c = caps();
+    assert_eq!(c.chat_backend(FULL_SONNET_4_5), ChatBackend::Converse);
+    assert_eq!(
+        c.chat_backend("vendor.totally-unknown-v1:0"),
+        ChatBackend::Converse
+    );
+}
+
+#[test]
+fn chat_backend_independent_of_responses_backend() {
+    use crate::domain::{ChatBackend, ResponsesBackend};
+    let raw = "[[alias]]\nfrom = \"gpt-oss-120b\"\nto = \"openai.gpt-oss-120b\"\n\n[[model]]\nmatch = \"openai.gpt-oss-120b\"\n[model.params]\nchat_backend = \"mantle\"\n";
+    let cfg = ModelCapabilityConfig::from_toml_str(raw).expect("parse");
+    let c = ConfigModelCapabilities::new(cfg);
+    assert_eq!(c.chat_backend("gpt-oss-120b"), ChatBackend::Mantle);
+    assert_eq!(
+        c.responses_backend("gpt-oss-120b"),
+        ResponsesBackend::Converse
+    );
+}
+
+#[test]
 fn model_regions_from_config_via_canonical_and_alias() {
     let c = caps();
     // gpt-5.5 is gated to a single region; the alias resolves first.
@@ -492,4 +526,22 @@ fn model_regions_from_config_via_canonical_and_alias() {
     // A model with no region gate, and an unknown model, both return None.
     assert_eq!(c.model_regions(FULL_SONNET_4_5), None);
     assert_eq!(c.model_regions("vendor.totally-unknown-v1:0"), None);
+}
+
+#[test]
+fn gpt_oss_from_real_config_chat_mantle_and_regions() {
+    use crate::domain::{ChatBackend, ResponsesBackend};
+    let c = caps();
+    assert_eq!(c.chat_backend("gpt-oss-120b"), ChatBackend::Mantle);
+    assert_eq!(c.chat_backend("gpt-oss-20b"), ChatBackend::Mantle);
+    assert_eq!(
+        c.responses_backend("gpt-oss-120b"),
+        ResponsesBackend::Converse
+    );
+    let regions = c
+        .model_regions("gpt-oss-120b")
+        .expect("gpt-oss-120b must declare a region allow-list");
+    assert!(regions.contains(&"us-east-1".to_string()));
+    assert!(regions.contains(&"us-east-2".to_string()));
+    assert!(regions.contains(&"us-west-2".to_string()));
 }

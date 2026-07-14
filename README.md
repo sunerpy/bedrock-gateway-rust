@@ -246,7 +246,8 @@ Prefer fetching `API_KEY` from a secrets store. Priority order:
 
 | Variable                   | Default                                                  | Description                                                                                 |
 | -------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `MANTLE_BASE_URL_TEMPLATE` | `https://bedrock-mantle.{region}.api.aws/openai/v1`      | Upstream URL for GPT-5.x models. `{region}` is replaced with `AWS_REGION` at call time.    |
+| `MANTLE_BASE_URL_TEMPLATE` | `https://bedrock-mantle.{region}.api.aws/openai/v1`      | Upstream URL for GPT-5.x models (Responses surface). `{region}` is replaced with `AWS_REGION` at call time. |
+| `MANTLE_CHAT_BASE_URL_TEMPLATE` | `https://bedrock-mantle.{region}.api.aws/v1`       | Upstream URL for gpt-oss chat models (`/chat/completions` surface, no `/openai` prefix). `{region}` is replaced with `AWS_REGION` at call time. |
 
 </details>
 
@@ -385,6 +386,7 @@ The authoritative list is `config/models.toml` and the live `GET /api/v1/models`
 - **Amazon Nova** — multimodal and text models
 - **DeepSeek** — v3 (string-form reasoning path)
 - **GPT-5.x** — `gpt-5.4` and `gpt-5.5` on `/api/v1/responses` only, via the AWS Bedrock mantle upstream. Send the bare alias name; the gateway rewrites it to the canonical `openai.gpt-*` ID before dispatch. Not available on `/chat/completions`. Listed in `GET /models` under the bare alias names `gpt-5.4` / `gpt-5.5`; `GET /models/{id}` resolves those names. Region-gated: `gpt-5.5` requires `us-east-2`; `gpt-5.4` requires `us-east-2` or `us-west-2`. Requires `AWS_BEARER_TOKEN_BEDROCK` to be set (startup fails otherwise).
+- **gpt-oss** — `gpt-oss-120b` and `gpt-oss-20b` on `/api/v1/chat/completions` only, via the AWS Bedrock mantle upstream (`chat_backend = "mantle"`). Byte-level raw SSE passthrough; the gateway appends `data: [DONE]` at the stream tail. Not available on `/completions`. Listed in `GET /models` under the bare alias names `gpt-oss-120b` / `gpt-oss-20b`. Region-gated: `us-east-1` / `us-east-2` / `us-west-2`. Requires `AWS_BEARER_TOKEN_BEDROCK` to be set (otherwise those models are disabled with a WARN; the gateway still starts).
 - Any Bedrock foundation model or inference profile accessible in your account — the catalog refreshes from the control plane at startup
 
 Adding a model requires only a `config/models.toml` entry and no recompile.

@@ -56,6 +56,9 @@ impl ModelCapabilities for StubCaps {
     fn responses_backend(&self, _model: &str) -> ResponsesBackend {
         ResponsesBackend::Mantle
     }
+    fn chat_backend(&self, _model: &str) -> crate::domain::ChatBackend {
+        crate::domain::ChatBackend::Converse
+    }
     fn model_regions(&self, _model: &str) -> Option<Vec<String>> {
         self.regions.clone()
     }
@@ -84,6 +87,7 @@ fn settings_in_region(region: &str) -> Arc<AppSettings> {
         aws_read_timeout_secs: 900,
         aws_max_retry_attempts: 8,
         mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1".to_string(),
+        mantle_chat_base_url_template: "https://bedrock-mantle.{region}.api.aws/v1".to_string(),
         allowed_models: None,
         otel_exporter_otlp_endpoint: None,
         otel_capture_content: false,
@@ -97,6 +101,7 @@ fn provider_for(
 ) -> MantleResponsesProvider {
     let client = MantleClient::new(
         reqwest::Client::new(),
+        base_uri.to_string(),
         base_uri.to_string(),
         "test-bearer".to_string(),
     );
