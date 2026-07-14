@@ -1,0 +1,17 @@
+coverage:
+  status:
+    project:
+      default:
+        target: 95%
+        informational: true # report-only：永不阻塞（基线偏低，铁律 local green => CI green）
+    patch:
+      default:
+        target: 95%
+        informational: true # 新增代码鼓励达到 95%，仍非阻塞
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+
+ignore:
+  - "src/main.rs" # 二进制引导胶水；无业务逻辑、进程内不可测

@@ -11,7 +11,20 @@ COMMIT_ID = $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 RUST_FILES = $(shell find . -name "*.rs" -not -path "./target/*")
 TOML_FILES = $(shell find . -name "*.toml" -not -path "./target/*")
 
-.PHONY: all build build-binaries build-local docker-build docker-release fmt lint test run clean help hooks setup-hooks
+.PHONY: all build build-binaries build-local docker-build docker-release fmt lint test run clean help hooks setup-hooks \
+        coverage coverage-html coverage-lcov coverage-open coverage-clean
+
+# ─── 测试覆盖率（cargo-llvm-cov + Codecov）──────────────────────────────
+# 覆盖率为「可追踪但非阻塞」指标：目标 95%+，但 CI 门禁永不变红。
+# 详见 codecov.yml 与 docs/coverage.md。每个配方先校验 cargo-llvm-cov 是否安装。
+LLVM_COV_INSTALL := Install with: cargo install cargo-llvm-cov --locked
+LLVM_COV_HTML    := target/llvm-cov/html/index.html
+COV_FLAGS        := --all-features --ignore-filename-regex 'src/main\.rs'
+
+define REQUIRE_LLVM_COV
+	@command -v cargo-llvm-cov >/dev/null 2>&1 || { \
+		echo "❌ cargo-llvm-cov not found. $(LLVM_COV_INSTALL)"; exit 1; }
+endef
 
 all: fmt lint build
 
@@ -121,6 +134,42 @@ hooks setup-hooks:
 	@echo "✅ Done. The pre-push gate is now active (fmt + clippy + test on push)."
 	@echo "   Plain 'git commit' stays unblocked; only 'git push' is gated."
 
+# 打印覆盖率摘要（line/region/function %）到 stdout。
+coverage:
+	$(REQUIRE_LLVM_COV)
+	@echo "📈 Measuring coverage (summary)..."
+	cargo llvm-cov $(COV_FLAGS) --summary-only
+
+# 生成可浏览的 HTML 报告至 target/llvm-cov/html/。
+coverage-html:
+	$(REQUIRE_LLVM_COV)
+	@echo "📈 Generating HTML coverage report..."
+	cargo llvm-cov $(COV_FLAGS) --html
+	@echo "✅ HTML report: $(LLVM_COV_HTML)"
+
+# 生成 lcov.info（CI 上传 Codecov 的产物）。
+coverage-lcov:
+	$(REQUIRE_LLVM_COV)
+	@echo "📈 Generating lcov.info..."
+	cargo llvm-cov $(COV_FLAGS) --lcov --output-path lcov.info
+	@echo "✅ Wrote lcov.info"
+
+# 构建 HTML 报告并尽力打开（无可用打开程序时打印路径，绝不失败）。
+coverage-open: coverage-html
+	@if command -v xdg-open >/dev/null 2>&1; then \
+		xdg-open "$(LLVM_COV_HTML)" >/dev/null 2>&1 || true; \
+	elif command -v open >/dev/null 2>&1; then \
+		open "$(LLVM_COV_HTML)" >/dev/null 2>&1 || true; \
+	else \
+		echo "ℹ️  No opener found; open manually: $(LLVM_COV_HTML)"; \
+	fi
+
+# 清除覆盖率插桩 / profraw 数据。
+coverage-clean:
+	$(REQUIRE_LLVM_COV)
+	@echo "🧹 Cleaning coverage data..."
+	cargo llvm-cov clean --workspace
+
 clean:
 	@echo "Cleaning..."
 	cargo clean
@@ -146,6 +195,13 @@ help:
 	@echo "  fmt-config       - Format config files with oxfmt (optional)"
 	@echo "  lint             - Run clippy with -D warnings"
 	@echo "  test             - Run all tests (lib + doc)"
+	@echo ""
+	@echo "Coverage (cargo-llvm-cov + Codecov; target 95%, informational):"
+	@echo "  coverage         - Coverage summary to stdout"
+	@echo "  coverage-html    - HTML report -> target/llvm-cov/html/index.html"
+	@echo "  coverage-lcov    - Write lcov.info (uploaded to Codecov in CI)"
+	@echo "  coverage-open    - Build HTML report and open it (best-effort)"
+	@echo "  coverage-clean   - Clear coverage instrumentation data"
 	@echo ""
 	@echo "Utilities:"
 	@echo "  run              - Build and run binary (API_KEY=testkey)"
