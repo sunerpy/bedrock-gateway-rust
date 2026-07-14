@@ -99,6 +99,13 @@ pub struct AppSettings {
     /// `MANTLE_BASE_URL_TEMPLATE` (or `APP_MANTLE_BASE_URL_TEMPLATE`).
     pub mantle_base_url_template: String,
 
+    /// URL template for the bedrock-mantle chat-completions upstream, with a
+    /// `{region}` placeholder substituted per request. Default:
+    /// `https://bedrock-mantle.{region}.api.aws/v1` (NO `/openai` prefix — the
+    /// mantle chat route differs from the responses route). Env:
+    /// `MANTLE_CHAT_BASE_URL_TEMPLATE` (or `APP_MANTLE_CHAT_BASE_URL_TEMPLATE`).
+    pub mantle_chat_base_url_template: String,
+
     /// Optional comma-separated allow-list of model-id substrings (env:
     /// `ALLOWED_MODELS`). When present it OVERRIDES the optional `models.toml`
     /// `allowed_models` list. Applied at catalog-build time to filter both
@@ -156,6 +163,10 @@ impl AppSettings {
                 "mantle_base_url_template",
                 "https://bedrock-mantle.{region}.api.aws/openai/v1",
             )?
+            .set_default(
+                "mantle_chat_base_url_template",
+                "https://bedrock-mantle.{region}.api.aws/v1",
+            )?
             .set_default("otel_capture_content", false)?
             .add_source(File::with_name("config/app").required(false))
             .add_source(
@@ -189,8 +200,8 @@ impl AppSettings {
 /// `DISABLE_MANTLE`, `API_KEY`, `API_KEY_SECRET_ARN`, `API_KEY_PARAM_NAME`,
 /// `AWS_BEARER_TOKEN_BEDROCK` (alias `BEDROCK_API_KEY`), plus the operational
 /// knobs `PORT`, `BIND_ADDR`, `LOG_LEVEL`, `MANTLE_BASE_URL_TEMPLATE`,
-/// `ALLOWED_MODELS`, `PROMPT_CACHE_TTL`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
-/// `OTEL_CAPTURE_CONTENT`.
+/// `MANTLE_CHAT_BASE_URL_TEMPLATE`, `ALLOWED_MODELS`, `PROMPT_CACHE_TTL`,
+/// `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_CAPTURE_CONTENT`.
 fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder> {
     // String-valued overrides.
     for (env_name, field) in [
@@ -204,6 +215,10 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
         ("BIND_ADDR", "bind_addr"),
         ("LOG_LEVEL", "log_level"),
         ("MANTLE_BASE_URL_TEMPLATE", "mantle_base_url_template"),
+        (
+            "MANTLE_CHAT_BASE_URL_TEMPLATE",
+            "mantle_chat_base_url_template",
+        ),
         ("ALLOWED_MODELS", "allowed_models"),
         ("PROMPT_CACHE_TTL", "prompt_cache_ttl"),
         ("OTEL_EXPORTER_OTLP_ENDPOINT", "otel_exporter_otlp_endpoint"),

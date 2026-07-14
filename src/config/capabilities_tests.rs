@@ -292,6 +292,25 @@ fn test_mantle_alias_names_derived_from_config() {
 }
 
 #[test]
+fn mantle_alias_names_includes_chat_only_model() {
+    // A chat-only mantle model (chat_backend, NO responses_backend) surfaces its
+    // bare alias name.
+    let raw = "[[alias]]\nfrom = \"gpt-oss-120b\"\nto = \"openai.gpt-oss-120b\"\n\n[[model]]\nmatch = \"openai.gpt-oss-120b\"\n[model.params]\nchat_backend = \"mantle\"\n";
+    let cfg = ModelCapabilityConfig::from_toml_str(raw).expect("config must parse");
+    let names: HashSet<String> = cfg.mantle_alias_names().into_iter().collect();
+    assert!(names.contains("gpt-oss-120b"));
+}
+
+#[test]
+fn mantle_alias_names_still_includes_responses_models() {
+    // Regression: a responses-backend mantle model is still surfaced.
+    let raw = "[[alias]]\nfrom = \"gpt-5.5\"\nto = \"openai.gpt-5.5\"\n\n[[model]]\nmatch = \"openai.gpt-5.5\"\n[model.params]\nresponses_backend = \"mantle\"\n";
+    let cfg = ModelCapabilityConfig::from_toml_str(raw).expect("config must parse");
+    let names: HashSet<String> = cfg.mantle_alias_names().into_iter().collect();
+    assert!(names.contains("gpt-5.5"));
+}
+
+#[test]
 fn test_mantle_alias_names_empty_without_mantle_entries() {
     // Aliases that do not resolve to any mantle-backed entry surface nothing.
     let raw = "[[alias]]\nfrom = \"sonnet\"\nto = \"anthropic.claude-sonnet-4-5\"\n\n[[model]]\nmatch = \"anthropic.claude-sonnet-4-5\"\n";

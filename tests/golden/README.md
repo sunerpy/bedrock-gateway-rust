@@ -208,6 +208,17 @@ fixtures encode the **Rust** (correct) behaviour:
 | `reasoning_content` never on the wire | `response/reasoning_inline_think` | reasoning is rendered inline as `<think>…</think>` in `content`; the `reasoning_content` field is never serialized. |
 | Error envelope (always JSON) | n/a (asserted in `src` unit tests) | Errors always return the full OpenAI error envelope; not exercised here because the corpus covers the success-path translation/response/stream/embedding mappings. |
 
+### Mantle lanes are covered by wiremock, not this corpus
+
+The bedrock-mantle lanes — GPT-5.x on `/responses` and gpt-oss on
+`/chat/completions` — are **raw byte passthrough** with NO Converse translation,
+so they do not fit this Converse-translation corpus (which asserts Bedrock-side
+JSON parity). Their wire behaviour is locked by the offline `wiremock`-backed
+unit tests instead: `src/bedrock/mantle_client_tests.rs`,
+`src/bedrock/mantle_provider_tests.rs`, `src/bedrock/mantle_chat_provider_tests.rs`,
+and the router raw-lane tests in `src/server/routers/mod.rs`. Do NOT add a
+Converse-style golden fixture for a mantle model.
+
 ### Two volatile-value notes
 
 - `reasoning_tokens` (a tiktoken **estimate**, not a parity-critical wire value)

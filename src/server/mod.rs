@@ -32,6 +32,8 @@ pub mod auth;
 
 pub mod composite;
 
+pub mod composite_chat;
+
 pub mod routers;
 
 pub mod state;
@@ -49,6 +51,7 @@ use tracing::Level;
 use crate::bedrock::cache_support::CacheSupportRegistry;
 use crate::bedrock::client::{build_aws_config, BedrockClients};
 use crate::bedrock::embeddings::BedrockEmbeddingProvider;
+use crate::bedrock::mantle_chat_provider::MantleChatProvider;
 use crate::bedrock::mantle_client::MantleClient;
 use crate::bedrock::mantle_provider::MantleResponsesProvider;
 use crate::bedrock::models::ModelCatalog;
@@ -58,6 +61,7 @@ use crate::bedrock::translate::ReqwestImageResolver;
 use crate::config::{AppSettings, EmbeddingRegistry, ModelCapabilityConfig, RegionRoutingConfig};
 use crate::domain::{ChatProvider, EmbeddingProvider, ModelCapabilities, ResponsesProvider};
 use crate::server::composite::{resolve_mantle_enabled, CompositeResponsesProvider};
+use crate::server::composite_chat::{resolve_mantle_chat_enabled, CompositeChatProvider};
 use crate::server::state::AppState;
 
 /// Default config directory used when `CONFIG_DIR` is unset (backward-compatible
@@ -106,6 +110,7 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
         ModelCapabilityConfig::load_with_fallback(Some(&config_dir.join(MODELS_CONFIG_FILE)));
 
     let mantle_enabled = resolve_mantle_enabled(&caps_config, &settings);
+    let mantle_chat_enabled = resolve_mantle_chat_enabled(&caps_config, &settings);
 
     // Mantle-backed models are absent from the control-plane catalog; surface
     // their bare alias names so `/models` lists them. Computed before
@@ -146,7 +151,7 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
     // surfaces alike.
     let cache_support = Arc::new(CacheSupportRegistry::new());
 
-    let chat: Arc<dyn ChatProvider> = Arc::new(BedrockChatProvider::new(
+    let converse_chat: Arc<dyn ChatProvider> = Arc::new(BedrockChatProvider::new(
         clients.clone(),
         caps.clone(),
         regions.clone(),
@@ -166,10 +171,11 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
     let mantle_client = MantleClient::new(
         reqwest::Client::new(),
         settings.mantle_base_url_template.clone(),
+        settings.mantle_chat_base_url_template.clone(),
         settings.bedrock_api_key.clone().unwrap_or_default(),
     );
     let mantle_responses: Arc<dyn ResponsesProvider> = Arc::new(MantleResponsesProvider::new(
-        mantle_client,
+        mantle_client.clone(),
         caps.clone(),
         settings.clone(),
     ));
@@ -179,6 +185,18 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
         mantle_responses,
         caps.clone(),
         mantle_enabled,
+    ));
+
+    let mantle_chat: Arc<dyn ChatProvider> = Arc::new(MantleChatProvider::new(
+        mantle_client,
+        caps.clone(),
+        settings.clone(),
+    ));
+    let chat: Arc<dyn ChatProvider> = Arc::new(CompositeChatProvider::new(
+        converse_chat,
+        mantle_chat,
+        caps.clone(),
+        mantle_chat_enabled,
     ));
 
     let embeddings: Arc<dyn EmbeddingProvider> =
@@ -365,6 +383,7 @@ mod tests {
             aws_max_retry_attempts: 8,
             mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
                 .to_string(),
+            mantle_chat_base_url_template: "https://bedrock-mantle.{region}.api.aws/v1".to_string(),
             allowed_models: None,
             otel_exporter_otlp_endpoint: None,
             otel_capture_content: false,

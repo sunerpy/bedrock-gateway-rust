@@ -21,6 +21,7 @@ fn client_for(base_uri: &str, bearer: &str) -> MantleClient {
     MantleClient::new(
         reqwest::Client::new(),
         base_uri.to_string(),
+        base_uri.to_string(),
         bearer.to_string(),
     )
 }
@@ -214,12 +215,167 @@ fn responses_url_substitutes_region_and_appends_path() {
     let client = MantleClient::new(
         reqwest::Client::new(),
         "https://bedrock-mantle.{region}.api.aws/openai/v1".to_string(),
+        "https://bedrock-mantle.{region}.api.aws/v1".to_string(),
         "b".to_string(),
     );
     assert_eq!(
         client.responses_url("us-west-2"),
         "https://bedrock-mantle.us-west-2.api.aws/openai/v1/responses"
     );
+}
+
+#[test]
+fn responses_url_unchanged() {
+    let client = MantleClient::new(
+        reqwest::Client::new(),
+        "https://bedrock-mantle.{region}.api.aws/openai/v1".to_string(),
+        "https://bedrock-mantle.{region}.api.aws/v1".to_string(),
+        "b".to_string(),
+    );
+    assert!(client
+        .responses_url("us-west-2")
+        .ends_with("/openai/v1/responses"));
+}
+
+#[test]
+fn chat_url_substitutes_region_and_appends_path() {
+    let client = MantleClient::new(
+        reqwest::Client::new(),
+        "https://bedrock-mantle.{region}.api.aws/openai/v1".to_string(),
+        "https://bedrock-mantle.{region}.api.aws/v1".to_string(),
+        "b".to_string(),
+    );
+    assert_eq!(
+        client.chat_url("us-west-2"),
+        "https://bedrock-mantle.us-west-2.api.aws/v1/chat/completions"
+    );
+    assert!(!client.chat_url("us-west-2").contains("/openai"));
+}
+
+#[tokio::test]
+async fn chat_nonstream_returns_body_and_sends_bearer() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(header("authorization", "Bearer test-bearer"))
+        .and(header("content-type", "application/json"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(r#"{"object":"chat.completion"}"#),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri(), "test-bearer");
+    let out = client
+        .chat_nonstream(
+            "us-east-2",
+            Bytes::from_static(b"{\"model\":\"gpt-oss-120b\"}"),
+        )
+        .await
+        .expect("chat_nonstream should succeed on 200");
+    assert_eq!(out, Bytes::from_static(br#"{"object":"chat.completion"}"#));
+}
+
+/// The mantle chat SSE body has NO `[DONE]` sentinel; the client concatenates
+/// the upstream bytes verbatim and never appends one (the handler does).
+#[tokio::test]
+async fn chat_stream_concatenates_without_done_sentinel() {
+    const CHAT_SSE: &str = "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(CHAT_SSE),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri(), "test-bearer");
+    let stream = client
+        .chat_stream("us-east-2", Bytes::from_static(b"{}"))
+        .await
+        .expect("stream should open on 200");
+    let chunks: Vec<Bytes> = stream.map(|r| r.expect("ok chunk")).collect().await;
+    let mut joined = Vec::new();
+    for c in chunks {
+        joined.extend_from_slice(&c);
+    }
+    assert_eq!(joined, CHAT_SSE.as_bytes());
+    let joined_str = String::from_utf8(joined).expect("utf8");
+    assert!(
+        !joined_str.contains("[DONE]"),
+        "client must not append a [DONE] sentinel"
+    );
+}
+
+/// Non-standard `delta.reasoning` and per-chunk `obfuscation` fields survive
+/// verbatim in the concatenated byte passthrough (locks the divergence).
+#[tokio::test]
+async fn chat_stream_preserves_reasoning_and_obfuscation() {
+    const CHAT_SSE: &str = "data: {\"choices\":[{\"delta\":{\"reasoning\":\"thinking...\"}}],\"obfuscation\":\"XyZ123\"}\n\n";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(CHAT_SSE),
+        )
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri(), "test-bearer");
+    let stream = client
+        .chat_stream("us-east-2", Bytes::from_static(b"{}"))
+        .await
+        .expect("stream should open on 200");
+    let chunks: Vec<Bytes> = stream.map(|r| r.expect("ok chunk")).collect().await;
+    let mut joined = Vec::new();
+    for c in chunks {
+        joined.extend_from_slice(&c);
+    }
+    let joined_str = String::from_utf8(joined).expect("utf8");
+    assert!(joined_str.contains("reasoning"));
+    assert!(joined_str.contains("obfuscation"));
+    assert!(joined_str.contains("XyZ123"));
+}
+
+#[tokio::test]
+async fn chat_401_and_429_map_without_body_leak() {
+    let secret = "SECRET-CHAT-BODY";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(401).set_body_string(secret))
+        .mount(&server)
+        .await;
+    let client = client_for(&server.uri(), "b");
+    let err = client
+        .chat_nonstream("r", Bytes::from_static(b"{}"))
+        .await
+        .expect_err("401 is an error");
+    assert!(matches!(err, AppError::Unauthorized));
+    assert!(!err.to_string().contains(secret));
+
+    let server2 = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(429).set_body_string(secret))
+        .mount(&server2)
+        .await;
+    let client2 = client_for(&server2.uri(), "b");
+    let err2 = client2
+        .chat_stream("r", Bytes::from_static(b"{}"))
+        .await
+        .err()
+        .expect("429 is a pre-stream error");
+    assert!(matches!(err2, AppError::Throttled(_)));
+    assert!(!err2.to_string().contains(secret));
 }
 
 /// A `{region}` substitution also drives the actual request path against a
@@ -239,7 +395,13 @@ async fn region_substitution_routes_request_to_expected_path() {
     // matches the appended `/openai/v1/responses`, so a successful call proves
     // the substituted URL was used.
     let template = format!("{}/openai/v1", server.uri());
-    let client = MantleClient::new(reqwest::Client::new(), template, "b".to_string());
+    let chat_template = format!("{}/v1", server.uri());
+    let client = MantleClient::new(
+        reqwest::Client::new(),
+        template,
+        chat_template,
+        "b".to_string(),
+    );
     let out = client
         .responses_nonstream("us-east-2", Bytes::from_static(b"{}"))
         .await

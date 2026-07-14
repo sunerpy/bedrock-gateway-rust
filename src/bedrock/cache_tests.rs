@@ -66,6 +66,9 @@ impl ModelCapabilities for FakeCaps {
     fn responses_backend(&self, _model: &str) -> crate::domain::ResponsesBackend {
         crate::domain::ResponsesBackend::Converse
     }
+    fn chat_backend(&self, _model: &str) -> crate::domain::ChatBackend {
+        crate::domain::ChatBackend::Converse
+    }
     fn model_regions(&self, _model: &str) -> Option<Vec<String>> {
         None
     }
@@ -879,6 +882,9 @@ impl ModelCapabilities for TtlCaps {
     }
     fn responses_backend(&self, _model: &str) -> crate::domain::ResponsesBackend {
         crate::domain::ResponsesBackend::Converse
+    }
+    fn chat_backend(&self, _model: &str) -> crate::domain::ChatBackend {
+        crate::domain::ChatBackend::Converse
     }
     fn model_regions(&self, _model: &str) -> Option<Vec<String>> {
         None

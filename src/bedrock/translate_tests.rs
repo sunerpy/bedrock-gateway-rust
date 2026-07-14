@@ -1160,6 +1160,9 @@ impl ModelCapabilities for StubCaps {
     fn responses_backend(&self, _model: &str) -> ResponsesBackend {
         ResponsesBackend::Converse
     }
+    fn chat_backend(&self, _model: &str) -> crate::domain::ChatBackend {
+        crate::domain::ChatBackend::Converse
+    }
     fn model_regions(&self, _model: &str) -> Option<Vec<String>> {
         None
     }

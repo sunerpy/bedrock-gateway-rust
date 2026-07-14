@@ -25,7 +25,7 @@ use std::collections::HashMap;
 
 use crate::config::capabilities::ModelEntry;
 use crate::config::{BudgetRatios, Capability, ModelCapabilityConfig, ReasoningPath};
-use crate::domain::{ModelCapabilities, ResponsesBackend};
+use crate::domain::{ChatBackend, ModelCapabilities, ResponsesBackend};
 
 /// The exact-key name of the fallback entry in `config/models.toml` that
 /// supplies default tunables (e.g. budget ratios) when a matched model entry
@@ -251,6 +251,18 @@ impl ModelCapabilities for ConfigModelCapabilities {
         {
             Some("mantle") => ResponsesBackend::Mantle,
             _ => ResponsesBackend::Converse,
+        }
+    }
+
+    fn chat_backend(&self, model: &str) -> ChatBackend {
+        let canonical = self.resolve_foundation(model);
+        match self
+            .config
+            .entry_for_match(&canonical)
+            .and_then(|e| e.params.chat_backend.as_deref())
+        {
+            Some("mantle") => ChatBackend::Mantle,
+            _ => ChatBackend::Converse,
         }
     }
 

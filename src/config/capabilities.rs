@@ -128,6 +128,13 @@ pub struct ModelParams {
     /// to the bedrock-mantle OpenAI-compatible upstream instead. This is a CONFIG
     /// DATA flag — the resolution layer reads it; no model-name branching in code.
     pub responses_backend: Option<String>,
+    /// Which backend serves this model's `/chat/completions` requests. `None`
+    /// means the default Bedrock Converse path; a value such as `"mantle"` routes
+    /// the model to the bedrock-mantle OpenAI-compatible upstream instead. An
+    /// INDEPENDENT flag from [`Self::responses_backend`] — a model can be mantle
+    /// on one surface and Converse on the other. CONFIG DATA flag — the resolution
+    /// layer reads it; no model-name branching in code.
+    pub chat_backend: Option<String>,
     /// Regions where this model is available. `None` means "no region gate"
     /// (available everywhere); a non-empty list restricts the model to those
     /// regions, enabling startup validation and per-request 400 on a mismatch.
@@ -306,11 +313,12 @@ impl ModelCapabilityConfig {
     /// backend.
     ///
     /// For each `[[alias]]`, resolve its `to` (canonical id) against the model
-    /// entries: if any entry whose `match` is a substring of the canonical id
-    /// declares `responses_backend = "mantle"`, surface the alias `from`. These
-    /// mantle models are absent from the Bedrock control-plane catalog, so the
-    /// `/models` listing injects these bare alias names. Derived purely from
-    /// config — no model-name string literals.
+    /// entries: if any entry whose `match` is a substring of the canonical id is
+    /// served by a mantle backend on EITHER surface (`responses_backend` OR
+    /// `chat_backend` == `"mantle"`), surface the alias `from`. These mantle
+    /// models are absent from the Bedrock control-plane catalog, so the `/models`
+    /// listing injects these bare alias names. Derived purely from config — no
+    /// model-name string literals.
     pub fn mantle_alias_names(&self) -> Vec<String> {
         const MANTLE_BACKEND: &str = "mantle";
         self.aliases
@@ -318,7 +326,8 @@ impl ModelCapabilityConfig {
             .filter(|alias| {
                 self.models.iter().any(|entry| {
                     alias.to.contains(&entry.match_pattern)
-                        && entry.params.responses_backend.as_deref() == Some(MANTLE_BACKEND)
+                        && (entry.params.responses_backend.as_deref() == Some(MANTLE_BACKEND)
+                            || entry.params.chat_backend.as_deref() == Some(MANTLE_BACKEND))
                 })
             })
             .map(|alias| alias.from.clone())

@@ -47,21 +47,41 @@ pub struct MantleClient {
     /// `https://bedrock-mantle.{region}.api.aws/openai/v1`. The `{region}`
     /// token is substituted per request and `/responses` is appended.
     base_url_template: String,
+    /// Chat-completions base URL with a literal `{region}` placeholder, e.g.
+    /// `https://bedrock-mantle.{region}.api.aws/v1` (NO `/openai` prefix — the
+    /// mantle chat route differs from the responses route). The `{region}` token
+    /// is substituted per request and `/chat/completions` is appended.
+    chat_base_url_template: String,
     /// Gateway→Bedrock bearer token, sent as `Authorization: Bearer {bearer}`.
     bearer: String,
 }
+
+/// The in-code protocol route suffix for the mantle chat-completions endpoint
+/// (a wire constant, like `data:`/`[DONE]` — not model knowledge).
+const CHAT_ROUTE: &str = "/chat/completions";
+
+/// The in-code protocol route suffix for the mantle responses endpoint.
+const RESPONSES_ROUTE: &str = "/responses";
 
 impl MantleClient {
     /// Construct a new [`MantleClient`].
     ///
     /// `base_url_template` is the `AppSettings::mantle_base_url_template` value
-    /// (a string containing the literal `{region}` placeholder). `bearer` is
-    /// the gateway→Bedrock bearer (`AppSettings::bedrock_api_key`).
+    /// (responses surface); `chat_base_url_template` is
+    /// `AppSettings::mantle_chat_base_url_template` (chat surface). Both contain
+    /// the literal `{region}` placeholder. `bearer` is the gateway→Bedrock bearer
+    /// (`AppSettings::bedrock_api_key`).
     #[must_use]
-    pub fn new(http: reqwest::Client, base_url_template: String, bearer: String) -> Self {
+    pub fn new(
+        http: reqwest::Client,
+        base_url_template: String,
+        chat_base_url_template: String,
+        bearer: String,
+    ) -> Self {
         Self {
             http,
             base_url_template,
+            chat_base_url_template,
             bearer,
         }
     }
@@ -70,8 +90,18 @@ impl MantleClient {
     /// `{region}` placeholder in the template and appending `/responses`.
     fn responses_url(&self, region: &str) -> String {
         format!(
-            "{}/responses",
+            "{}{RESPONSES_ROUTE}",
             self.base_url_template.replace("{region}", region)
+        )
+    }
+
+    /// Build the full `/chat/completions` URL for `region` by substituting the
+    /// literal `{region}` placeholder in the chat template and appending
+    /// `/chat/completions`.
+    fn chat_url(&self, region: &str) -> String {
+        format!(
+            "{}{CHAT_ROUTE}",
+            self.chat_base_url_template.replace("{region}", region)
         )
     }
 
@@ -111,10 +141,55 @@ impl MantleClient {
         Ok(stream.boxed())
     }
 
-    /// Issue the POST with the shared auth + content-type headers, mapping a
-    /// transport-level failure (connect/timeout) to an [`AppError`].
+    /// POST `body` to the mantle `/chat/completions` endpoint for `region` and
+    /// return the full response bytes (non-streaming, byte passthrough).
+    ///
+    /// The upstream already returns an OpenAI `chat.completion` shape; the bytes
+    /// are forwarded verbatim with NO deserialization and NO usage
+    /// re-normalization. A pre-read non-2xx status maps to an [`AppError`].
+    pub async fn chat_nonstream(&self, region: &str, body: Bytes) -> Result<Bytes, AppError> {
+        let url = self.chat_url(region);
+        let resp = self.send_to(&url, body).await?;
+        let resp = error_for_status(resp)?;
+        resp.bytes()
+            .await
+            .map_err(|e| AppError::UpstreamBedrock(format!("failed to read mantle response: {e}")))
+    }
+
+    /// POST `body` to the mantle `/chat/completions` endpoint for `region` and
+    /// return a raw byte stream of the SSE response (streaming passthrough).
+    ///
+    /// The pre-stream HTTP status is classified to an [`AppError`] *before* any
+    /// bytes are yielded. Each subsequent chunk is yielded as-is. The client
+    /// NEVER appends a `[DONE]` sentinel — that is the handler's responsibility
+    /// on the chat surface.
+    pub async fn chat_stream(
+        &self,
+        region: &str,
+        body: Bytes,
+    ) -> Result<BoxStream<'static, Result<Bytes, AppError>>, AppError> {
+        let url = self.chat_url(region);
+        let resp = self.send_to(&url, body).await?;
+        let resp = error_for_status(resp)?;
+        let stream = resp.bytes_stream().map(|chunk| {
+            chunk.map_err(|e| {
+                AppError::UpstreamBedrock(format!("mantle stream transport error: {e}"))
+            })
+        });
+        Ok(stream.boxed())
+    }
+
+    /// Issue the POST to the responses endpoint with the shared auth +
+    /// content-type headers, mapping a transport-level failure to an
+    /// [`AppError`].
     async fn send(&self, region: &str, body: Bytes) -> Result<reqwest::Response, AppError> {
         let url = self.responses_url(region);
+        self.send_to(&url, body).await
+    }
+
+    /// Issue the POST to `url` with the shared auth + content-type headers,
+    /// mapping a transport-level failure (connect/timeout) to an [`AppError`].
+    async fn send_to(&self, url: &str, body: Bytes) -> Result<reqwest::Response, AppError> {
         self.http
             .post(url)
             .bearer_auth(&self.bearer)

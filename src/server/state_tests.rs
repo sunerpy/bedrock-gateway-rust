@@ -174,6 +174,9 @@ impl ModelCapabilities for StubCaps {
             ResponsesBackend::Converse
         }
     }
+    fn chat_backend(&self, _model: &str) -> crate::domain::ChatBackend {
+        crate::domain::ChatBackend::Converse
+    }
     fn model_regions(&self, _model: &str) -> Option<Vec<String>> {
         None
     }
@@ -202,6 +205,7 @@ fn settings() -> AppSettings {
         aws_read_timeout_secs: 900,
         aws_max_retry_attempts: 8,
         mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1".to_string(),
+        mantle_chat_base_url_template: "https://bedrock-mantle.{region}.api.aws/v1".to_string(),
         allowed_models: None,
         otel_exporter_otlp_endpoint: None,
         otel_capture_content: false,
@@ -233,6 +237,7 @@ fn normalized_chat(model: &str) -> NormalizedChatRequest {
         resolved_model: model.to_string(),
         request_id: Arc::from("req-test"),
         received_at: std::time::Instant::now(),
+        raw_body: bytes::Bytes::new(),
     }
 }
 

@@ -55,6 +55,11 @@ fn minimal_builder() -> ConfigBuilder {
             "https://bedrock-mantle.{region}.api.aws/openai/v1",
         )
         .unwrap()
+        .set_default(
+            "mantle_chat_base_url_template",
+            "https://bedrock-mantle.{region}.api.aws/v1",
+        )
+        .unwrap()
 }
 
 #[test]
@@ -95,6 +100,11 @@ fn test_defaults_load_without_env_or_file() {
         .set_default(
             "mantle_base_url_template",
             "https://bedrock-mantle.{region}.api.aws/openai/v1",
+        )
+        .unwrap()
+        .set_default(
+            "mantle_chat_base_url_template",
+            "https://bedrock-mantle.{region}.api.aws/v1",
         )
         .unwrap()
         .build()
@@ -184,6 +194,11 @@ fn test_config_file_override() {
             "mantle_base_url_template",
             "https://bedrock-mantle.{region}.api.aws/openai/v1",
         )
+        .unwrap()
+        .set_default(
+            "mantle_chat_base_url_template",
+            "https://bedrock-mantle.{region}.api.aws/v1",
+        )
         .unwrap();
 
     builder = builder.set_override("api_route_prefix", "/v2").unwrap();
@@ -242,6 +257,11 @@ fn test_optional_fields_none() {
             "https://bedrock-mantle.{region}.api.aws/openai/v1",
         )
         .unwrap()
+        .set_default(
+            "mantle_chat_base_url_template",
+            "https://bedrock-mantle.{region}.api.aws/v1",
+        )
+        .unwrap()
         .build()
         .unwrap();
 
@@ -288,6 +308,11 @@ fn test_optional_fields_with_values() {
         .set_default(
             "mantle_base_url_template",
             "https://bedrock-mantle.{region}.api.aws/openai/v1",
+        )
+        .unwrap()
+        .set_default(
+            "mantle_chat_base_url_template",
+            "https://bedrock-mantle.{region}.api.aws/v1",
         )
         .unwrap();
 
@@ -348,6 +373,11 @@ fn test_aws_timeouts_and_retries_override() {
         .set_default(
             "mantle_base_url_template",
             "https://bedrock-mantle.{region}.api.aws/openai/v1",
+        )
+        .unwrap()
+        .set_default(
+            "mantle_chat_base_url_template",
+            "https://bedrock-mantle.{region}.api.aws/v1",
         )
         .unwrap();
 
@@ -449,6 +479,11 @@ fn bare_env_overrides_map_to_typed_fields() {
         .set_override(
             "mantle_base_url_template",
             "https://bedrock-mantle.{region}.api.aws/openai/v1",
+        )
+        .unwrap()
+        .set_override(
+            "mantle_chat_base_url_template",
+            "https://bedrock-mantle.{region}.api.aws/v1",
         )
         .unwrap();
 
