@@ -432,7 +432,10 @@ impl ResponsesStreamState {
                 }
             }
 
-            // metadata → capture final usage; completed is emitted at recv end.
+            // AWS defines metadata as the final ConverseStream protocol event.
+            // Capture usage here, then finalize below without waiting for the
+            // HTTP event-stream transport to yield EOF (it may remain open for
+            // connection reuse).
             ConverseStreamOutput::Metadata(ev) => {
                 if let Some(usage) = ev.usage() {
                     self.usage = Some(usage_to_json(usage));
@@ -444,6 +447,9 @@ impl ResponsesStreamState {
         }
 
         self.tally(&out);
+        if matches!(event, ConverseStreamOutput::Metadata(_)) {
+            out.extend(self.finish());
+        }
         out
     }
 
@@ -1116,6 +1122,12 @@ pub(crate) fn converse_stream_to_openai_responses(
                 Ok(Ok(Some(event))) => {
                     for ev in state.map_event(&event) {
                         yield Ok(ev);
+                    }
+                    // `metadata` is the last modeled ConverseStream event. The
+                    // state finalizes while mapping it; stop polling the AWS
+                    // receiver so the downstream SSE body closes immediately.
+                    if state.finalized {
+                        break;
                     }
                 }
                 Ok(Ok(None)) => {
