@@ -1,0 +1,20 @@
+{
+  "enabled": true,
+  "namespace": "caela.internal",
+  "services": [
+    {
+      "portName": "api-port",
+      "discoveryName": "bedrock-rust",
+      "clientAliases": [
+        {
+          "port": 8080,
+          "dnsName": "bedrock-rust"
+        }
+      ],
+      "timeout": {
+        "idleTimeoutSeconds": 300,
+        "perRequestTimeoutSeconds": 0
+      }
+    }
+  ]
+}

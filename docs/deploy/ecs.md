@@ -154,6 +154,49 @@ region — if you get a Bedrock access error for an on-demand model ID, try the 
 with the region's inference-profile prefix (e.g. `us.anthropic.claude-...` or
 `apac.anthropic.claude-...`) instead of the bare model ID.
 
+### Service Connect and streaming timeouts
+
+The supplied CloudFormation template does not enable ECS Service Connect. If you add it
+to an existing service, configure its HTTP timeouts explicitly. AWS otherwise applies a
+**15-second per-request timeout**, which can cut a healthy SSE response in the middle of
+a tool call. Clients may then retry the incomplete turn and appear to repeat assistant
+text or tool calls indefinitely.
+
+For this streaming gateway, disable the total request deadline and retain an idle
+deadline at least as large as the gateway's 180-second upstream idle timeout:
+
+```json
+"timeout": {
+  "idleTimeoutSeconds": 300,
+  "perRequestTimeoutSeconds": 0
+}
+```
+
+A complete reusable service configuration is checked in at
+`deployment/service-connect-streaming.json`. Replace its namespace and aliases for your
+environment, then update the service:
+
+```bash
+aws ecs update-service \
+  --cluster bedrock-gateway \
+  --service bedrock-gateway \
+  --service-connect-configuration file://deployment/service-connect-streaming.json
+```
+
+Validate an existing ECS service before or after deployment:
+
+```bash
+aws ecs describe-services \
+  --cluster bedrock-gateway \
+  --services bedrock-gateway \
+  --output json > /tmp/ecs-service.json
+
+scripts/check-ecs-service-connect-timeouts.sh /tmp/ecs-service.json
+```
+
+The validator deliberately fails when `perRequestTimeoutSeconds` is absent: omission is
+not unlimited; it selects the unsafe AWS 15-second default.
+
 ---
 
 ## High availability
@@ -176,4 +219,6 @@ API key itself.
 ## Notes
 
 - Lambda has a 10-minute maximum timeout. For workloads with long streaming sessions,
-  ECS/Fargate is the right choice — no timeout cap applies.
+  ECS/Fargate is the right choice, provided every HTTP hop is configured for streaming.
+  The supplied ALB uses a 600-second idle timeout; if Service Connect is enabled, follow
+  the timeout contract above.
