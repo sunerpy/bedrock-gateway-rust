@@ -41,6 +41,7 @@ port = 8080 # Server port
 # Tune how the underlying AWS SDK client handles slow or transient failures.
 aws_connect_timeout_secs = 60 # max seconds to establish a TCP connection to AWS before failing
 aws_read_timeout_secs = 900 # max seconds to wait for response bytes (900 = 15 min, accommodates long streams)
+responses_stream_idle_timeout_secs = 180 # max silence between Bedrock Responses events before emitting response.failed
 aws_max_retry_attempts = 8 # how many times to retry a request on transient (throttling/5xx) failures
 
 # Secrets Configuration (Optional)

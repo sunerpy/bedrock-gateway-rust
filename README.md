@@ -241,6 +241,7 @@ Prefer fetching `API_KEY` from a secrets store. Priority order:
 | -------------------------- | ------- | --------------------------------------------------------- |
 | `AWS_CONNECT_TIMEOUT_SECS` | `60`    | TCP connection timeout to AWS                             |
 | `AWS_READ_TIMEOUT_SECS`    | `900`   | Response read timeout (15 min, accommodates long streams) |
+| `RESPONSES_STREAM_IDLE_TIMEOUT_SECS` | `180` | Maximum silence between upstream Responses events before a terminal `response.failed` |
 | `AWS_MAX_RETRY_ATTEMPTS`   | `8`     | Retries on transient throttling or 5xx failures           |
 
 **GPT-5.x / bedrock-mantle**
