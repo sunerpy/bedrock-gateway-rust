@@ -63,7 +63,12 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::bedrock::responses_response::from_converse_output_to_responses;
+use crate::bedrock::responses_response::{
+    from_converse_output_to_responses_with_tools, tool_output_item,
+};
+use crate::bedrock::responses_translate::{
+    encode_reasoning_envelope, ResponsesToolKind, ResponsesToolRegistry,
+};
 use crate::domain::ResponsesStream;
 use crate::error::{from_bedrock_sdk_error, AppError};
 use crate::openai::responses_schema::{
@@ -114,6 +119,7 @@ pub struct ResponsesStreamState {
     response_id: String,
     /// The originating request (echoed params for the final Response).
     request: ResponsesRequest,
+    tool_registry: ResponsesToolRegistry,
 
     /// Next monotonic sequence number (emit-only; never validated).
     seq: u64,
@@ -130,6 +136,8 @@ pub struct ResponsesStreamState {
     reasoning_output_index: u32,
     /// Accumulated reasoning text (for the `reasoning_text.done` + final item).
     reasoning_text: String,
+    reasoning_signature: Option<String>,
+    reasoning_redacted: Vec<String>,
 
     // --- message item state ---
     /// Whether a message output item is currently open.
@@ -184,16 +192,37 @@ impl ResponsesStreamState {
         request_id: Arc<str>,
         start: Instant,
     ) -> Self {
+        Self::new_with_tools(
+            model,
+            response_id,
+            request,
+            request_id,
+            start,
+            ResponsesToolRegistry::default(),
+        )
+    }
+
+    fn new_with_tools(
+        model: String,
+        response_id: String,
+        request: ResponsesRequest,
+        request_id: Arc<str>,
+        start: Instant,
+        tool_registry: ResponsesToolRegistry,
+    ) -> Self {
         Self {
             model,
             response_id,
             request,
+            tool_registry,
             seq: 0,
             next_output_index: 0,
             started: false,
             reasoning_open: false,
             reasoning_output_index: 0,
             reasoning_text: String::new(),
+            reasoning_signature: None,
+            reasoning_redacted: Vec::new(),
             message_open: false,
             message_output_index: 0,
             message_text: String::new(),
@@ -306,12 +335,25 @@ impl ResponsesStreamState {
                         output_index,
                         closed: false,
                     };
-                    let seq = self.next_seq();
-                    out.push(ResponseStreamEvent::OutputItemAdded {
-                        item: function_call_item(&accum, None),
-                        output_index,
-                        sequence_number: seq,
-                    });
+                    let delay_added =
+                        self.tool_registry
+                            .resolve(&accum.name)
+                            .is_some_and(|binding| {
+                                matches!(
+                                    binding.kind,
+                                    ResponsesToolKind::LocalShell
+                                        | ResponsesToolKind::Shell
+                                        | ResponsesToolKind::ApplyPatch
+                                )
+                            });
+                    if !delay_added {
+                        let seq = self.next_seq();
+                        out.push(ResponseStreamEvent::OutputItemAdded {
+                            item: tool_item(&self.tool_registry, &accum, None),
+                            output_index,
+                            sequence_number: seq,
+                        });
+                    }
                     self.tools.push((block_index, accum));
                 }
             }
@@ -400,6 +442,19 @@ impl ResponsesStreamState {
                     sequence_number: seq,
                 });
             }
+            ContentBlockDelta::ReasoningContent(ReasoningContentBlockDelta::Signature(
+                signature,
+            )) => {
+                self.reasoning_signature = Some(signature.clone());
+            }
+            ContentBlockDelta::ReasoningContent(ReasoningContentBlockDelta::RedactedContent(
+                redacted,
+            )) => {
+                use base64::Engine as _;
+                self.ensure_reasoning_item(out);
+                self.reasoning_redacted
+                    .push(base64::engine::general_purpose::STANDARD.encode(redacted.as_ref()));
+            }
 
             // Tool input fragment → accumulate; the item.done is emitted on
             // contentBlockStop / messageStop with the full arguments.
@@ -407,6 +462,20 @@ impl ResponsesStreamState {
                 if let Some((_, accum)) = self.tools.iter_mut().find(|(idx, _)| *idx == block_index)
                 {
                     accum.arguments.push_str(tool_delta.input());
+                    let accum = accum.clone();
+                    if self
+                        .tool_registry
+                        .resolve(&accum.name)
+                        .is_none_or(|binding| binding.kind == ResponsesToolKind::Function)
+                    {
+                        let seq = self.next_seq();
+                        out.push(ResponseStreamEvent::FunctionCallArgumentsDelta {
+                            item_id: format!("fc_{}", accum.call_id),
+                            output_index: accum.output_index,
+                            delta: tool_delta.input().to_string(),
+                            sequence_number: seq,
+                        });
+                    }
                 }
             }
 
@@ -436,6 +505,7 @@ impl ResponsesStreamState {
                 id: self.reasoning_item_id(),
                 content: None,
                 summary: Some(json!([])),
+                encrypted_content: None,
             },
             output_index: self.reasoning_output_index,
             sequence_number: seq,
@@ -447,6 +517,28 @@ impl ResponsesStreamState {
             summary_index: REASONING_SUMMARY_INDEX,
             sequence_number: seq,
         });
+    }
+
+    fn reasoning_blocks(&self) -> Vec<Value> {
+        let mut blocks = Vec::new();
+        if !self.reasoning_text.is_empty() {
+            blocks.push(json!({
+                "reasoningContent": { "reasoningText": {
+                    "text": self.reasoning_text,
+                    "signature": self.reasoning_signature,
+                } }
+            }));
+        }
+        blocks.extend(
+            self.reasoning_redacted
+                .iter()
+                .map(|data| json!({ "reasoningContent": { "redactedContent": data } })),
+        );
+        blocks
+    }
+
+    fn reasoning_encrypted_content(&self) -> Option<String> {
+        encode_reasoning_envelope(&self.reasoning_blocks())
     }
 
     /// Close the reasoning item if open: `reasoning_text.done` →
@@ -487,6 +579,7 @@ impl ResponsesStreamState {
                 summary: Some(
                     json!([{ "type": "summary_text", "text": self.reasoning_text.clone() }]),
                 ),
+                encrypted_content: self.reasoning_encrypted_content(),
             },
             output_index: self.reasoning_output_index,
             sequence_number: seq,
@@ -578,28 +671,66 @@ impl ResponsesStreamState {
         }
         self.tools[pos].1.closed = true;
         let accum = self.tools[pos].1.clone();
+        if self
+            .tool_registry
+            .resolve(&accum.name)
+            .is_some_and(|binding| {
+                matches!(
+                    binding.kind,
+                    ResponsesToolKind::LocalShell
+                        | ResponsesToolKind::Shell
+                        | ResponsesToolKind::ApplyPatch
+                )
+            })
+        {
+            let seq = self.next_seq();
+            out.push(ResponseStreamEvent::OutputItemAdded {
+                item: tool_item(&self.tool_registry, &accum, Some("in_progress")),
+                output_index: accum.output_index,
+                sequence_number: seq,
+            });
+        }
+        match self.tool_registry.resolve(&accum.name).map(|b| &b.kind) {
+            None | Some(ResponsesToolKind::Function) => {
+                let seq = self.next_seq();
+                out.push(ResponseStreamEvent::FunctionCallArgumentsDone {
+                    item_id: format!("fc_{}", accum.call_id),
+                    output_index: accum.output_index,
+                    arguments: normalized_arguments(&accum),
+                    name: self
+                        .tool_registry
+                        .resolve(&accum.name)
+                        .map_or_else(|| accum.name.clone(), |b| b.client_name.clone()),
+                    sequence_number: seq,
+                });
+            }
+            Some(ResponsesToolKind::Custom) => {
+                let seq = self.next_seq();
+                let input = parsed_tool_input(&accum)
+                    .get("input")
+                    .cloned()
+                    .unwrap_or_else(|| json!(normalized_arguments(&accum)));
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("input".to_string(), input);
+                fields.insert(
+                    "item_id".to_string(),
+                    json!(format!("ct_{}", accum.call_id)),
+                );
+                fields.insert("output_index".to_string(), json!(accum.output_index));
+                fields.insert("sequence_number".to_string(), json!(seq));
+                out.push(ResponseStreamEvent::Other {
+                    event_type: "response.custom_tool_call_input.done".to_string(),
+                    fields,
+                });
+            }
+            _ => {}
+        }
         let seq = self.next_seq();
         out.push(ResponseStreamEvent::OutputItemDone {
-            item: function_call_item(&accum, Some("completed")),
+            item: tool_item(&self.tool_registry, &accum, Some("completed")),
             output_index: accum.output_index,
             sequence_number: seq,
         });
-    }
-
-    /// Flush any tool blocks that were opened (`output_item.added`) but never
-    /// received a `contentBlockStop` — a truncated stream (e.g. a `max_tokens`
-    /// cut mid tool call) may omit the stop. Emits the pending
-    /// `output_item.done` for each so the function_call is never dropped (#8).
-    fn close_all_open_tool_blocks(&mut self, out: &mut Vec<ResponseStreamEvent>) {
-        let open: Vec<i32> = self
-            .tools
-            .iter()
-            .filter(|(_, accum)| !accum.closed)
-            .map(|(idx, _)| *idx)
-            .collect();
-        for block_index in open {
-            self.close_tool_block(block_index, out);
-        }
     }
 
     /// Finalize the stream after the receiver is exhausted: close any items
@@ -618,7 +749,8 @@ impl ResponsesStreamState {
         // function_call items (#8 flushes tool blocks left open at truncation).
         self.close_message_item(&mut out);
         self.close_reasoning_item(&mut out);
-        self.close_all_open_tool_blocks(&mut out);
+        // Never synthesize output_item.done for a tool block Bedrock did not
+        // close. Doing so turns truncated JSON into an executable tool call.
         self.finalized = true;
 
         let response = self.build_final_response();
@@ -644,10 +776,17 @@ impl ResponsesStreamState {
             "responses streaming completed"
         );
         let seq = self.next_seq();
-        out.push(ResponseStreamEvent::Completed {
-            response,
-            sequence_number: seq,
-        });
+        if response.status == "incomplete" {
+            out.push(ResponseStreamEvent::Incomplete {
+                response,
+                sequence_number: seq,
+            });
+        } else {
+            out.push(ResponseStreamEvent::Completed {
+                response,
+                sequence_number: seq,
+            });
+        }
         self.tally(&out);
         let event_types = self
             .event_type_counts
@@ -698,11 +837,7 @@ impl ResponsesStreamState {
     /// final-Response assembly or the usage formula.
     fn build_final_response(&self) -> ResponsesResponse {
         let mut content: Vec<Value> = Vec::new();
-        if !self.reasoning_text.is_empty() {
-            content.push(json!({
-                "reasoningContent": { "reasoningText": { "text": self.reasoning_text } }
-            }));
-        }
+        content.extend(self.reasoning_blocks());
         if !self.message_text.is_empty() {
             content.push(json!({ "text": self.message_text }));
         }
@@ -735,12 +870,18 @@ impl ResponsesStreamState {
         // Reuse the non-stream assembly (T10). On the unexpected error path
         // (malformed reconstruction), fall back to a minimal completed envelope
         // so the stream still terminates cleanly.
-        from_converse_output_to_responses(&output, &self.request, &self.model, &self.response_id)
-            .unwrap_or_else(|_| {
-                let mut resp = self.in_progress_response();
-                resp.status = "completed".to_string();
-                resp
-            })
+        from_converse_output_to_responses_with_tools(
+            &output,
+            &self.request,
+            &self.model,
+            &self.response_id,
+            &self.tool_registry,
+        )
+        .unwrap_or_else(|_| {
+            let mut resp = self.in_progress_response();
+            resp.status = "completed".to_string();
+            resp
+        })
     }
 }
 
@@ -750,19 +891,43 @@ impl ResponsesStreamState {
 /// `output_item.added` (ai-sdk's added-chunk schema has no status) and
 /// `Some("completed")` on `output_item.done` (ai-sdk's done-chunk schema
 /// REQUIRES `status: z.literal("completed")`).
-fn function_call_item(accum: &ToolAccum, status: Option<&str>) -> ResponseOutputItem {
-    let arguments = if accum.arguments.trim().is_empty() {
+fn normalized_arguments(accum: &ToolAccum) -> String {
+    if accum.arguments.trim().is_empty() {
         "{}".to_string()
     } else {
         accum.arguments.clone()
-    };
-    ResponseOutputItem::FunctionCall {
-        id: Some(format!("fc_{}", accum.call_id)),
-        call_id: accum.call_id.clone(),
-        name: accum.name.clone(),
-        arguments,
-        status: status.map(str::to_string),
     }
+}
+
+fn parsed_tool_input(accum: &ToolAccum) -> Value {
+    serde_json::from_str(&normalized_arguments(accum)).unwrap_or_else(|_| json!({}))
+}
+
+fn tool_item(
+    registry: &ResponsesToolRegistry,
+    accum: &ToolAccum,
+    status: Option<&str>,
+) -> ResponseOutputItem {
+    let arguments = normalized_arguments(accum);
+    let status = status.or_else(|| {
+        registry
+            .resolve(&accum.name)
+            .filter(|binding| {
+                matches!(
+                    binding.kind,
+                    ResponsesToolKind::Shell | ResponsesToolKind::ApplyPatch
+                )
+            })
+            .map(|_| "in_progress")
+    });
+    tool_output_item(
+        registry,
+        &accum.call_id,
+        &accum.name,
+        &parsed_tool_input(accum),
+        arguments,
+        status,
+    )
 }
 
 /// Convert a Bedrock `TokenUsage` into the Converse-output `usage` JSON shape the
@@ -810,17 +975,25 @@ fn now_unix_secs() -> i64 {
 ///
 /// No timeout wraps the loop — applying one would sever the connection. (The
 /// route-level KeepAlive / timeout policy is T13's concern, not this module's.)
-pub fn converse_stream_to_openai_responses(
+pub(crate) fn converse_stream_to_openai_responses(
     output: ConverseStreamOutputOp,
     model: String,
     response_id: String,
     request: ResponsesRequest,
     request_id: Arc<str>,
     start: Instant,
+    tool_registry: ResponsesToolRegistry,
 ) -> ResponsesStream {
     let s = stream! {
         let mut receiver = output.stream;
-        let mut state = ResponsesStreamState::new(model, response_id, request, request_id, start);
+        let mut state = ResponsesStreamState::new_with_tools(
+            model,
+            response_id,
+            request,
+            request_id,
+            start,
+            tool_registry,
+        );
         loop {
             match receiver.recv().await {
                 Ok(Some(event)) => {

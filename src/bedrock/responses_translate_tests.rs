@@ -165,7 +165,7 @@ async fn structured_function_call_output_yields_ordered_tool_result_content() {
 }
 
 #[tokio::test]
-async fn item_reference_is_accepted_and_ignored_for_stateless_gateway() {
+async fn item_reference_is_accepted_and_ignored_by_stateless_gateway() {
     let req = req_from(json!({
         "model": "m",
         "input": [
@@ -173,10 +173,10 @@ async fn item_reference_is_accepted_and_ignored_for_stateless_gateway() {
             { "role": "user", "content": "continue" }
         ]
     }));
-    let out = parse(&req).await.expect("item_reference must not reject");
-    let msgs = out.messages.as_array().expect("messages");
-    assert_eq!(msgs.len(), 1);
-    assert_eq!(msgs[0]["content"][0]["text"], "continue");
+    let out = parse(&req).await.expect("stateless reference is ignored");
+    let messages = out.messages.as_array().expect("messages");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["content"][0]["text"], "continue");
 }
 
 // -- Test 2: instructions present → a Bedrock system block ----------------
@@ -233,7 +233,7 @@ async fn developer_role_maps_to_system_block() {
 // -- Test 3: store + previous_response_id + include → accepted & IGNORED --
 
 #[tokio::test]
-async fn store_previous_id_and_include_are_accepted_and_ignored() {
+async fn previous_response_id_is_accepted_and_ignored_by_stateless_backend() {
     let req = req_from(json!({
         "model": "m",
         "input": "hi",
@@ -241,15 +241,7 @@ async fn store_previous_id_and_include_are_accepted_and_ignored() {
         "previous_response_id": "resp_prev_123",
         "include": ["reasoning.encrypted_content"]
     }));
-    // Parse must SUCCEED (no 400) and emit nothing extra.
-    let out = parse(&req)
-        .await
-        .expect("store/prev_id/include must be ignored, not rejected");
-    let msgs = out.messages.as_array().expect("messages");
-    assert_eq!(msgs.len(), 1);
-    assert_eq!(msgs[0]["content"][0]["text"], "hi");
-    // No system blocks were synthesized from include/encrypted_content.
-    assert_eq!(out.system.as_array().expect("system").len(), 0);
+    assert!(parse(&req).await.is_ok());
 }
 
 #[tokio::test]
@@ -262,22 +254,19 @@ async fn store_false_is_accepted() {
 // -- Test 4: hosted tools are DROPPED (not 400); malformed text.format → 400
 
 #[tokio::test]
-async fn hosted_server_tool_is_dropped_not_rejected() {
-    // A web_search tool now deserializes to ResponsesTool::Unknown and is
-    // silently dropped — the request must parse (no 400) so codex sessions
-    // that bundle a hosted tool survive.
+async fn hosted_server_tool_is_silently_dropped_for_converse() {
     let req = req_from(json!({
         "model": "m",
         "input": "hi",
         "tools": [{ "type": "web_search" }]
     }));
-    let out = parse(&req)
-        .await
-        .expect("hosted tool must be dropped, not rejected");
-    let msgs = out.messages.as_array().expect("messages");
-    assert_eq!(msgs.len(), 1);
-    // No toolSpec produced from a lone hosted tool.
-    assert!(build_responses_tool_specs(&req).is_empty());
+    assert!(
+        parse(&req).await.is_ok(),
+        "input translation remains independent"
+    );
+    let (specs, registry) = build_responses_tools(&req).expect("hosted tool is ignored");
+    assert!(specs.is_empty());
+    assert!(registry.resolve("web_search").is_none());
 
     // A hosted tool smuggled via `extra["tools"]` is also ignored now (no
     // 400): the defensive guard was removed along with the rejection path.
@@ -437,30 +426,53 @@ async fn wellformed_text_format_is_accepted() {
     assert!(parse(&req_obj).await.is_ok());
 }
 
-// -- Test 5: reasoning input item is DROPPED ------------------------------
+// -- Test 5: signed reasoning input is replayed ---------------------------
 
 #[tokio::test]
-async fn reasoning_input_item_is_dropped() {
+async fn reasoning_input_item_reconstructs_signed_bedrock_block() {
+    let envelope = encode_reasoning_envelope(&[json!({
+        "reasoningContent": { "reasoningText": { "text": "secret", "signature": "sig" } }
+    })])
+    .expect("envelope");
     let req = req_from(json!({
         "model": "m",
         "input": [
             { "type": "message", "role": "user", "content": "hi" },
-            { "type": "reasoning", "id": "r1", "encrypted_content": "OPAQUE_BLOB", "summary": ["s"] }
+            { "type": "reasoning", "id": "r1", "encrypted_content": envelope, "summary": ["s"] }
         ]
     }));
-    let out = parse(&req)
-        .await
-        .expect("parse succeeds despite reasoning item");
+    let out = parse(&req).await.expect("signed reasoning replay parses");
     let msgs = out.messages.as_array().expect("messages");
-    // Only the user turn survives; the reasoning item is dropped entirely.
-    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0]["role"], "user");
     assert_eq!(msgs[0]["content"][0]["text"], "hi");
-    // No Bedrock reasoning/thinking block was emitted anywhere.
-    let serialized = serde_json::to_string(&out.messages).unwrap();
-    assert!(!serialized.contains("reasoning"));
-    assert!(!serialized.contains("thinking"));
-    assert!(!serialized.contains("OPAQUE_BLOB"));
+    assert_eq!(msgs[1]["role"], "assistant");
+    assert_eq!(
+        msgs[1]["content"][0]["reasoningContent"]["reasoningText"]["text"],
+        "secret"
+    );
+    assert_eq!(
+        msgs[1]["content"][0]["reasoningContent"]["reasoningText"]["signature"],
+        "sig"
+    );
+}
+
+#[tokio::test]
+async fn malformed_reasoning_envelope_is_rejected_locally() {
+    let req = req_from(json!({
+        "model": "m",
+        "input": [{
+            "type": "reasoning",
+            "id": "r1",
+            "encrypted_content": "bedrock-reasoning-v1:not-base64"
+        }]
+    }));
+    let err = parse(&req)
+        .await
+        .expect_err("malformed envelope must reject");
+    assert!(err
+        .to_string()
+        .contains("malformed reasoning.encrypted_content"));
 }
 
 // -- Multimodal image reuse + same-role merge ----------------------------

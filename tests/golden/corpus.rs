@@ -616,7 +616,7 @@ fn stream_reasoning_think_sequence() {
 #[test]
 fn stream_think_open_at_stop_closes() {
     // No metadata event ⇒ no usage chunk regardless of include_usage; the open
-    // <think> is closed at messageStop and the finish_reason is deferred (parity).
+    // <think> is closed at messageStop without losing the terminal finish_reason.
     run_stream(
         "think_open_at_stop_closes",
         "anthropic.claude-3-sonnet-v1:0",
@@ -947,14 +947,10 @@ fn assert_responses_stream(
         }
     }
 
-    // No [DONE] sentinel, no function_call_arguments.* events anywhere.
+    // Responses streams never use the Chat-style [DONE] sentinel.
     for ev in actual {
         let s = serde_json::to_string(ev).expect("string");
         assert!(!s.contains("[DONE]"), "{case}: [DONE] sentinel leaked: {s}");
-        assert!(
-            !s.contains("function_call_arguments"),
-            "{case}: function_call_arguments event leaked: {s}"
-        );
     }
 
     // response.completed carries the FULL final Response (output + usage).
@@ -1009,9 +1005,8 @@ fn responses_stream_text() {
 
 #[test]
 fn responses_stream_tool() {
-    // Tool lifecycle: created → in_progress → output_item.added(function_call)
-    // → output_item.done(function_call, full JSON args) → completed. NO
-    // function_call_arguments.delta — codex reconstructs from add/done.
+    // Tool lifecycle includes the official function-call arguments delta/done
+    // events before output_item.done and response.completed.
     run_responses_stream("responses_tool", &[]);
 }
 
@@ -1110,40 +1105,22 @@ fn negative_responses_stream_reordered_is_rejected() {
     );
 }
 
-/// Negative control (streaming): if the expected stream is corrupted to contain
-/// a `function_call_arguments.delta` event, driving the REAL state machine (which
-/// never emits one) must produce a mismatch — proving the corpus pins the
-/// no-arg-delta invariant.
+/// Negative control (streaming): removing an official argument delta from the
+/// expected stream must produce a mismatch.
 #[test]
-fn negative_responses_stream_arg_delta_absent_from_machine() {
+fn negative_responses_stream_missing_arg_delta_is_rejected() {
     let actual = drive_responses_stream("responses_tool");
-    // The real machine emits no function_call_arguments.* event.
-    for ev in &actual {
-        let s = serde_json::to_string(ev).expect("string");
-        assert!(
-            !s.contains("function_call_arguments"),
-            "state machine unexpectedly emitted function_call_arguments: {s}"
-        );
-    }
-    // A doctored expected stream that DOES contain such an event differs in
-    // both count and type ordering → comparator rejects it.
+    assert!(actual.iter().any(|event| {
+        event.get("type").and_then(Value::as_str) == Some("response.function_call_arguments.delta")
+    }));
     let mut doctored = load_responses_events("responses_tool");
-    doctored.insert(
-        3,
-        json!({
-            "type": "response.function_call_arguments.delta",
-            "item_id": "fc_call-1",
-            "output_index": 0,
-            "delta": "{",
-            "sequence_number": 3
-        }),
-    );
+    doctored.remove(3);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         assert_responses_stream("responses_tool", &doctored, &actual, &[]);
     }));
     assert!(
         result.is_err(),
-        "comparator MUST reject an injected function_call_arguments.delta event"
+        "comparator MUST reject a missing function_call_arguments.delta event"
     );
 }
 

@@ -30,6 +30,100 @@ fn req() -> ResponsesRequest {
     }
 }
 
+#[test]
+fn custom_and_client_shell_tools_preserve_responses_item_types() {
+    let cases = [
+        (
+            json!({"type":"custom","name":"bash"}),
+            "bash",
+            json!({"input":"pwd"}),
+            "custom_tool_call",
+            "input",
+        ),
+        (
+            json!({"type":"local_shell"}),
+            "local_shell",
+            json!({"action":{"type":"exec","command":["pwd"]}}),
+            "local_shell_call",
+            "action",
+        ),
+        (
+            json!({"type":"shell"}),
+            "shell",
+            json!({"commands":["pwd"]}),
+            "shell_call",
+            "action",
+        ),
+        (
+            json!({"type":"apply_patch"}),
+            "apply_patch",
+            json!({"operation":{"type":"create_file","path":"a"}}),
+            "apply_patch_call",
+            "operation",
+        ),
+    ];
+    for (tool, bedrock_name, input, expected_type, payload_key) in cases {
+        let mut request = req();
+        request.tools = Some(vec![serde_json::from_value(tool).expect("tool")]);
+        let (_, registry) = crate::bedrock::responses_translate::build_responses_tools(&request)
+            .expect("build tools");
+        let output = json!({
+            "output": { "message": { "role": "assistant", "content": [{
+                "toolUse": { "toolUseId": "call_1", "name": bedrock_name, "input": input }
+            }] } },
+            "stopReason": "tool_use",
+            "usage": { "inputTokens": 1, "outputTokens": 1, "totalTokens": 2 }
+        });
+        let response = from_converse_output_to_responses_with_tools(
+            &output,
+            &request,
+            "m",
+            "resp_tools",
+            &registry,
+        )
+        .expect("map");
+        match &response.output[0] {
+            ResponseOutputItem::Other { item_type, fields } => {
+                assert_eq!(item_type, expected_type);
+                assert_eq!(fields["call_id"], "call_1");
+                assert!(fields.contains_key(payload_key));
+                if matches!(expected_type, "shell_call" | "apply_patch_call") {
+                    assert_eq!(fields["status"], "completed");
+                } else {
+                    assert!(!fields.contains_key("status"));
+                }
+                if expected_type != "custom_tool_call" {
+                    assert!(!fields.contains_key("name"));
+                }
+            }
+            other => panic!("expected typed client tool item, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn signed_reasoning_emits_replayable_encrypted_content() {
+    let output = json!({
+        "output": { "message": { "role": "assistant", "content": [{
+            "reasoningContent": { "reasoningText": { "text": "think", "signature": "sig" } }
+        }] } },
+        "stopReason": "tool_use",
+        "usage": { "inputTokens": 1, "outputTokens": 1, "totalTokens": 2 }
+    });
+    let response = from_converse_output_to_responses(&output, &req(), "m", "resp_reason")
+        .expect("map reasoning");
+    match &response.output[0] {
+        ResponseOutputItem::Reasoning {
+            encrypted_content, ..
+        } => {
+            assert!(encrypted_content
+                .as_deref()
+                .is_some_and(|value| value.starts_with("bedrock-reasoning-v1:")));
+        }
+        other => panic!("expected reasoning, got {other:?}"),
+    }
+}
+
 // -- Test 1: text output → message item with output_text; no <think> ------
 
 #[test]

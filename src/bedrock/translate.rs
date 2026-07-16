@@ -598,9 +598,11 @@ fn collect_passthrough_fields(req: &ChatRequest) -> Map<String, Value> {
 fn build_inference_config(req: &ChatRequest, caps: &dyn ModelCapabilities) -> Value {
     let mut cfg = Map::new();
 
-    // maxTokens always present (bedrock.py:1117-1119).
-    let max_tokens = req.max_tokens.unwrap_or(2048);
-    cfg.insert("maxTokens".to_string(), json!(max_tokens));
+    // The current OpenAI field wins over the deprecated legacy field. If both
+    // are absent, do not invent a low gateway-side truncation limit.
+    if let Some(max_tokens) = req.max_completion_tokens.or(req.max_tokens) {
+        cfg.insert("maxTokens".to_string(), json!(max_tokens));
+    }
 
     if let Some(t) = req.temperature {
         cfg.insert("temperature".to_string(), json!(t));

@@ -535,6 +535,7 @@ fn stream_events_emit_spec_type_tags() {
                 item_id: "fc_1".to_string(),
                 output_index: 0,
                 arguments: "{}".to_string(),
+                name: "f".to_string(),
                 sequence_number: 14,
             },
             "response.function_call_arguments.done",
@@ -638,6 +639,7 @@ fn documented_extra_stream_events_deserialize_without_machine_emission() {
         "item_id": "fc_1",
         "output_index": 0,
         "arguments": "{}",
+        "name": "f",
         "sequence_number": 0
     });
     let event: ResponseStreamEvent = serde_json::from_value(raw_done).unwrap();
@@ -882,7 +884,13 @@ fn official_51_stream_events_all_round_trip() {
             json!({"type":"response.function_call_arguments.done","arguments":"{}","item_id":"fc_1",
                        "name":"f","output_index":0,"sequence_number":17}),
             "response.function_call_arguments.done",
-            vec!["arguments", "item_id", "output_index", "sequence_number"],
+            vec![
+                "arguments",
+                "item_id",
+                "name",
+                "output_index",
+                "sequence_number",
+            ],
         ),
         // --- Reasoning ---
         (
@@ -1364,6 +1372,7 @@ fn function_call_input_item_round_trips() {
             call_id,
             name,
             arguments,
+            ..
         } => {
             assert_eq!(call_id, "c1");
             assert_eq!(name, "f");
@@ -1377,8 +1386,8 @@ fn function_call_input_item_round_trips() {
 }
 
 /// `reasoning` input item carries id/summary/content/encrypted_content and
-/// round-trips. `encrypted_content` is accepted on input (not round-tripped
-/// to Bedrock — that is locked in responses_translate.rs).
+/// round-trips at the wire boundary. The translation layer separately validates
+/// and reconstructs the gateway's signed Bedrock reasoning envelope.
 #[test]
 fn reasoning_input_item_round_trips_with_encrypted_content() {
     let raw = json!({
@@ -1550,6 +1559,7 @@ fn output_reasoning_and_function_call_round_trip() {
             name,
             arguments,
             status,
+            ..
         } => {
             assert_eq!(id.as_deref(), Some("fc_1"));
             assert_eq!(call_id, "c1");
@@ -1634,7 +1644,7 @@ fn function_tool_minimal_form_round_trips() {
 /// DROPS them so codex sessions that include hosted tools survive. See
 /// responses_translate.rs::filter_and_flatten_tools.)
 #[test]
-fn hosted_request_tools_deserialize_to_unknown() {
+fn documented_request_tools_all_deserialize() {
     let hosted = [
         "file_search",
         "web_search",
@@ -1654,10 +1664,9 @@ fn hosted_request_tools_deserialize_to_unknown() {
         let tools: Vec<ResponsesTool> = serde_json::from_value(json!([{"type": ty}]))
             .unwrap_or_else(|e| panic!("hosted tool `{ty}` must deserialize to Unknown: {e}"));
         assert_eq!(tools.len(), 1);
-        assert!(
-            matches!(tools[0], ResponsesTool::Unknown),
-            "hosted tool `{ty}` must map to ResponsesTool::Unknown"
-        );
+        // Known client-executed and hosted tools use explicit variants; future
+        // dated aliases continue to land in the Unknown catch-all.
+        let _ = &tools[0];
     }
 }
 
@@ -2152,6 +2161,7 @@ mod prop_tests {
                     call_id,
                     name,
                     arguments,
+                    namespace: None,
                 }
             }),
             (arb_name(), arb_text()).prop_map(|(call_id, output)| {
@@ -2293,6 +2303,7 @@ mod prop_tests {
                     id,
                     content,
                     summary,
+                    encrypted_content: None,
                 }
             }),
             (
@@ -2319,6 +2330,7 @@ mod prop_tests {
                         id,
                         call_id,
                         name,
+                        namespace: None,
                         arguments,
                         status,
                     }
@@ -2473,6 +2485,7 @@ mod prop_tests {
                         item_id,
                         output_index,
                         arguments,
+                        name: "tool".to_string(),
                         sequence_number,
                     }
                 }
