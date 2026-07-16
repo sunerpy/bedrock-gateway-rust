@@ -67,6 +67,18 @@ pub struct ResponsesRequest {
     pub extra: HashMap<String, Value>,
 }
 
+impl ResponsesRequest {
+    /// Requested reasoning effort for observability, using `default` when the
+    /// client leaves model selection to the upstream.
+    #[must_use]
+    pub fn reasoning_effort_label(&self) -> &str {
+        self.reasoning
+            .as_ref()
+            .and_then(|reasoning| reasoning.effort.as_deref())
+            .unwrap_or("default")
+    }
+}
+
 /// The `input` field accepts either a plain string or an array of input items.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -662,6 +674,16 @@ pub struct ResponsesUsage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens_details: Option<OutputTokensDetails>,
     pub total_tokens: i32,
+}
+
+impl ResponsesUsage {
+    /// Number of hidden reasoning tokens reported by the upstream.
+    #[must_use]
+    pub fn reasoning_tokens(&self) -> i32 {
+        self.output_tokens_details
+            .as_ref()
+            .map_or(0, |details| details.reasoning_tokens)
+    }
 }
 
 // ---------------------------------------------------------------------------

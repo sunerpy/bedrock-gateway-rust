@@ -34,7 +34,49 @@ use reqwest::StatusCode;
 
 use crate::error::AppError;
 
-const MAX_SSE_LINE_BYTES: usize = 8 * 1024;
+// Terminal Responses events contain the complete response object. Keep enough
+// of that single SSE data line to parse usage while retaining a hard memory cap.
+const MAX_SSE_LINE_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResponsesStreamTerminal {
+    pub(crate) event_type: String,
+    pub(crate) status: Option<String>,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) total_tokens: Option<i64>,
+    pub(crate) reasoning_tokens: Option<i64>,
+}
+
+impl ResponsesStreamTerminal {
+    fn from_event(event_type: &str, event: Option<&serde_json::Value>) -> Self {
+        let response = event.and_then(|value| value.get("response")).or(event);
+        let usage = response.and_then(|value| value.get("usage"));
+
+        Self {
+            event_type: event_type.to_string(),
+            status: response
+                .and_then(|value| value.get("status"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            input_tokens: usage
+                .and_then(|value| value.get("input_tokens"))
+                .and_then(serde_json::Value::as_i64),
+            output_tokens: usage
+                .and_then(|value| value.get("output_tokens"))
+                .and_then(serde_json::Value::as_i64),
+            total_tokens: usage
+                .and_then(|value| value.get("total_tokens"))
+                .and_then(serde_json::Value::as_i64),
+            reasoning_tokens: usage
+                .and_then(|value| value.get("output_tokens_details"))
+                .and_then(|value| value.get("reasoning_tokens"))
+                .and_then(serde_json::Value::as_i64),
+        }
+    }
+}
+
+type ResponsesTerminalObserver = Box<dyn FnOnce(ResponsesStreamTerminal) + Send + 'static>;
 
 /// Incrementally recognizes a complete terminal Responses SSE frame while the
 /// surrounding bytes remain untouched. Reqwest chunk boundaries are unrelated
@@ -43,10 +85,11 @@ const MAX_SSE_LINE_BYTES: usize = 8 * 1024;
 struct ResponsesSseTerminator {
     line: Vec<u8>,
     terminal_event: bool,
+    terminal: Option<ResponsesStreamTerminal>,
 }
 
 impl ResponsesSseTerminator {
-    fn observe(&mut self, chunk: &[u8]) -> bool {
+    fn observe(&mut self, chunk: &[u8]) -> Option<ResponsesStreamTerminal> {
         for &byte in chunk {
             if byte != b'\n' {
                 if self.line.len() < MAX_SSE_LINE_BYTES {
@@ -62,28 +105,51 @@ impl ResponsesSseTerminator {
             if line.is_empty() {
                 self.line.clear();
                 if std::mem::take(&mut self.terminal_event) {
-                    return true;
+                    return self.terminal.take();
                 }
+                self.terminal = None;
                 continue;
             }
 
             if let Some(value) = line.strip_prefix(b"event:") {
-                self.terminal_event = is_terminal_responses_event(trim_ascii(value));
+                let event_type = trim_ascii(value);
+                self.terminal_event = is_terminal_responses_event(event_type);
+                self.terminal = self.terminal_event.then(|| {
+                    ResponsesStreamTerminal::from_event(
+                        std::str::from_utf8(event_type).unwrap_or("response.completed"),
+                        None,
+                    )
+                });
             } else if let Some(value) = line.strip_prefix(b"data:") {
                 let value = trim_ascii(value);
                 if let Ok(value) = serde_json::from_slice::<serde_json::Value>(value) {
-                    if value
+                    let data_event_type = value
                         .get("type")
                         .and_then(serde_json::Value::as_str)
-                        .is_some_and(is_terminal_responses_event_str)
-                    {
+                        .filter(|event_type| is_terminal_responses_event_str(event_type));
+                    if let Some(event_type) = data_event_type {
                         self.terminal_event = true;
+                        self.terminal = Some(ResponsesStreamTerminal::from_event(
+                            event_type,
+                            Some(&value),
+                        ));
+                    } else if self.terminal_event {
+                        let event_type = self
+                            .terminal
+                            .as_ref()
+                            .map_or("response.completed", |terminal| {
+                                terminal.event_type.as_str()
+                            });
+                        self.terminal = Some(ResponsesStreamTerminal::from_event(
+                            event_type,
+                            Some(&value),
+                        ));
                     }
                 }
             }
             self.line.clear();
         }
-        false
+        None
     }
 }
 
@@ -111,18 +177,33 @@ fn is_terminal_responses_event_str(value: &str) -> bool {
     )
 }
 
+#[cfg(test)]
 fn terminate_responses_sse(
     input: BoxStream<'static, Result<Bytes, AppError>>,
+) -> BoxStream<'static, Result<Bytes, AppError>> {
+    terminate_responses_sse_with_observer(input, None)
+}
+
+fn terminate_responses_sse_with_observer(
+    input: BoxStream<'static, Result<Bytes, AppError>>,
+    observer: Option<ResponsesTerminalObserver>,
 ) -> BoxStream<'static, Result<Bytes, AppError>> {
     let output = stream! {
         let mut input = input;
         let mut terminator = ResponsesSseTerminator::default();
+        let mut observer = observer;
         while let Some(item) = input.next().await {
             match item {
                 Ok(bytes) => {
                     let terminal = terminator.observe(&bytes);
+                    let is_terminal = terminal.is_some();
+                    if let Some(terminal) = terminal {
+                        if let Some(observer) = observer.take() {
+                            observer(terminal);
+                        }
+                    }
                     yield Ok(bytes);
-                    if terminal {
+                    if is_terminal {
                         break;
                     }
                 }
@@ -234,6 +315,25 @@ impl MantleClient {
         region: &str,
         body: Bytes,
     ) -> Result<BoxStream<'static, Result<Bytes, AppError>>, AppError> {
+        self.responses_stream_inner(region, body, None).await
+    }
+
+    pub(crate) async fn responses_stream_with_observer(
+        &self,
+        region: &str,
+        body: Bytes,
+        observer: ResponsesTerminalObserver,
+    ) -> Result<BoxStream<'static, Result<Bytes, AppError>>, AppError> {
+        self.responses_stream_inner(region, body, Some(observer))
+            .await
+    }
+
+    async fn responses_stream_inner(
+        &self,
+        region: &str,
+        body: Bytes,
+        observer: Option<ResponsesTerminalObserver>,
+    ) -> Result<BoxStream<'static, Result<Bytes, AppError>>, AppError> {
         let resp = self.send(region, body).await?;
         let resp = error_for_status(resp)?;
         let stream = resp.bytes_stream().map(|chunk| {
@@ -241,7 +341,10 @@ impl MantleClient {
                 AppError::UpstreamBedrock(format!("mantle stream transport error: {e}"))
             })
         });
-        Ok(terminate_responses_sse(stream.boxed()))
+        Ok(terminate_responses_sse_with_observer(
+            stream.boxed(),
+            observer,
+        ))
     }
 
     /// POST `body` to the mantle `/chat/completions` endpoint for `region` and
