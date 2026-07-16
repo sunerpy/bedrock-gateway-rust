@@ -241,22 +241,19 @@ impl StreamState {
             // contentBlockStop → finalize block; no chunk needed (bedrock.py: implicit).
             ConverseStreamOutput::ContentBlockStop(_) => None,
 
-            // messageStop → close think first, else finish_reason (bedrock.py:1507-1524).
+            // messageStop always publishes the terminal finish reason. If an
+            // inline reasoning block is still open, close it in the same chunk.
             ConverseStreamOutput::MessageStop(ev) => {
-                if self.think_emitted {
-                    // Close the open <think> FIRST; the finish-reason chunk is
-                    // deferred exactly like Python (it returns the </think>
-                    // chunk and never emits a finish_reason for this stream when
-                    // think was open at stop — parity-faithful).
+                let delta = if self.think_emitted {
                     self.think_emitted = false;
-                    let delta = ChatResponseMessage {
+                    ChatResponseMessage {
                         content: Some("</think>".to_string()),
                         ..Default::default()
-                    };
-                    return Some(Self::message_chunk(model, message_id, delta, None));
-                }
+                    }
+                } else {
+                    ChatResponseMessage::default()
+                };
                 let finish_reason = convert_finish_reason(Some(ev.stop_reason().as_str()));
-                let delta = ChatResponseMessage::default();
                 Some(Self::message_chunk(model, message_id, delta, finish_reason))
             }
 

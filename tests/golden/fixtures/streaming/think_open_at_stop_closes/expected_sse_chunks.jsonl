@@ -1,4 +1,4 @@
 data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
 data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[{"index":0,"delta":{"content":"<think>thinking only"}}]}
-data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[{"index":0,"delta":{"content":"</think>"}}]}
+data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1700000000,"model":"anthropic.claude-3-sonnet-v1:0","system_fingerprint":"fp","choices":[{"index":0,"delta":{"content":"</think>"},"finish_reason":"stop"}]}
 data: [DONE]

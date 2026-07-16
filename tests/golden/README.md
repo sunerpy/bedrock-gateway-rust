@@ -194,7 +194,7 @@ over the static fixture and asserts semantic parity:
 | responses_response | `responses_tool_call`   | `tool_use` → `function_call` item (`call_id`/`name`/JSON-string `arguments`) |
 | responses_response | `responses_reasoning`   | reasoning → `reasoning` item FIRST then `message`; usage formula with cacheRead+cacheWrite (`input_tokens`=input+read+write, `cached_tokens`=read) |
 | responses_stream | `responses_text`          | full text lifecycle order; `sequence_number` monotonic from 0; NO `[DONE]`; `completed` carries full Response |
-| responses_stream | `responses_tool`          | `function_call` add+done (full args); state machine emits NO `function_call_arguments.delta` |
+| responses_stream | `responses_tool`          | `function_call` add + argument delta/done + output item done |
 | responses_stream | `responses_reasoning`     | reasoning item BEFORE message item; reasoning_text deltas (NOT `<think>`); monotonic seq; NO `[DONE]` |
 
 ### Documented intentional divergences (encoded in the corpus)

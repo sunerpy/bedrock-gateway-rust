@@ -37,6 +37,7 @@ fn continuation_input(tool_name: &str) -> ResponsesInput {
             call_id: "call_1".to_string(),
             name: tool_name.to_string(),
             arguments: "{}".to_string(),
+            namespace: None,
         },
         ResponseInputItem::FunctionCallOutput {
             call_id: "call_1".to_string(),
@@ -125,6 +126,61 @@ fn tool_config_built_from_flattened_function_tools() {
 #[test]
 fn tool_config_none_when_no_tools() {
     assert!(build_responses_tool_config(&base_request()).is_none());
+}
+
+#[test]
+fn responses_tool_choice_maps_all_bedrock_supported_modes() {
+    let mut req = base_request();
+    req.tools = Some(vec![ResponsesTool::Function {
+        name: "lookup".to_string(),
+        description: None,
+        parameters: Some(json!({"type":"object"})),
+        strict: None,
+    }]);
+
+    req.tool_choice = Some(ResponsesToolChoice::String("auto".to_string()));
+    let (auto, _) = build_responses_tool_config_with_registry(&req).expect("auto");
+    assert_eq!(auto.expect("config")["toolChoice"], json!({"auto": {}}));
+
+    req.tool_choice = Some(ResponsesToolChoice::String("required".to_string()));
+    let (required, _) = build_responses_tool_config_with_registry(&req).expect("required");
+    assert_eq!(required.expect("config")["toolChoice"], json!({"any": {}}));
+
+    req.tool_choice = Some(ResponsesToolChoice::Object(json!({
+        "type": "function", "name": "lookup"
+    })));
+    let (specific, _) = build_responses_tool_config_with_registry(&req).expect("specific");
+    assert_eq!(
+        specific.expect("config")["toolChoice"],
+        json!({"tool": {"name":"lookup"}})
+    );
+
+    req.tool_choice = Some(ResponsesToolChoice::String("none".to_string()));
+    let (none, _) = build_responses_tool_config_with_registry(&req).expect("none");
+    assert!(none.is_none());
+}
+
+#[test]
+fn hosted_responses_tool_is_omitted_without_hiding_function_tools() {
+    let mut req = base_request();
+    req.tools = Some(vec![
+        serde_json::from_value(json!({"type":"web_search"})).unwrap(),
+        serde_json::from_value(json!({
+            "type":"function",
+            "name":"lookup",
+            "description":"Look up a value",
+            "parameters":{"type":"object","properties":{}}
+        }))
+        .unwrap(),
+    ]);
+    let (config, registry) =
+        build_responses_tool_config_with_registry(&req).expect("hosted tool is ignored");
+    let config = config.expect("supported tool config remains");
+    let specs = config["tools"].as_array().expect("tools array");
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0]["toolSpec"]["name"], "lookup");
+    assert!(registry.resolve("web_search").is_none());
+    assert!(registry.resolve("lookup").is_some());
 }
 
 #[tokio::test]

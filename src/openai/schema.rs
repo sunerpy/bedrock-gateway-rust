@@ -340,10 +340,7 @@ pub struct ChatRequest {
     pub top_p: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
-    #[serde(
-        default = "default_max_tokens",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_completion_tokens: Option<i32>,
@@ -364,10 +361,6 @@ pub struct ChatRequest {
     /// Controlled passthrough of unknown top-level fields (`extra="allow"`).
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
-}
-
-fn default_max_tokens() -> Option<i32> {
-    Some(2048)
 }
 
 // ---------------------------------------------------------------------------

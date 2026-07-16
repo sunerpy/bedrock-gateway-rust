@@ -36,10 +36,10 @@ use crate::bedrock::provider::{
     build_sdk_inference_config, build_sdk_messages, build_sdk_system, build_sdk_tool_config,
     converse_output_to_json,
 };
-use crate::bedrock::responses_response::from_converse_output_to_responses;
+use crate::bedrock::responses_response::from_converse_output_to_responses_with_tools;
 use crate::bedrock::responses_stream::converse_stream_to_openai_responses;
 use crate::bedrock::responses_translate::{
-    build_responses_tool_specs, reasoning_outcome, to_responses_converse_input,
+    build_responses_tools, reasoning_outcome, to_responses_converse_input, ResponsesToolRegistry,
 };
 use crate::bedrock::translate::ImageResolver;
 use crate::bedrock::{cache, provider, tools};
@@ -49,7 +49,7 @@ use crate::domain::{
     RouteOverride,
 };
 use crate::error::AppError;
-use crate::openai::responses_schema::{ResponsesRequest, ResponsesResponse};
+use crate::openai::responses_schema::{ResponsesRequest, ResponsesResponse, ResponsesToolChoice};
 
 /// Concrete [`ResponsesProvider`] backed by Amazon Bedrock Converse.
 ///
@@ -147,7 +147,7 @@ impl BedrockResponsesProvider {
 
         // toolConfig from the Responses flattened-function tools (the rejection
         // matrix in to_responses_converse_input already vetoed built-in tools).
-        let mut tool_config = build_responses_tool_config(req);
+        let (mut tool_config, tool_registry) = build_responses_tool_config_with_registry(req)?;
         if tool_config.is_none() {
             tool_config = tools::synthesize_tool_config_from_messages(&messages);
         }
@@ -228,6 +228,7 @@ impl BedrockResponsesProvider {
             inference_config,
             additional_fields,
             tool_config,
+            tool_registry,
             cache_points_injected: used > 0,
         })
     }
@@ -363,25 +364,94 @@ struct AssembledConverse {
     inference_config: Value,
     additional_fields: Option<Value>,
     tool_config: Option<Value>,
+    tool_registry: ResponsesToolRegistry,
     /// Whether any `cachePoint` landed across the tools/system/messages zones —
     /// consumed by the cache safety net at the send points (read-gate strip).
     cache_points_injected: bool,
 }
 
-/// Build a Bedrock `toolConfig` JSON object from the Responses request's tools,
-/// reusing the filter-and-flatten logic in
-/// [`crate::bedrock::responses_translate::build_responses_tool_specs`]
-/// (user-defined `function` / `custom` / flattened `namespace` tools kept;
-/// hosted/unknown server tools silently dropped). Returns `None` when the
-/// request carries no tools that survive filtering — so a request whose only
-/// tools are hosted (e.g. codex sending `web_search` alone) produces no
-/// `toolConfig` rather than an empty one.
-fn build_responses_tool_config(req: &ResponsesRequest) -> Option<Value> {
-    let specs = build_responses_tool_specs(req);
+/// Build Bedrock `toolConfig` together with the reversible Responses mapping.
+/// OpenAI-hosted tools without a Converse equivalent are omitted; supported
+/// client-executed tools retain a reversible output-item mapping.
+fn build_responses_tool_config_with_registry(
+    req: &ResponsesRequest,
+) -> Result<(Option<Value>, ResponsesToolRegistry), AppError> {
+    let (specs, registry) = build_responses_tools(req)?;
     if specs.is_empty() {
-        return None;
+        return Ok((None, registry));
     }
-    Some(json!({ "tools": specs }))
+    if matches!(
+        &req.tool_choice,
+        Some(ResponsesToolChoice::String(choice)) if choice == "none"
+    ) {
+        return Ok((None, registry));
+    }
+
+    let mut config = json!({ "tools": specs });
+    let choice = match &req.tool_choice {
+        None => None,
+        Some(ResponsesToolChoice::String(choice)) if choice == "auto" => {
+            Some(json!({ "auto": {} }))
+        }
+        Some(ResponsesToolChoice::String(choice)) if choice == "required" => {
+            Some(json!({ "any": {} }))
+        }
+        Some(ResponsesToolChoice::String(choice)) => {
+            return Err(AppError::BadRequest(format!(
+                "unsupported Responses tool_choice '{choice}'"
+            )))
+        }
+        Some(ResponsesToolChoice::Object(choice)) => {
+            let choice_type = choice
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("function");
+            let name = choice
+                .get("name")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    choice
+                        .get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(Value::as_str)
+                })
+                .ok_or_else(|| {
+                    AppError::BadRequest(
+                        "specific Responses tool_choice must include a tool name".to_string(),
+                    )
+                })?;
+            let namespace = choice.get("namespace").and_then(Value::as_str);
+            let internal = namespace
+                .map(|ns| format!("{ns}__{name}"))
+                .or_else(|| registry.bedrock_name_for(name).map(str::to_string))
+                .ok_or_else(|| {
+                    AppError::BadRequest(format!(
+                        "Responses tool_choice refers to unknown tool '{name}'"
+                    ))
+                })?;
+            match choice_type {
+                "function" | "custom" | "local_shell" | "shell" | "apply_patch" => {
+                    Some(json!({ "tool": { "name": internal } }))
+                }
+                other => {
+                    return Err(AppError::Unsupported(format!(
+                        "Responses tool_choice type '{other}' is not available through Bedrock Converse"
+                    )))
+                }
+            }
+        }
+    };
+    if let (Some(obj), Some(choice)) = (config.as_object_mut(), choice) {
+        obj.insert("toolChoice".to_string(), choice);
+    }
+    Ok((Some(config), registry))
+}
+
+#[cfg(test)]
+fn build_responses_tool_config(req: &ResponsesRequest) -> Option<Value> {
+    build_responses_tool_config_with_registry(req)
+        .ok()
+        .and_then(|(config, _)| config)
 }
 
 /// Generate a `resp_`-prefixed response id (mirrors the chat `chatcmpl-` id
@@ -422,11 +492,12 @@ impl ResponsesProvider for BedrockResponsesProvider {
 
         let output_json = converse_output_to_json(&output);
         let response_id = resp_id();
-        from_converse_output_to_responses(
+        from_converse_output_to_responses_with_tools(
             &output_json,
             &req.request,
             &req.request.model,
             &response_id,
+            &assembled.tool_registry,
         )
     }
 
@@ -461,6 +532,7 @@ impl ResponsesProvider for BedrockResponsesProvider {
             req.request.clone(),
             req.request_id.clone(),
             req.received_at,
+            assembled.tool_registry,
         ))
     }
 }

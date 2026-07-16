@@ -107,8 +107,9 @@ pub struct TextConfig {
 /// `namespace_tool_param.py`), the `custom` tool, and an [`Unknown`] catch-all
 /// for ANY other / hosted / future tool type so the wire boundary NEVER 400s on
 /// an unrecognized `type`. The translation layer (`responses_translate.rs`)
-/// decides which variants are kept (flattened into Bedrock `toolConfig`) and
-/// which are silently dropped — deserialization itself is total.
+/// decides which variants can be represented by Bedrock Converse and silently
+/// omits hosted/unknown variants that the gateway cannot execute;
+/// deserialization itself remains total.
 ///
 /// [`Unknown`]: ResponsesTool::Unknown
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,11 +149,72 @@ pub enum ResponsesTool {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         format: Option<Value>,
     },
+    /// Client-executed OpenAI provider tools. The Converse backend exposes
+    /// these as reversible Bedrock tool specifications and maps the resulting
+    /// toolUse block back to the original Responses item type.
+    #[serde(rename = "local_shell")]
+    LocalShell {
+        #[serde(flatten)]
+        fields: HashMap<String, Value>,
+    },
+    #[serde(rename = "shell")]
+    Shell {
+        #[serde(flatten)]
+        fields: HashMap<String, Value>,
+    },
+    #[serde(rename = "apply_patch")]
+    ApplyPatch {
+        #[serde(flatten)]
+        fields: HashMap<String, Value>,
+    },
+    /// OpenAI-hosted tools have no Bedrock Converse equivalent. They are
+    /// explicit variants so the provider can return a diagnostic error naming
+    /// the requested type instead of silently dropping it.
+    #[serde(rename = "web_search")]
+    WebSearch {
+        #[serde(flatten)]
+        fields: HashMap<String, Value>,
+    },
+    #[serde(rename = "web_search_preview")]
+    WebSearchPreview {
+        #[serde(flatten)]
+        fields: HashMap<String, Value>,
+    },
+    #[serde(rename = "file_search")]
+    FileSearch {
+        #[serde(flatten)]
+        fields: HashMap<String, Value>,
+    },
+    #[serde(rename = "code_interpreter")]
+    CodeInterpreter {
+        #[serde(flatten)]
+        fields: HashMap<String, Value>,
+    },
+    #[serde(rename = "tool_search")]
+    ToolSearch {
+        #[serde(flatten)]
+        fields: HashMap<String, Value>,
+    },
+    #[serde(rename = "mcp")]
+    Mcp {
+        #[serde(flatten)]
+        fields: HashMap<String, Value>,
+    },
+    #[serde(rename = "computer")]
+    Computer {
+        #[serde(flatten)]
+        fields: HashMap<String, Value>,
+    },
+    #[serde(rename = "image_generation")]
+    ImageGeneration {
+        #[serde(flatten)]
+        fields: HashMap<String, Value>,
+    },
     /// Any other tool type (hosted server tools — `web_search`,
     /// `image_generation`, `code_interpreter`, `tool_search`, `mcp`,
     /// `computer`, … — plus any future type). Deserializes WITHOUT error so the
-    /// wire boundary never 400s; the translation layer silently drops these
-    /// (they have no Bedrock equivalent).
+    /// wire boundary remains forward-compatible; the Converse provider rejects
+    /// this variant explicitly because it has no safe equivalent.
     #[serde(other)]
     Unknown,
 }
@@ -215,6 +277,7 @@ pub enum ResponseInputItem {
         call_id: String,
         name: String,
         arguments: String,
+        namespace: Option<String>,
     },
     FunctionCallOutput {
         call_id: String,
@@ -349,6 +412,8 @@ enum InputItemRepr {
         call_id: String,
         name: String,
         arguments: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     #[serde(rename = "function_call_output")]
     FunctionCallOutput {
@@ -386,10 +451,12 @@ impl InputItemRepr {
                 call_id,
                 name,
                 arguments,
+                namespace,
             } => InputItemRepr::FunctionCall {
                 call_id,
                 name,
                 arguments,
+                namespace,
             },
             ResponseInputItem::FunctionCallOutput { call_id, output } => {
                 InputItemRepr::FunctionCallOutput { call_id, output }
@@ -421,10 +488,12 @@ impl InputItemRepr {
                 call_id,
                 name,
                 arguments,
+                namespace,
             } => ResponseInputItem::FunctionCall {
                 call_id,
                 name,
                 arguments,
+                namespace,
             },
             InputItemRepr::FunctionCallOutput { call_id, output } => {
                 ResponseInputItem::FunctionCallOutput { call_id, output }
@@ -503,6 +572,8 @@ pub enum ResponseOutputItem {
         content: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_content: Option<String>,
     },
     #[serde(rename = "message")]
     Message {
@@ -518,6 +589,8 @@ pub enum ResponseOutputItem {
         id: Option<String>,
         call_id: String,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
         arguments: String,
         /// `None` on the non-stream output item and on the streaming
         /// `output_item.added` event (@ai-sdk/openai's added-chunk function_call
@@ -702,6 +775,7 @@ pub enum ResponseStreamEvent {
         item_id: String,
         output_index: u32,
         arguments: String,
+        name: String,
         sequence_number: u64,
     },
     #[serde(rename = "response.reasoning_text.delta")]

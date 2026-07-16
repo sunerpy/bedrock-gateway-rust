@@ -27,9 +27,8 @@
 //!   Bedrock-side `toolUse` shape from [`crate::bedrock::tools`]).
 //! - `function_call_output`     → a Bedrock user `toolResult` turn (reusing
 //!   [`crate::bedrock::tools::tool_message_to_tool_result_turn`]).
-//! - `reasoning` items          → **DROPPED** (Strategy A). Bedrock has no
-//!   equivalent for `encrypted_content`; there is no signature to replay. See
-//!   the inline comment at the drop site.
+//! - `reasoning` items          → Bedrock `reasoningContent`, decoded from the
+//!   gateway's opaque `encrypted_content` envelope with text/signature intact.
 //!
 //! Contiguous same-role turns are merged / split with the SAME rule the chat
 //! path uses ([`crate::bedrock::tools::should_split_same_role_merge`]): tool-only
@@ -37,32 +36,30 @@
 //!
 //! ## Request-level reasoning vs reasoning INPUT items
 //!
-//! The request-level `reasoning { effort }` field is a SEPARATE concept from the
-//! dropped reasoning input items: it drives the Bedrock thinking budget via
+//! The request-level `reasoning { effort }` field is separate from replayed
+//! reasoning input items: it drives the Bedrock thinking budget via
 //! [`crate::bedrock::reasoning::build_reasoning_config`], identically to chat.
-//! [`reasoning_outcome`] exposes that mapping for the provider seam (T13); the
-//! input-item parser itself never emits a Bedrock reasoning block.
+//! [`reasoning_outcome`] exposes that mapping for the provider seam.
 //!
-//! ## Stateless rejection matrix (codex-safety-critical)
+//! ## Stateless compatibility matrix (codex-safety-critical)
 //!
 //! - `store` (any value)            → **accept & IGNORE** (codex sends
 //!   `store:false`; a 400 would break codex).
-//! - `previous_response_id`         → **accept & IGNORE** (lenient).
-//! - `include` (e.g.
-//!   `["reasoning.encrypted_content"]`) → **accept & IGNORE** (emit nothing
-//!   extra; Strategy A).
-//! - tools in `tools[]`             → **FILTER, never 400**. User-defined
-//!   `function` / `namespace` / `custom` tools are kept (a `namespace` is
-//!   flattened — see [`build_responses_tool_specs`]); hosted server tools with
-//!   no Bedrock equivalent (`web_search` / `image_generation` /
-//!   `code_interpreter` / `tool_search` / `mcp` / `computer` and any unknown
-//!   type, all deserialized to [`ResponsesTool::Unknown`]) are SILENTLY
-//!   DROPPED. codex unconditionally includes some hosted tools; a 400 there
-//!   would kill the whole session including the user's real function tools.
+//! - `previous_response_id` / `item_reference` → **accept & IGNORE** because
+//!   this backend is stateless. Clients must replay full history for context.
+//! - `include: ["reasoning.encrypted_content"]` is accepted; signed reasoning
+//!   output carries the replay envelope.
+//! - tools in `tools[]` → function/custom/namespace and client-executed shell /
+//!   apply-patch tools are translated reversibly. OpenAI-hosted and unknown
+//!   tools with no Converse equivalent are silently omitted so bundled tools
+//!   cannot abort otherwise valid client-executed tool calls.
 //! - unsatisfiable `text.format` (a malformed / unsupported structured-output
 //!   schema) → **400**. A well-formed `json_schema` that can pass through to
 //!   Bedrock is accepted.
 
+use std::collections::HashSet;
+
+use base64::Engine as _;
 use serde_json::{json, Value};
 
 use crate::bedrock::tools::{
@@ -83,6 +80,324 @@ use crate::openai::schema::{Function, ReasoningEffort};
 /// different namespaces from colliding and is echoed back verbatim by the
 /// client on the stateless round-trip.
 pub const NAMESPACE_DELIMITER: &str = "__";
+const REASONING_ENVELOPE_PREFIX: &str = "bedrock-reasoning-v1:";
+
+/// Encode Bedrock reasoning blocks into the standard opaque Responses
+/// `encrypted_content` slot. The provider-issued signature inside the payload
+/// remains the authority: Bedrock rejects any altered text/signature pair when
+/// the client replays it.
+pub(crate) fn encode_reasoning_envelope(content: &[Value]) -> Option<String> {
+    let blocks: Vec<Value> = content
+        .iter()
+        .filter_map(|block| {
+            let reasoning = block.get("reasoningContent")?;
+            let signed_text = reasoning
+                .get("reasoningText")
+                .and_then(|text| text.get("signature"))
+                .and_then(Value::as_str)
+                .is_some();
+            let redacted = reasoning
+                .get("redactedContent")
+                .and_then(Value::as_str)
+                .is_some();
+            (signed_text || redacted).then(|| reasoning.clone())
+        })
+        .collect();
+    if blocks.is_empty() {
+        return None;
+    }
+    let bytes = serde_json::to_vec(&json!({ "version": 1, "blocks": blocks })).ok()?;
+    Some(format!(
+        "{REASONING_ENVELOPE_PREFIX}{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    ))
+}
+
+fn decode_reasoning_envelope(envelope: &str) -> Result<Vec<Value>, AppError> {
+    let encoded = envelope
+        .strip_prefix(REASONING_ENVELOPE_PREFIX)
+        .ok_or_else(|| {
+            AppError::BadRequest("unsupported reasoning.encrypted_content envelope".to_string())
+        })?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| AppError::BadRequest("malformed reasoning.encrypted_content".to_string()))?;
+    let payload: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::BadRequest("malformed reasoning.encrypted_content".to_string()))?;
+    if payload.get("version").and_then(Value::as_u64) != Some(1) {
+        return Err(AppError::BadRequest(
+            "unsupported reasoning.encrypted_content envelope version".to_string(),
+        ));
+    }
+    let blocks = payload
+        .get("blocks")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::BadRequest("reasoning envelope has no blocks".to_string()))?;
+    let mut out = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let valid_text = block
+            .get("reasoningText")
+            .and_then(Value::as_object)
+            .is_some_and(|text| {
+                text.get("text").and_then(Value::as_str).is_some()
+                    && text.get("signature").and_then(Value::as_str).is_some()
+            });
+        let valid_redacted = block
+            .get("redactedContent")
+            .and_then(Value::as_str)
+            .is_some();
+        if !valid_text && !valid_redacted {
+            return Err(AppError::BadRequest(
+                "reasoning envelope contains an invalid block".to_string(),
+            ));
+        }
+        out.push(json!({ "reasoningContent": block }));
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResponsesToolKind {
+    Function,
+    Custom,
+    LocalShell,
+    Shell,
+    ApplyPatch,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResponsesToolBinding {
+    pub bedrock_name: String,
+    pub client_name: String,
+    pub namespace: Option<String>,
+    pub kind: ResponsesToolKind,
+}
+
+/// Per-request reversible mapping between Bedrock's function-only tool model
+/// and the richer Responses tool/item kinds.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ResponsesToolRegistry {
+    bindings: Vec<ResponsesToolBinding>,
+}
+
+impl ResponsesToolRegistry {
+    pub fn resolve(&self, bedrock_name: &str) -> Option<&ResponsesToolBinding> {
+        self.bindings
+            .iter()
+            .find(|binding| binding.bedrock_name == bedrock_name)
+    }
+
+    pub fn bedrock_name_for(&self, client_name: &str) -> Option<&str> {
+        self.bindings
+            .iter()
+            .find(|binding| binding.client_name == client_name)
+            .map(|binding| binding.bedrock_name.as_str())
+    }
+}
+
+/// Build Bedrock tool specifications plus the reversible response mapping.
+pub(crate) fn build_responses_tools(
+    req: &ResponsesRequest,
+) -> Result<(Vec<Value>, ResponsesToolRegistry), AppError> {
+    let Some(tools) = &req.tools else {
+        return Ok((Vec::new(), ResponsesToolRegistry::default()));
+    };
+    let mut specs = Vec::new();
+    let mut bindings = Vec::new();
+    let mut names = HashSet::new();
+
+    let mut push = |bedrock_name: String,
+                    client_name: String,
+                    namespace: Option<String>,
+                    kind: ResponsesToolKind,
+                    description: Option<&str>,
+                    parameters: Option<Value>|
+     -> Result<(), AppError> {
+        if !names.insert(bedrock_name.clone()) {
+            return Err(AppError::BadRequest(format!(
+                "duplicate Responses tool name after translation: '{bedrock_name}'"
+            )));
+        }
+        specs.push(function_tool_spec(&bedrock_name, description, &parameters));
+        bindings.push(ResponsesToolBinding {
+            bedrock_name,
+            client_name,
+            namespace,
+            kind,
+        });
+        Ok(())
+    };
+
+    for tool in tools {
+        match tool {
+            ResponsesTool::Function {
+                name,
+                description,
+                parameters,
+                ..
+            } => push(
+                name.clone(),
+                name.clone(),
+                None,
+                ResponsesToolKind::Function,
+                description.as_deref(),
+                parameters.clone(),
+            )?,
+            ResponsesTool::Custom {
+                name, description, ..
+            } => push(
+                name.clone(),
+                name.clone(),
+                None,
+                ResponsesToolKind::Custom,
+                description.as_deref(),
+                Some(custom_input_schema()),
+            )?,
+            ResponsesTool::Namespace {
+                name: namespace,
+                tools: inner,
+                ..
+            } => {
+                for item in inner {
+                    match item {
+                        ResponsesNamespaceInner::Function {
+                            name,
+                            description,
+                            parameters,
+                            ..
+                        } => push(
+                            format!("{namespace}{NAMESPACE_DELIMITER}{name}"),
+                            name.clone(),
+                            Some(namespace.clone()),
+                            ResponsesToolKind::Function,
+                            description.as_deref(),
+                            parameters.clone(),
+                        )?,
+                        ResponsesNamespaceInner::Custom {
+                            name, description, ..
+                        } => push(
+                            format!("{namespace}{NAMESPACE_DELIMITER}{name}"),
+                            name.clone(),
+                            Some(namespace.clone()),
+                            ResponsesToolKind::Custom,
+                            description.as_deref(),
+                            Some(custom_input_schema()),
+                        )?,
+                    }
+                }
+            }
+            ResponsesTool::LocalShell { .. } => push(
+                "local_shell".to_string(),
+                "local_shell".to_string(),
+                None,
+                ResponsesToolKind::LocalShell,
+                Some("Run a command in the client's local shell."),
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "object",
+                            "properties": {
+                                "type": { "type": "string", "enum": ["exec"] },
+                                "command": { "type": "array", "items": { "type": "string" } },
+                                "timeout_ms": { "type": "number" },
+                                "user": { "type": "string" },
+                                "working_directory": { "type": "string" },
+                                "env": { "type": "object", "additionalProperties": { "type": "string" } }
+                            },
+                            "required": ["type", "command"]
+                        }
+                    },
+                    "required": ["action"]
+                })),
+            )?,
+            ResponsesTool::Shell { .. } => push(
+                "shell".to_string(),
+                "shell".to_string(),
+                None,
+                ResponsesToolKind::Shell,
+                Some("Run one or more shell commands in the client environment."),
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "commands": { "type": "array", "items": { "type": "string" } },
+                        "timeout_ms": { "type": "number" },
+                        "max_output_length": { "type": "number" }
+                    },
+                    "required": ["commands"],
+                    "additionalProperties": false
+                })),
+            )?,
+            ResponsesTool::ApplyPatch { .. } => push(
+                "apply_patch".to_string(),
+                "apply_patch".to_string(),
+                None,
+                ResponsesToolKind::ApplyPatch,
+                Some("Apply a source-code patch in the client workspace."),
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": { "type": "string", "enum": ["create_file"] },
+                                        "path": { "type": "string" },
+                                        "diff": { "type": "string" }
+                                    },
+                                    "required": ["type", "path", "diff"],
+                                    "additionalProperties": false
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": { "type": "string", "enum": ["delete_file"] },
+                                        "path": { "type": "string" }
+                                    },
+                                    "required": ["type", "path"],
+                                    "additionalProperties": false
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": { "type": "string", "enum": ["update_file"] },
+                                        "path": { "type": "string" },
+                                        "diff": { "type": "string" }
+                                    },
+                                    "required": ["type", "path", "diff"],
+                                    "additionalProperties": false
+                                }
+                            ]
+                        }
+                    },
+                    "required": ["operation"],
+                    "additionalProperties": false
+                })),
+            )?,
+            ResponsesTool::WebSearch { .. }
+            | ResponsesTool::WebSearchPreview { .. }
+            | ResponsesTool::FileSearch { .. }
+            | ResponsesTool::CodeInterpreter { .. }
+            | ResponsesTool::ToolSearch { .. }
+            | ResponsesTool::Mcp { .. }
+            | ResponsesTool::Computer { .. }
+            | ResponsesTool::ImageGeneration { .. }
+            | ResponsesTool::Unknown => {}
+        }
+    }
+
+    Ok((specs, ResponsesToolRegistry { bindings }))
+}
+
+fn custom_input_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": { "input": { "type": "string" } },
+        "required": ["input"],
+        "additionalProperties": false
+    })
+}
 
 /// The parsed Responses input in the shape the Bedrock Converse call consumes.
 ///
@@ -114,8 +429,7 @@ fn push_non_empty_text_block(blocks: &mut Vec<Value>, text: &str) {
 
 /// Translate a [`ResponsesRequest`] into Bedrock Converse `messages` + `system`.
 ///
-/// Runs the full stateless rejection matrix first (so a malformed request is
-/// rejected before any work), then parses `input` (string or item array) into
+/// Runs request validation first, then parses `input` (string or item array) into
 /// Bedrock turns, prepends `instructions` to the system blocks, and merges
 /// contiguous same-role turns with the shared chat reframing rule.
 ///
@@ -125,9 +439,9 @@ fn push_non_empty_text_block(blocks: &mut Vec<Value>, text: &str) {
 /// capability-driven branching — currently unused in the input parse itself).
 ///
 /// # Errors
-/// Returns [`AppError::BadRequest`] for a built-in server tool, an unsatisfiable
-/// `text.format`, an `input_file` content part, or image-modality/decode
-/// failures; propagates resolver errors.
+/// Returns [`AppError::BadRequest`] for an unsatisfiable `text.format`, an
+/// `input_file` content part, or image-modality/decode failures; propagates
+/// resolver errors.
 pub async fn to_responses_converse_input(
     req: &ResponsesRequest,
     model_id: &str,
@@ -138,10 +452,8 @@ pub async fn to_responses_converse_input(
     // capabilities today (kept for future use — e.g. per-model file handling).
     let _ = caps;
 
-    // 1) Stateless rejection matrix. `store` / `previous_response_id` / `include`
-    //    are intentionally NOT inspected here: they are accepted and ignored.
-    //    Tools are FILTERED (hosted/unknown dropped) at toolConfig-build time,
-    //    never rejected here — see `build_responses_tool_specs`.
+    // 1) Request validation. Tool availability is checked when the provider
+    //    builds the reversible tool registry.
     reject_unsatisfiable_text_format(req)?;
 
     // 2) System blocks: `instructions` first (prepended), then any system /
@@ -224,31 +536,27 @@ async fn parse_input_items(
             // toolUse block shape). `arguments` is a JSON string parsed into the
             // `input` object, matching the chat path (tools.rs).
             //
-            // NAME ROUND-TRIP INVARIANT (stateless surface): `name` is passed
-            // through UNCHANGED. When a tool came from a flattened `namespace`,
-            // the gateway already sent Bedrock the prefixed name `ns__fn`, so
-            // Bedrock returned (and the client received) that same prefixed name
-            // as the response's `function_call.name`. The client echoes it back
-            // here verbatim, so forwarding it unchanged to Bedrock preserves the
-            // toolUseId↔name correlation. Stripping the `ns__` prefix here would
-            // break that correlation — DO NOT strip it. (codex's function_call
-            // item may also carry a separate `namespace` field; the schema does
-            // not model it, so serde drops it — accept & ignore, the prefixed
-            // name already encodes the namespace.)
+            // Namespace names remain client-visible as `(namespace, name)` and
+            // are joined only for Bedrock's flat tool namespace.
             ResponseInputItem::FunctionCall {
                 call_id,
                 name,
                 arguments,
+                namespace,
             } => {
                 let input: Value = serde_json::from_str(arguments).map_err(|e| {
                     AppError::BadRequest(format!("invalid function_call arguments JSON: {e}"))
                 })?;
+                let bedrock_name = namespace.as_ref().map_or_else(
+                    || name.clone(),
+                    |ns| format!("{ns}{NAMESPACE_DELIMITER}{name}"),
+                );
                 turns.push(Turn {
                     role: "assistant".to_string(),
                     content: vec![json!({
                         "toolUse": {
                             "toolUseId": call_id,
-                            "name": name,
+                            "name": bedrock_name,
                             "input": input,
                         }
                     })],
@@ -270,19 +578,97 @@ async fn parse_input_items(
             // item_reference → DROP. The gateway is stateless and cannot resolve
             // OpenAI-hosted stored items; accepting and ignoring is safer than
             // failing opencode continuation payloads that contain references.
-            ResponseInputItem::ItemReference { .. } => continue,
-            ResponseInputItem::Other { item_type, .. } => {
-                return Err(AppError::BadRequest(format!(
-                    "Responses input item type '{item_type}' is not supported"
-                )));
+            ResponseInputItem::ItemReference { .. } => {}
+            ResponseInputItem::Other { item_type, fields } => match item_type.as_str() {
+                "custom_tool_call" | "local_shell_call" | "shell_call" | "apply_patch_call" => {
+                    let call_id =
+                        fields
+                            .get("call_id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                AppError::BadRequest(format!(
+                                    "{item_type} input item is missing call_id"
+                                ))
+                            })?;
+                    let name = match item_type.as_str() {
+                        "custom_tool_call" => {
+                            fields.get("name").and_then(Value::as_str).ok_or_else(|| {
+                                AppError::BadRequest(
+                                    "custom_tool_call input item is missing name".to_string(),
+                                )
+                            })?
+                        }
+                        "local_shell_call" => "local_shell",
+                        "shell_call" => "shell",
+                        "apply_patch_call" => "apply_patch",
+                        _ => unreachable!(),
+                    };
+                    let input = match item_type.as_str() {
+                        "custom_tool_call" => json!({
+                            "input": fields.get("input").cloned().unwrap_or(Value::String(String::new()))
+                        }),
+                        "local_shell_call" => json!({
+                            "action": fields.get("action").cloned().unwrap_or_else(|| json!({}))
+                        }),
+                        "shell_call" => fields.get("action").cloned().unwrap_or_else(|| json!({})),
+                        "apply_patch_call" => json!({
+                            "operation": fields.get("operation").cloned().unwrap_or_else(|| json!({}))
+                        }),
+                        _ => unreachable!(),
+                    };
+                    turns.push(Turn {
+                        role: "assistant".to_string(),
+                        content: vec![json!({
+                            "toolUse": { "toolUseId": call_id, "name": name, "input": input }
+                        })],
+                    });
+                }
+                "custom_tool_call_output"
+                | "local_shell_call_output"
+                | "shell_call_output"
+                | "apply_patch_call_output" => {
+                    let call_id =
+                        fields
+                            .get("call_id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                AppError::BadRequest(format!(
+                                    "{item_type} input item is missing call_id"
+                                ))
+                            })?;
+                    let output = fields.get("output").cloned().unwrap_or(Value::Null);
+                    turns.push(Turn {
+                        role: "user".to_string(),
+                        content: vec![json!({
+                            "toolResult": {
+                                "toolUseId": call_id,
+                                "content": [{ "text": output.as_str().map_or_else(|| output.to_string(), str::to_string) }]
+                            }
+                        })],
+                    });
+                }
+                _ => {
+                    return Err(AppError::BadRequest(format!(
+                        "Responses input item type '{item_type}' is not supported"
+                    )));
+                }
+            },
+            // Replay signed reasoning exactly; Bedrock validates the provider
+            // signature against the unmodified text on the continuation call.
+            ResponseInputItem::Reasoning {
+                encrypted_content, ..
+            } => {
+                let envelope = encrypted_content.as_deref().ok_or_else(|| {
+                    AppError::BadRequest(
+                        "reasoning continuation requires reasoning.encrypted_content when store is false"
+                            .to_string(),
+                    )
+                })?;
+                turns.push(Turn {
+                    role: "assistant".to_string(),
+                    content: decode_reasoning_envelope(envelope)?,
+                });
             }
-            // reasoning → DROP (Strategy A). Bedrock has no equivalent for the
-            // Responses `encrypted_content` blob and there is no thinking
-            // signature to replay, so we emit nothing for reasoning input items.
-            // (Pre-staged fallback: if a future live tool-follow-up test shows a
-            // Bedrock ValidationException on a missing reasoning signature, this
-            // is the escalation point — see notepad. For now: drop.)
-            ResponseInputItem::Reasoning { .. } => continue,
         }
     }
     Ok(turns)
@@ -466,8 +852,8 @@ fn reframe_turns(turns: Vec<Turn>) -> Value {
     )
 }
 
-/// Build the Bedrock `toolSpec` blocks from a Responses request's `tools[]`,
-/// FILTERING (never rejecting) along the way.
+/// Test helper that returns only representable tool specs. Runtime assembly
+/// uses [`build_responses_tools`] and silently omits unsupported hosted tools.
 ///
 /// - `function` → one `toolSpec` keeping its bare name.
 /// - `custom`   → one `toolSpec` (name + description; the `format` grammar has
@@ -476,61 +862,29 @@ fn reframe_turns(turns: Vec<Turn>) -> Value {
 ///   name prefixed `{namespace_name}__{inner_name}` (see [`NAMESPACE_DELIMITER`])
 ///   so tools from different namespaces never collide. A nested `custom` is
 ///   flattened the same way as a nested `function`.
-/// - `Unknown` (hosted server tools — `web_search`, `image_generation`,
-///   `code_interpreter`, `tool_search`, `mcp`, `computer`, and any future type)
-///   → SILENTLY DROPPED. These have no Bedrock equivalent; dropping (instead of
-///   a 400) keeps codex sessions alive when they unconditionally include a
-///   hosted tool alongside the user's real function tools.
 ///
-/// Returns the (possibly empty) `toolSpec` vector. The caller wraps it in
-/// `{"tools": [...]}` and applies `tool_choice` / cache decoration.
+/// Hosted tools are filtered here solely so translation-shape property tests
+/// can inspect the supported subset.
+#[cfg(test)]
 #[must_use]
 pub fn build_responses_tool_specs(req: &ResponsesRequest) -> Vec<Value> {
-    let Some(tools) = &req.tools else {
-        return Vec::new();
-    };
-    let mut specs: Vec<Value> = Vec::new();
-    for tool in tools {
-        match tool {
-            ResponsesTool::Function {
-                name,
-                description,
-                parameters,
-                ..
-            } => {
-                specs.push(function_tool_spec(name, description.as_deref(), parameters));
-            }
-            ResponsesTool::Custom {
-                name, description, ..
-            } => {
-                specs.push(function_tool_spec(name, description.as_deref(), &None));
-            }
-            ResponsesTool::Namespace {
-                name: ns_name,
-                tools: inner,
-                ..
-            } => {
-                for item in inner {
-                    let (inner_name, inner_desc, inner_params) = match item {
-                        ResponsesNamespaceInner::Function {
-                            name,
-                            description,
-                            parameters,
-                            ..
-                        } => (name, description.as_deref(), parameters.clone()),
-                        ResponsesNamespaceInner::Custom {
-                            name, description, ..
-                        } => (name, description.as_deref(), None),
-                    };
-                    let prefixed = format!("{ns_name}{NAMESPACE_DELIMITER}{inner_name}");
-                    specs.push(function_tool_spec(&prefixed, inner_desc, &inner_params));
-                }
-            }
-            // Hosted / unknown server tools: no Bedrock equivalent → drop.
-            ResponsesTool::Unknown => {}
-        }
+    let mut supported = req.clone();
+    if let Some(tools) = supported.tools.as_mut() {
+        tools.retain(|tool| {
+            matches!(
+                tool,
+                ResponsesTool::Function { .. }
+                    | ResponsesTool::Custom { .. }
+                    | ResponsesTool::Namespace { .. }
+                    | ResponsesTool::LocalShell { .. }
+                    | ResponsesTool::Shell { .. }
+                    | ResponsesTool::ApplyPatch { .. }
+            )
+        });
     }
-    specs
+    build_responses_tools(&supported)
+        .map(|(specs, _)| specs)
+        .unwrap_or_default()
 }
 
 /// Shape one Bedrock `toolSpec` from a (possibly prefixed) name + optional

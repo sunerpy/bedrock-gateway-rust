@@ -277,7 +277,7 @@ fn message_stop_closes_open_think_first() {
     )
     .expect("open");
     assert!(st.think_emitted);
-    // messageStop while think open → standalone </think> chunk, no finish_reason.
+    // messageStop while think open closes the tag and retains the terminal reason.
     let c = st
         .map_event(
             &ev_message_stop(StopReason::EndTurn),
@@ -289,7 +289,7 @@ fn message_stop_closes_open_think_first() {
         )
         .expect("close");
     assert_eq!(c.choices[0].delta.content.as_deref(), Some("</think>"));
-    assert!(c.choices[0].finish_reason.is_none());
+    assert_eq!(c.choices[0].finish_reason.as_deref(), Some("stop"));
     assert!(!st.think_emitted);
 }
 

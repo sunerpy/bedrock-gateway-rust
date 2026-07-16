@@ -150,6 +150,27 @@ fn drive(events: &[ConverseStreamOutput]) -> Vec<ResponseStreamEvent> {
     all
 }
 
+fn drive_with_tool(tool: Value, events: &[ConverseStreamOutput]) -> Vec<ResponseStreamEvent> {
+    let mut req = request();
+    req.tools = Some(vec![serde_json::from_value(tool).expect("tool schema")]);
+    let (_, registry) =
+        crate::bedrock::responses_translate::build_responses_tools(&req).expect("tool registry");
+    let mut st = ResponsesStreamState::new_with_tools(
+        MODEL.to_string(),
+        RID.to_string(),
+        req,
+        Arc::from("req-test"),
+        Instant::now(),
+        registry,
+    );
+    let mut all = Vec::new();
+    for event in events {
+        all.extend(st.map_event(event));
+    }
+    all.extend(st.finish());
+    all
+}
+
 /// The `type` tag of an event (via serde) — for order assertions.
 fn type_of(ev: &ResponseStreamEvent) -> String {
     serde_json::to_value(ev).unwrap()["type"]
@@ -171,16 +192,11 @@ fn assert_monotonic_from_zero(events: &[ResponseStreamEvent]) {
     }
 }
 
-/// Assert no `[DONE]` sentinel and no function_call_arguments.* events
-/// appear anywhere in the serialized sequence.
+/// Assert no Chat-style `[DONE]` sentinel appears in a Responses stream.
 fn assert_no_done_no_argdelta(events: &[ResponseStreamEvent]) {
     for ev in events {
         let s = serde_json::to_string(ev).unwrap();
         assert!(!s.contains("[DONE]"), "[DONE] sentinel leaked: {s}");
-        assert!(
-            !s.contains("function_call_arguments"),
-            "function_call_arguments event leaked: {s}"
-        );
     }
 }
 
@@ -257,7 +273,7 @@ fn text_stream_emits_exact_event_order() {
     }
 }
 
-// -- Test 2: tool-use stream → function_call add+done, no arg-delta ------
+// -- Test 2: tool-use stream → arguments delta/done + item done ----------
 
 #[test]
 fn tool_use_stream_emits_function_call_item_add_and_done() {
@@ -278,6 +294,9 @@ fn tool_use_stream_emits_function_call_item_add_and_done() {
             "response.created",
             "response.in_progress",
             "response.output_item.added",
+            "response.function_call_arguments.delta",
+            "response.function_call_arguments.delta",
+            "response.function_call_arguments.done",
             "response.output_item.done",
             "response.completed",
         ],
@@ -308,7 +327,7 @@ fn tool_use_stream_emits_function_call_item_add_and_done() {
 
     // output_item.done carries the COMPLETE, JSON-parseable arguments and the
     // status "completed" that @ai-sdk/openai's stream schema REQUIRES.
-    match &events[3] {
+    match &events[6] {
         ResponseStreamEvent::OutputItemDone { item, .. } => match item {
             ResponseOutputItem::FunctionCall {
                 call_id,
@@ -331,7 +350,7 @@ fn tool_use_stream_emits_function_call_item_add_and_done() {
 
     // The serialized output_item.done JSON must literally carry
     // "status":"completed" (ai-sdk validates the wire string, not the enum).
-    let done_json = serde_json::to_value(&events[3]).unwrap();
+    let done_json = serde_json::to_value(&events[6]).unwrap();
     assert_eq!(done_json["item"]["status"], "completed");
 
     // The final completed Response carries the function_call output item.
@@ -403,6 +422,67 @@ fn tool_use_stream_done_item_serializes_status_completed() {
         completed_item.get("status").is_none(),
         "completed function_call output item MUST NOT carry status: {completed_item}"
     );
+}
+
+#[test]
+fn client_tool_added_events_wait_for_required_payloads() {
+    let cases = [
+        (
+            json!({"type":"local_shell"}),
+            "local_shell",
+            json!({"action":{"type":"exec","command":["pwd"]}}),
+            "local_shell_call",
+            "action",
+            json!({"type":"exec","command":["pwd"]}),
+        ),
+        (
+            json!({"type":"shell"}),
+            "shell",
+            json!({"commands":["pwd"],"timeout_ms":1000}),
+            "shell_call",
+            "action",
+            json!({"commands":["pwd"],"timeout_ms":1000}),
+        ),
+        (
+            json!({"type":"apply_patch"}),
+            "apply_patch",
+            json!({"operation":{"type":"update_file","path":"src/lib.rs","diff":"@@"}}),
+            "apply_patch_call",
+            "operation",
+            json!({"type":"update_file","path":"src/lib.rs","diff":"@@"}),
+        ),
+    ];
+
+    for (tool, name, input, item_type, payload_key, expected_payload) in cases {
+        let encoded = serde_json::to_string(&input).unwrap();
+        let events = drive_with_tool(
+            tool,
+            &[
+                ev_message_start(),
+                ev_tool_start(0, "call-client", name),
+                ev_tool_input(0, &encoded),
+                ev_block_stop(0),
+                ev_message_stop(StopReason::ToolUse),
+                ev_metadata(8, 4, 12),
+            ],
+        );
+        let added = events
+            .iter()
+            .find(|event| matches!(event, ResponseStreamEvent::OutputItemAdded { .. }))
+            .expect("delayed output_item.added");
+        let added = serde_json::to_value(added).unwrap();
+        assert_eq!(added["item"]["type"], item_type);
+        assert_eq!(added["item"][payload_key], expected_payload);
+        assert!(added["item"].get("name").is_none());
+
+        let done = events
+            .iter()
+            .find(|event| matches!(event, ResponseStreamEvent::OutputItemDone { .. }))
+            .expect("output_item.done");
+        let done = serde_json::to_value(done).unwrap();
+        assert_eq!(done["item"]["type"], item_type);
+        assert_eq!(done["item"][payload_key], expected_payload);
+    }
 }
 
 #[test]
@@ -681,13 +761,13 @@ fn meta(code: &str, message: &str) -> aws_smithy_types::error::metadata::ErrorMe
 
 // -- content-filter stop reason → incomplete status ----------------------
 
-/// A `content_filtered` stop reason maps the final completed Response to
+/// A `content_filtered` stop reason maps the terminal Response to
 /// `status == "incomplete"` with `incomplete_details.reason ==
 /// "content_filter"` (reusing the non-stream mapper). The stream still
 /// terminates on `response.completed` — there is NO separate refusal stream
 /// event from the Bedrock state machine.
 #[test]
-fn content_filter_stop_reason_yields_incomplete_completed() {
+fn content_filter_stop_reason_yields_incomplete_event() {
     let events = drive(&[
         ev_message_start(),
         ev_text("partial", 0),
@@ -698,7 +778,7 @@ fn content_filter_stop_reason_yields_incomplete_completed() {
     // Terminates on response.completed (the lifecycle envelope), not a
     // refusal event.
     match events.last().expect("completed") {
-        ResponseStreamEvent::Completed { response, .. } => {
+        ResponseStreamEvent::Incomplete { response, .. } => {
             assert_eq!(response.status, "incomplete");
             let details = response
                 .incomplete_details
@@ -706,7 +786,7 @@ fn content_filter_stop_reason_yields_incomplete_completed() {
                 .expect("incomplete_details present");
             assert_eq!(details["reason"], "content_filter");
         }
-        other => panic!("expected response.completed last, got {other:?}"),
+        other => panic!("expected response.incomplete last, got {other:?}"),
     }
     assert_no_done_no_argdelta(&events);
 }
@@ -815,8 +895,10 @@ fn converse_responses_stream_lifecycle_locked() {
             "response.output_text.done",
             "response.content_part.done",
             "response.output_item.done",
-            // function_call item: add + done (no arg-delta events).
+            // function_call item: add + argument lifecycle + done.
             "response.output_item.added",
+            "response.function_call_arguments.delta",
+            "response.function_call_arguments.done",
             "response.output_item.done",
             // terminal envelope.
             "response.completed",
@@ -859,13 +941,10 @@ fn converse_responses_stream_lifecycle_locked() {
 
 // -- #8: open tool block at truncation is flushed through finish() -------
 
-/// A tool block that receives its input but NO `contentBlockStop` before a
-/// `max_tokens` truncation must still be flushed: `finish()` (via
-/// `messageStop`) emits the `output_item.done` for the open tool so the
-/// function_call is not dropped, and the completed Response carries the
-/// tool call with `incomplete_details.reason == "max_output_tokens"`.
+/// A tool block that receives input but no `contentBlockStop` before a
+/// truncation must never be marked completed or become executable.
 #[test]
-fn tool_block_open_at_stop_is_flushed() {
+fn tool_block_open_at_stop_remains_incomplete() {
     let events = drive(&[
         ev_message_start(),
         ev_tool_start(0, "call-open", "get_weather"),
@@ -881,39 +960,23 @@ fn tool_block_open_at_stop_is_flushed() {
             "response.created",
             "response.in_progress",
             "response.output_item.added",
-            "response.output_item.done",
-            "response.completed",
+            "response.function_call_arguments.delta",
+            "response.incomplete",
         ],
-        "open tool block must be closed with output_item.done before completed"
+        "truncated tool block must not emit output_item.done"
     );
 
     assert_monotonic_from_zero(&events);
     assert_no_done_no_argdelta(&events);
 
-    // output_item.done carries the complete call_id + JSON-parseable args.
-    match &events[3] {
-        ResponseStreamEvent::OutputItemDone { item, .. } => match item {
-            ResponseOutputItem::FunctionCall {
-                call_id,
-                arguments,
-                status,
-                ..
-            } => {
-                assert_eq!(call_id, "call-open");
-                assert_eq!(status.as_deref(), Some("completed"));
-                let parsed: Value =
-                    serde_json::from_str(arguments).expect("arguments JSON-parseable");
-                assert_eq!(parsed, json!({ "city": "Paris" }));
-            }
-            other => panic!("expected function_call item, got {other:?}"),
-        },
-        other => panic!("expected output_item.done, got {other:?}"),
-    }
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, ResponseStreamEvent::OutputItemDone { .. })));
 
     // The completed Response carries the tool call and the incomplete
     // status from the max_tokens truncation.
     match events.last().unwrap() {
-        ResponseStreamEvent::Completed { response, .. } => {
+        ResponseStreamEvent::Incomplete { response, .. } => {
             assert_eq!(response.status, "incomplete");
             assert_eq!(
                 response.incomplete_details.as_ref().expect("details")["reason"],
@@ -926,7 +989,7 @@ fn tool_block_open_at_stop_is_flushed() {
                 other => panic!("expected function_call in final output, got {other:?}"),
             }
         }
-        other => panic!("expected completed, got {other:?}"),
+        other => panic!("expected incomplete, got {other:?}"),
     }
 }
 

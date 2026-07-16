@@ -33,8 +33,13 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::collections::HashMap;
+
 use serde_json::{json, Value};
 
+use crate::bedrock::responses_translate::{
+    encode_reasoning_envelope, ResponsesToolKind, ResponsesToolRegistry,
+};
 use crate::bedrock::tokens::{compute_token_usage, estimate_reasoning_tokens};
 use crate::error::AppError;
 use crate::openai::responses_schema::{
@@ -74,6 +79,22 @@ pub fn from_converse_output_to_responses(
     model: &str,
     response_id: &str,
 ) -> Result<ResponsesResponse, AppError> {
+    from_converse_output_to_responses_with_tools(
+        output,
+        req,
+        model,
+        response_id,
+        &ResponsesToolRegistry::default(),
+    )
+}
+
+pub(crate) fn from_converse_output_to_responses_with_tools(
+    output: &Value,
+    req: &ResponsesRequest,
+    model: &str,
+    response_id: &str,
+    tool_registry: &ResponsesToolRegistry,
+) -> Result<ResponsesResponse, AppError> {
     let content = output
         .get("output")
         .and_then(|o| o.get("message"))
@@ -96,17 +117,19 @@ pub fn from_converse_output_to_responses(
     );
 
     let reasoning_text = collect_reasoning_text(content);
+    let reasoning_encrypted_content = encode_reasoning_envelope(content);
     let reasoning_tokens = estimate_reasoning_tokens(&reasoning_text);
 
     let mut items: Vec<ResponseOutputItem> = Vec::new();
 
     // Spec order: a reasoning item FIRST, carrying the reasoning text in
     // `summary` (a structured item — NOT the chat path's `<think>` inline).
-    if !reasoning_text.is_empty() {
+    if !reasoning_text.is_empty() || reasoning_encrypted_content.is_some() {
         items.push(ResponseOutputItem::Reasoning {
             id: format!("rs_{}", response_id.trim_start_matches("resp_")),
             content: None,
             summary: Some(json!([{ "type": "summary_text", "text": reasoning_text }])),
+            encrypted_content: reasoning_encrypted_content,
         });
     }
 
@@ -133,13 +156,18 @@ pub fn from_converse_output_to_responses(
             let arguments = serde_json::to_string(&input).map_err(|e| {
                 AppError::Internal(format!("failed to serialize toolUse input: {e}"))
             })?;
-            tool_items.push(ResponseOutputItem::FunctionCall {
-                id: Some(format!("fc_{call_id}")),
-                call_id,
-                name,
+            let status = tool_registry
+                .resolve(&name)
+                .filter(|binding| binding.kind != ResponsesToolKind::Function)
+                .map(|_| "completed");
+            tool_items.push(tool_output_item(
+                tool_registry,
+                &call_id,
+                &name,
+                &input,
                 arguments,
-                status: None,
-            });
+                status,
+            ));
         } else if let Some(t) = c.get("text").and_then(Value::as_str) {
             text.push_str(t);
         }
@@ -205,6 +233,88 @@ pub fn from_converse_output_to_responses(
         error: None,
         incomplete_details,
     })
+}
+
+pub(crate) fn tool_output_item(
+    registry: &ResponsesToolRegistry,
+    call_id: &str,
+    bedrock_name: &str,
+    input: &Value,
+    arguments: String,
+    status: Option<&str>,
+) -> ResponseOutputItem {
+    let Some(binding) = registry.resolve(bedrock_name) else {
+        return ResponseOutputItem::FunctionCall {
+            id: Some(format!("fc_{call_id}")),
+            call_id: call_id.to_string(),
+            name: bedrock_name.to_string(),
+            namespace: None,
+            arguments,
+            status: status.map(str::to_string),
+        };
+    };
+
+    if binding.kind == ResponsesToolKind::Function {
+        return ResponseOutputItem::FunctionCall {
+            id: Some(format!("fc_{call_id}")),
+            call_id: call_id.to_string(),
+            name: binding.client_name.clone(),
+            namespace: binding.namespace.clone(),
+            arguments,
+            status: status.map(str::to_string),
+        };
+    }
+
+    let (item_type, id_prefix, payload_key, payload) = match binding.kind {
+        ResponsesToolKind::Custom => (
+            "custom_tool_call",
+            "ct",
+            "input",
+            input
+                .get("input")
+                .cloned()
+                .unwrap_or(Value::String(arguments)),
+        ),
+        ResponsesToolKind::LocalShell => (
+            "local_shell_call",
+            "lsc",
+            "action",
+            input
+                .get("action")
+                .cloned()
+                .unwrap_or_else(|| input.clone()),
+        ),
+        ResponsesToolKind::Shell => ("shell_call", "sh", "action", input.clone()),
+        ResponsesToolKind::ApplyPatch => (
+            "apply_patch_call",
+            "ap",
+            "operation",
+            input
+                .get("operation")
+                .cloned()
+                .unwrap_or_else(|| input.clone()),
+        ),
+        ResponsesToolKind::Function => unreachable!(),
+    };
+    let mut fields = HashMap::new();
+    fields.insert("id".to_string(), json!(format!("{id_prefix}_{call_id}")));
+    fields.insert("call_id".to_string(), json!(call_id));
+    fields.insert(payload_key.to_string(), payload);
+    if binding.kind == ResponsesToolKind::Custom {
+        fields.insert("name".to_string(), json!(binding.client_name));
+    }
+    if matches!(
+        binding.kind,
+        ResponsesToolKind::Shell | ResponsesToolKind::ApplyPatch
+    ) {
+        if let Some(status) = status {
+            fields.insert("status".to_string(), json!(status));
+        }
+    }
+    ResponseOutputItem::Other {
+        item_type: item_type.to_string(),
+        fields,
+    }
 }
 
 /// Concatenate every `reasoningContent.reasoningText.text` across blocks.

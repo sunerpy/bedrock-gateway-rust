@@ -60,9 +60,10 @@ use std::sync::Arc;
 use aws_sdk_bedrockruntime::types::{
     AnyToolChoice, AutoToolChoice, CachePointBlock, CachePointType, ContentBlock, ConversationRole,
     ImageBlock, ImageFormat, ImageSource, InferenceConfiguration, JsonSchemaDefinition, Message,
-    OutputConfig, OutputFormat, OutputFormatStructure, OutputFormatType, SpecificToolChoice,
-    SystemContentBlock, Tool, ToolChoice, ToolConfiguration, ToolInputSchema, ToolResultBlock,
-    ToolResultContentBlock, ToolSpecification, ToolUseBlock,
+    OutputConfig, OutputFormat, OutputFormatStructure, OutputFormatType, ReasoningContentBlock,
+    ReasoningTextBlock, SpecificToolChoice, SystemContentBlock, Tool, ToolChoice,
+    ToolConfiguration, ToolInputSchema, ToolResultBlock, ToolResultContentBlock, ToolSpecification,
+    ToolUseBlock,
 };
 use aws_smithy_types::{Blob, Document, Number};
 use serde_json::{Map, Value};
@@ -83,7 +84,7 @@ use crate::domain::{
     ChatProvider, ChatStream, ModelCapabilities, NormalizedChatRequest, RouteOverride,
 };
 use crate::error::AppError;
-use crate::openai::schema::{ChatRequest, ChatResponse};
+use crate::openai::schema::{ChatRequest, ChatResponse, Message as OpenAiMessage};
 
 // ===========================================================================
 // JSON → aws-sdk Document
@@ -257,6 +258,36 @@ fn build_content_block(block: &Value) -> Result<ContentBlock, AppError> {
     }
     if let Some(tr) = obj.get("toolResult") {
         return Ok(ContentBlock::ToolResult(build_tool_result_block(tr)?));
+    }
+    if let Some(reasoning) = obj.get("reasoningContent") {
+        if let Some(text) = reasoning.get("reasoningText") {
+            let text_value = text.get("text").and_then(Value::as_str).ok_or_else(|| {
+                AppError::BadRequest("reasoning envelope is missing reasoningText.text".to_string())
+            })?;
+            let block = ReasoningTextBlock::builder()
+                .text(text_value)
+                .set_signature(
+                    text.get("signature")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                )
+                .build()
+                .map_err(|e| AppError::BadRequest(format!("invalid reasoning block: {e}")))?;
+            return Ok(ContentBlock::ReasoningContent(
+                ReasoningContentBlock::ReasoningText(block),
+            ));
+        }
+        if let Some(redacted) = reasoning.get("redactedContent").and_then(Value::as_str) {
+            use base64::Engine as _;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(redacted)
+                .map_err(|e| {
+                    AppError::BadRequest(format!("invalid redacted reasoning data: {e}"))
+                })?;
+            return Ok(ContentBlock::ReasoningContent(
+                ReasoningContentBlock::RedactedContent(Blob::new(bytes)),
+            ));
+        }
     }
     if obj.contains_key("cachePoint") {
         return Ok(ContentBlock::CachePoint(
@@ -535,7 +566,18 @@ pub(crate) fn converse_output_to_json(
                 ContentBlock::ReasoningContent(rc) => {
                     if let Ok(rt) = rc.as_reasoning_text() {
                         content_blocks.push(serde_json::json!({
-                            "reasoningContent": { "reasoningText": { "text": rt.text() } }
+                            "reasoningContent": { "reasoningText": {
+                                "text": rt.text(),
+                                "signature": rt.signature(),
+                            } }
+                        }));
+                    } else if let Ok(redacted) = rc.as_redacted_content() {
+                        use base64::Engine as _;
+                        content_blocks.push(serde_json::json!({
+                            "reasoningContent": {
+                                "redactedContent": base64::engine::general_purpose::STANDARD
+                                    .encode(redacted.as_ref())
+                            }
                         }));
                     }
                 }
@@ -671,22 +713,48 @@ impl BedrockChatProvider {
         let mut chat: ChatRequest = req.request.clone();
 
         // --- 1. Reasoning ----------------------------------------------------
-        let reasoning_outcome = match chat.reasoning_effort {
-            Some(effort) => reasoning::build_reasoning_config(
+        let has_tool_context = chat.tools.as_ref().is_some_and(|tools| !tools.is_empty())
+            || chat.messages.iter().any(|message| match message {
+                OpenAiMessage::Assistant { tool_calls, .. } => {
+                    tool_calls.as_ref().is_some_and(|calls| !calls.is_empty())
+                }
+                OpenAiMessage::Tool { .. } => true,
+                _ => false,
+            });
+        let reasoning_outcome = match (chat.reasoning_effort, has_tool_context) {
+            // Chat Completions has no standard field that can replay Bedrock's
+            // reasoning signature on a tool continuation. Keep tool calling
+            // reliable by not enabling extended thinking for this combination.
+            (Some(_), true) => {
+                tracing::warn!(
+                    request_id = %req.request_id,
+                    model = %resolved,
+                    "reasoning disabled for Chat tool request or continuation because the Chat wire format cannot replay Bedrock reasoning signatures"
+                );
+                reasoning::ReasoningOutcome::default()
+            }
+            (Some(effort), false) => reasoning::build_reasoning_config(
                 resolved,
                 effort,
                 chat.max_tokens,
                 chat.max_completion_tokens,
                 caps,
             ),
-            None => reasoning::ReasoningOutcome::default(),
+            (None, _) => reasoning::ReasoningOutcome::default(),
         };
 
         // --- 2. Tool config (pre-translate) ----------------------------------
         // Build a toolConfig from request tools + tool_choice. The llama skip is
         // computed HERE (composition layer) from the resolved model id.
         let skip_tool_choice = skip_tool_choice_for(resolved);
+        let tool_choice_none = matches!(
+            &chat.tool_choice,
+            crate::openai::schema::ToolChoice::String(choice) if choice == "none"
+        );
         let tool_config = match &chat.tools {
+            // Bedrock has no `none` choice. Omitting toolConfig is the only
+            // representation that prevents a fresh request selecting a tool.
+            Some(_) if tool_choice_none => None,
             Some(tools) if !tools.is_empty() => Some(tools::build_tool_config(
                 tools,
                 Some(&chat.tool_choice),

@@ -1534,3 +1534,23 @@ fn reqwest_image_resolver_construct_predicate_and_debug() {
     let dbg = format!("{resolver:?}");
     assert!(dbg.contains("ReqwestImageResolver"));
 }
+
+#[tokio::test]
+async fn max_completion_tokens_wins_and_omitted_limit_stays_absent() {
+    let mut req = base_request("m", vec![user_text("hi")]);
+    req.max_tokens = Some(111);
+    req.max_completion_tokens = Some(333);
+    let c = caps();
+    let r = resolver(false);
+    let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+        .await
+        .expect("translate");
+    assert_eq!(args.inference_config["maxTokens"], 333);
+
+    req.max_tokens = None;
+    req.max_completion_tokens = None;
+    let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+        .await
+        .expect("translate without limit");
+    assert!(args.inference_config.get("maxTokens").is_none());
+}

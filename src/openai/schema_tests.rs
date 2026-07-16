@@ -135,7 +135,6 @@ fn reasoning_content_never_serializes() {
 fn defaults_match_python() {
     assert!(matches!(ToolChoice::default(), ToolChoice::String(ref s) if s == "auto"));
     assert!(matches!(EncodingFormat::default(), EncodingFormat::Float));
-    assert_eq!(default_max_tokens(), Some(2048));
     assert_eq!(default_fingerprint(), "fp");
 
     let opts: StreamOptions = serde_json::from_str("{}").expect("empty stream options");
@@ -706,14 +705,14 @@ fn stream_options_default_true_when_omitted() {
     assert!(opts.include_usage); // default_true
 }
 
-/// `ChatRequest.max_tokens` falls back to `default_max_tokens()` (Some(2048))
-/// when omitted, and `tool_choice` to its `Default` ("auto").
+/// Token limits remain absent when omitted, while `tool_choice` uses its
+/// OpenAI default ("auto").
 #[test]
 fn chat_request_defaults_applied_when_omitted() {
     let req: ChatRequest =
         serde_json::from_str(r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#)
             .expect("deserialize");
-    assert_eq!(req.max_tokens, Some(2048)); // default_max_tokens
+    assert_eq!(req.max_tokens, None);
     assert!(matches!(req.tool_choice, ToolChoice::String(ref s) if s == "auto"));
     assert!(req.extra.is_empty());
 }
