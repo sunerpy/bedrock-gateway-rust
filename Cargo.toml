@@ -1,6 +1,6 @@
 [package]
 name = "bedrock-gateway-rust"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 description = "A 100% Rust, OpenAI-compatible API gateway for AWS Bedrock — drop-in, single-binary, blazingly fast."
 license = "MIT-0"
