@@ -93,6 +93,13 @@ pub struct AppSettings {
     /// AWS maximum retry attempts (default: 8, from botocore parity)
     pub aws_max_retry_attempts: u32,
 
+    /// Maximum accepted HTTP request body size, in megabytes (default: 20). Env:
+    /// `MAX_BODY_SIZE_MB` (or `APP_MAX_BODY_SIZE_MB`). Raised from axum's 2 MB
+    /// default so base64-encoded image payloads (which inflate ~1.33×) are not
+    /// rejected with 413. This is a request-byte guard against unbounded bodies,
+    /// unrelated to the model context window.
+    pub max_body_size_mb: u32,
+
     /// URL template for the bedrock-mantle OpenAI-compatible upstream, with a
     /// `{region}` placeholder substituted per request. Default:
     /// `https://bedrock-mantle.{region}.api.aws/openai/v1`. Env:
@@ -159,6 +166,7 @@ impl AppSettings {
             .set_default("aws_connect_timeout_secs", 60u64)?
             .set_default("aws_read_timeout_secs", 900u64)?
             .set_default("aws_max_retry_attempts", 8u32)?
+            .set_default("max_body_size_mb", 20u32)?
             .set_default(
                 "mantle_base_url_template",
                 "https://bedrock-mantle.{region}.api.aws/openai/v1",
@@ -199,9 +207,10 @@ impl AppSettings {
 /// `ENABLE_APPLICATION_INFERENCE_PROFILES`, `ENABLE_PROMPT_CACHING`,
 /// `DISABLE_MANTLE`, `API_KEY`, `API_KEY_SECRET_ARN`, `API_KEY_PARAM_NAME`,
 /// `AWS_BEARER_TOKEN_BEDROCK` (alias `BEDROCK_API_KEY`), plus the operational
-/// knobs `PORT`, `BIND_ADDR`, `LOG_LEVEL`, `MANTLE_BASE_URL_TEMPLATE`,
-/// `MANTLE_CHAT_BASE_URL_TEMPLATE`, `ALLOWED_MODELS`, `PROMPT_CACHE_TTL`,
-/// `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_CAPTURE_CONTENT`.
+/// knobs `PORT`, `BIND_ADDR`, `LOG_LEVEL`, `MAX_BODY_SIZE_MB`,
+/// `MANTLE_BASE_URL_TEMPLATE`, `MANTLE_CHAT_BASE_URL_TEMPLATE`,
+/// `ALLOWED_MODELS`, `PROMPT_CACHE_TTL`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
+/// `OTEL_CAPTURE_CONTENT`.
 fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder> {
     // String-valued overrides.
     for (env_name, field) in [
@@ -265,6 +274,7 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
         ("AWS_CONNECT_TIMEOUT_SECS", "aws_connect_timeout_secs"),
         ("AWS_READ_TIMEOUT_SECS", "aws_read_timeout_secs"),
         ("AWS_MAX_RETRY_ATTEMPTS", "aws_max_retry_attempts"),
+        ("MAX_BODY_SIZE_MB", "max_body_size_mb"),
     ] {
         if let Some(value) = non_empty_env(env_name) {
             if let Ok(parsed) = value.parse::<i64>() {

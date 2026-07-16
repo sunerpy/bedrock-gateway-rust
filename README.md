@@ -226,6 +226,7 @@ Prefer fetching `API_KEY` from a secrets store. Priority order:
 | `PORT`             | `8080`    | HTTP listen port              |
 | `BIND_ADDR`        | `0.0.0.0` | Network interface to bind     |
 | `API_ROUTE_PREFIX` | `/api/v1` | Path prefix for all endpoints |
+| `MAX_BODY_SIZE_MB` | `20`      | Maximum accepted request body size in MB (raised from axum's 2 MB default so base64-encoded image payloads fit) |
 
 **Logging**
 

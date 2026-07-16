@@ -1147,6 +1147,7 @@ mod tests {
             aws_connect_timeout_secs: 60,
             aws_read_timeout_secs: 900,
             aws_max_retry_attempts: 8,
+            max_body_size_mb: 20,
             mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
                 .to_string(),
             mantle_chat_base_url_template: "https://bedrock-mantle.{region}.api.aws/v1".to_string(),
