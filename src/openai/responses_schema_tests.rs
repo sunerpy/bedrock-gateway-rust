@@ -17,6 +17,38 @@ fn deserialize_string_input_request() {
 }
 
 #[test]
+fn reasoning_observability_helpers_report_request_and_usage() {
+    let default_request: ResponsesRequest =
+        serde_json::from_value(json!({"model":"m","input":"hi"})).unwrap();
+    assert_eq!(default_request.reasoning_effort_label(), "default");
+
+    let high_request: ResponsesRequest = serde_json::from_value(json!({
+        "model": "m",
+        "input": "hi",
+        "reasoning": {"effort": "high", "summary": "auto"}
+    }))
+    .unwrap();
+    assert_eq!(high_request.reasoning_effort_label(), "high");
+
+    let usage: ResponsesUsage = serde_json::from_value(json!({
+        "input_tokens": 135,
+        "output_tokens": 1399,
+        "output_tokens_details": {"reasoning_tokens": 929},
+        "total_tokens": 1534
+    }))
+    .unwrap();
+    assert_eq!(usage.reasoning_tokens(), 929);
+
+    let usage_without_details: ResponsesUsage = serde_json::from_value(json!({
+        "input_tokens": 4,
+        "output_tokens": 2,
+        "total_tokens": 6
+    }))
+    .unwrap();
+    assert_eq!(usage_without_details.reasoning_tokens(), 0);
+}
+
+#[test]
 fn deserialize_item_array_request() {
     let req: ResponsesRequest = serde_json::from_value(json!({
         "model": "m",

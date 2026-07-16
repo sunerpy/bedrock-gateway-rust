@@ -63,6 +63,63 @@ async fn responses_stream_stops_after_terminal_frame_without_upstream_eof() {
     );
 }
 
+#[test]
+fn terminal_observer_extracts_reasoning_usage_across_chunks() {
+    let mut terminator = ResponsesSseTerminator::default();
+    let first = b"event: response.incomplete\ndata: {\"response\":{\"status\":\"incomplete\",\"output\":[{\"type\":\"reasoning\",\"summary\":[]}],\"usage\":{\"input_tokens\":135,\"output_tokens\":3000,\"output_tokens_details\":{\"reasoning_";
+    let second = b"tokens\":3000},\"total_tokens\":3135}},\"sequence_number\":14,\"type\":\"response.incomplete\"}\n\n";
+
+    assert!(terminator.observe(first).is_none());
+    let terminal = terminator.observe(second).expect("terminal event metadata");
+
+    assert_eq!(terminal.event_type, "response.incomplete");
+    assert_eq!(terminal.status.as_deref(), Some("incomplete"));
+    assert_eq!(terminal.input_tokens, Some(135));
+    assert_eq!(terminal.output_tokens, Some(3000));
+    assert_eq!(terminal.total_tokens, Some(3135));
+    assert_eq!(terminal.reasoning_tokens, Some(3000));
+}
+
+#[tokio::test]
+async fn terminal_observer_preserves_bytes_and_reports_reasoning_usage() {
+    let chunks = [
+        "event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":135,\"output_tokens\":1399,\"output_tokens_details\":{\"reasoning_",
+        "tokens\":929},\"total_tokens\":1534}},\"sequence_number\":14,\"type\":\"response.completed\"}\n\n",
+    ];
+    let expected = chunks.concat();
+    let upstream = futures::stream::iter(
+        chunks
+            .into_iter()
+            .map(|chunk| Ok(Bytes::from(chunk.to_string()))),
+    )
+    .boxed();
+    let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let observer_state = std::sync::Arc::clone(&observed);
+    let observer = Box::new(move |terminal| {
+        *observer_state.lock().expect("observer lock") = Some(terminal);
+    });
+
+    let stream = terminate_responses_sse_with_observer(upstream, Some(observer));
+    let forwarded = stream
+        .map(|result| result.expect("stream chunk"))
+        .collect::<Vec<_>>()
+        .await
+        .concat();
+
+    assert_eq!(forwarded, expected.as_bytes());
+    let terminal = observed
+        .lock()
+        .expect("observer lock")
+        .clone()
+        .expect("terminal metadata");
+    assert_eq!(terminal.event_type, "response.completed");
+    assert_eq!(terminal.status.as_deref(), Some("completed"));
+    assert_eq!(terminal.input_tokens, Some(135));
+    assert_eq!(terminal.output_tokens, Some(1399));
+    assert_eq!(terminal.total_tokens, Some(1534));
+    assert_eq!(terminal.reasoning_tokens, Some(929));
+}
+
 /// Given a 200 from the mantle `/responses` endpoint,
 /// When `responses_nonstream` is called,
 /// Then the returned bytes equal the mock body AND the request carried the

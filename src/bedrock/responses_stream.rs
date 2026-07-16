@@ -885,9 +885,14 @@ impl ResponsesStreamState {
             .map(|d| d.cached_tokens)
             .unwrap_or(0);
         let cache_hit = cached_tokens > 0;
+        let reasoning_tokens = response.usage.reasoning_tokens();
+        let reasoning_used = reasoning_tokens > 0;
         tracing::info!(
             request_id = %self.request_id,
             model = %self.model,
+            reasoning_effort = %self.request.reasoning_effort_label(),
+            reasoning_used,
+            reasoning_tokens,
             input_tokens = response.usage.input_tokens,
             output_tokens = response.usage.output_tokens,
             total_tokens = response.usage.total_tokens,

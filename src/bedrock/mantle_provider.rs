@@ -41,7 +41,7 @@ use bytes::Bytes;
 use futures::stream::StreamExt;
 use serde_json::Value;
 
-use crate::bedrock::mantle_client::MantleClient;
+use crate::bedrock::mantle_client::{MantleClient, ResponsesStreamTerminal};
 use crate::bedrock::tokens::compute_token_usage;
 use crate::config::AppSettings;
 use crate::domain::{
@@ -204,7 +204,34 @@ impl ResponsesProvider for MantleResponsesProvider {
 
         tracing::debug!(region = %region, "invoking mantle responses (raw stream)");
 
-        let stream = self.client.responses_stream(&region, body).await.ok()?;
+        let request_id = Arc::clone(&req.request_id);
+        let model = req.request.model.clone();
+        let reasoning_effort = req.request.reasoning_effort_label().to_string();
+        let started_at = req.received_at;
+        let observer = Box::new(move |terminal: ResponsesStreamTerminal| {
+            let reasoning_tokens = terminal.reasoning_tokens.unwrap_or(0);
+            let reasoning_used = reasoning_tokens > 0;
+            tracing::info!(
+                request_id = %request_id,
+                model = %model,
+                status = terminal.status.as_deref().unwrap_or("unknown"),
+                terminal_event = %terminal.event_type,
+                reasoning_effort = %reasoning_effort,
+                reasoning_used,
+                reasoning_tokens,
+                reasoning_usage_available = terminal.reasoning_tokens.is_some(),
+                input_tokens = ?terminal.input_tokens,
+                output_tokens = ?terminal.output_tokens,
+                total_tokens = ?terminal.total_tokens,
+                duration_ms = started_at.elapsed().as_millis(),
+                "responses raw streaming completed"
+            );
+        });
+        let stream = self
+            .client
+            .responses_stream_with_observer(&region, body, observer)
+            .await
+            .ok()?;
         Some(stream.boxed())
     }
 }

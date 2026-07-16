@@ -588,10 +588,12 @@ pub async fn responses(
     let resolved_model = state.caps.resolve_foundation(&request.model);
     let is_stream = request.stream.unwrap_or(false);
     let client_model = request.model.clone();
+    let reasoning_effort = request.reasoning_effort_label().to_string();
     tracing::info!(
         request_id = %request_id,
         model = %client_model,
         stream = is_stream,
+        reasoning_effort = %reasoning_effort,
         "responses request received"
     );
     let normalized = NormalizedResponsesRequest {
@@ -650,10 +652,15 @@ pub async fn responses(
                     .map(|d| d.cached_tokens)
                     .unwrap_or(0);
                 let cache_hit = cached_tokens > 0;
+                let reasoning_tokens = response.usage.reasoning_tokens();
+                let reasoning_used = reasoning_tokens > 0;
                 tracing::info!(
                     request_id = %request_id,
                     model = %client_model,
                     status = %response.status,
+                    reasoning_effort = %reasoning_effort,
+                    reasoning_used,
+                    reasoning_tokens,
                     input_tokens = response.usage.input_tokens,
                     output_tokens = response.usage.output_tokens,
                     total_tokens = response.usage.total_tokens,
