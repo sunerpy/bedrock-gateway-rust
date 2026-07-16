@@ -685,6 +685,35 @@ fn fail_emits_response_failed_and_is_terminal() {
     assert!(st.finish().is_empty());
 }
 
+/// A receiver error after `messageStop(ToolUse)` but before clean EOF must not
+/// leak an executable tool call. Tool completion is committed only by finish().
+#[test]
+fn late_stream_failure_after_message_stop_never_emits_tool_done() {
+    let mut st = state();
+    let mut events = Vec::new();
+    for event in [
+        ev_message_start(),
+        ev_tool_start(0, "call-late", "write"),
+        ev_tool_input(0, "{\"path\":\"file\"}"),
+        ev_block_stop(0),
+        ev_message_stop(StopReason::ToolUse),
+    ] {
+        events.extend(st.map_event(&event));
+    }
+    events.extend(st.fail(&AppError::Internal("late receiver error".to_string())));
+
+    assert!(matches!(
+        events.last(),
+        Some(ResponseStreamEvent::Failed { .. })
+    ));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        ResponseStreamEvent::FunctionCallArgumentsDone { .. }
+            | ResponseStreamEvent::OutputItemDone { .. }
+    )));
+    assert_monotonic_from_zero(&events);
+}
+
 /// The error code in a `response.failed` event is mapped by the shared
 /// [`crate::error::responses_error`] mapper.
 fn failed_error_code(st: &mut ResponsesStreamState, err: &AppError) -> String {
@@ -939,7 +968,65 @@ fn converse_responses_stream_lifecycle_locked() {
     assert_eq!(completed, 1, "exactly one response.completed expected");
 }
 
-// -- #8: open tool block at truncation is flushed through finish() -------
+// -- truncated tool blocks never become executable ----------------------
+
+/// REGRESSION: Bedrock may emit `contentBlockStop` before the later
+/// `messageStop(MaxTokens)`. The block stop must not prematurely create an
+/// executable tool call, even when the accumulated JSON happens to be valid.
+#[test]
+fn tool_block_closed_before_max_tokens_never_emits_done() {
+    let events = drive(&[
+        ev_message_start(),
+        ev_tool_start(0, "call-closed", "write"),
+        ev_tool_input(0, "{\"path\":\"large-file\"}"),
+        ev_block_stop(0),
+        ev_message_stop(StopReason::MaxTokens),
+        ev_metadata(12, 32, 44),
+    ]);
+
+    let types: Vec<String> = events.iter().map(type_of).collect();
+    assert_eq!(
+        types,
+        vec![
+            "response.created",
+            "response.in_progress",
+            "response.output_item.added",
+            "response.function_call_arguments.delta",
+            "response.incomplete",
+        ]
+    );
+    assert_monotonic_from_zero(&events);
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        ResponseStreamEvent::FunctionCallArgumentsDone { .. }
+            | ResponseStreamEvent::OutputItemDone { .. }
+    )));
+}
+
+/// Malformed tool JSON on a nominal `tool_use` stop is an explicit upstream
+/// failure, never normalized to `{}` and marked completed.
+#[test]
+fn malformed_tool_arguments_fail_without_output_item_done() {
+    let events = drive(&[
+        ev_message_start(),
+        ev_tool_start(0, "call-bad", "write"),
+        ev_tool_input(0, "{\"path\":"),
+        ev_block_stop(0),
+        ev_message_stop(StopReason::ToolUse),
+        ev_metadata(12, 6, 18),
+    ]);
+
+    assert!(matches!(
+        events.last(),
+        Some(ResponseStreamEvent::Failed { .. })
+    ));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        ResponseStreamEvent::FunctionCallArgumentsDone { .. }
+            | ResponseStreamEvent::OutputItemDone { .. }
+    )));
+    assert_monotonic_from_zero(&events);
+}
 
 /// A tool block that receives input but no `contentBlockStop` before a
 /// truncation must never be marked completed or become executable.

@@ -3,9 +3,10 @@ use std::sync::Mutex;
 
 static ENV_GUARD: Mutex<()> = Mutex::new(());
 
-const TIMEOUT_RETRY_VARS: [&str; 4] = [
+const TIMEOUT_RETRY_VARS: [&str; 5] = [
     "AWS_CONNECT_TIMEOUT_SECS",
     "AWS_READ_TIMEOUT_SECS",
+    "RESPONSES_STREAM_IDLE_TIMEOUT_SECS",
     "AWS_MAX_RETRY_ATTEMPTS",
     "PORT",
 ];
@@ -138,6 +139,7 @@ fn test_defaults_load_without_env_or_file() {
     assert_eq!(settings.log_level, "info");
     assert_eq!(settings.aws_connect_timeout_secs, 60);
     assert_eq!(settings.aws_read_timeout_secs, 900);
+    assert_eq!(settings.responses_stream_idle_timeout_secs, 180);
     assert_eq!(settings.aws_max_retry_attempts, 8);
     assert_eq!(settings.prompt_cache_ttl, "5m");
 }
@@ -535,12 +537,14 @@ fn bare_timeout_retry_env_vars_override_defaults() {
 
     std::env::set_var("AWS_CONNECT_TIMEOUT_SECS", "30");
     std::env::set_var("AWS_READ_TIMEOUT_SECS", "120");
+    std::env::set_var("RESPONSES_STREAM_IDLE_TIMEOUT_SECS", "45");
     std::env::set_var("AWS_MAX_RETRY_ATTEMPTS", "3");
 
     let settings = AppSettings::load().unwrap();
 
     assert_eq!(settings.aws_connect_timeout_secs, 30);
     assert_eq!(settings.aws_read_timeout_secs, 120);
+    assert_eq!(settings.responses_stream_idle_timeout_secs, 45);
     assert_eq!(settings.aws_max_retry_attempts, 3);
 
     clear_timeout_retry_vars();
@@ -575,12 +579,14 @@ fn bare_timeout_retry_env_vars_non_numeric_falls_back_to_defaults() {
 
     std::env::set_var("AWS_CONNECT_TIMEOUT_SECS", "not-a-number");
     std::env::set_var("AWS_READ_TIMEOUT_SECS", "");
+    std::env::set_var("RESPONSES_STREAM_IDLE_TIMEOUT_SECS", "invalid");
     std::env::set_var("AWS_MAX_RETRY_ATTEMPTS", "abc");
 
     let settings = AppSettings::load().unwrap();
 
     assert_eq!(settings.aws_connect_timeout_secs, 60);
     assert_eq!(settings.aws_read_timeout_secs, 900);
+    assert_eq!(settings.responses_stream_idle_timeout_secs, 180);
     assert_eq!(settings.aws_max_retry_attempts, 8);
 
     clear_timeout_retry_vars();

@@ -240,6 +240,7 @@ aws cloudformation deploy \
 | -------------------------- | ------ | ------------------------------------------- |
 | `AWS_CONNECT_TIMEOUT_SECS` | `60`   | 与 AWS 建立 TCP 连接的超时秒数              |
 | `AWS_READ_TIMEOUT_SECS`    | `900`  | 响应读取超时秒数（15 分钟，适应长流式会话） |
+| `RESPONSES_STREAM_IDLE_TIMEOUT_SECS` | `180` | Responses 上游事件连续静默达到该秒数后，以 `response.failed` 终止 |
 | `AWS_MAX_RETRY_ATTEMPTS`   | `8`    | 瞬时限流或 5xx 故障时的最大重试次数         |
 
 </details>

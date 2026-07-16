@@ -13,6 +13,10 @@ fn default_prompt_cache_ttl() -> String {
     "5m".to_string()
 }
 
+const fn default_responses_stream_idle_timeout_secs() -> u64 {
+    180
+}
+
 /// Application settings with layered configuration loading:
 /// defaults → optional file (config/app.toml) → environment variable overrides
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +94,14 @@ pub struct AppSettings {
     /// AWS read timeout in seconds (default: 900, from botocore parity)
     pub aws_read_timeout_secs: u64,
 
+    /// Maximum time between upstream Bedrock Responses stream events. Unlike
+    /// SSE keep-alives (gateway → client), this guards the upstream receiver
+    /// itself so a silent stream terminates with `response.failed` instead of
+    /// holding an agent session forever. Env: `RESPONSES_STREAM_IDLE_TIMEOUT_SECS`
+    /// (or `APP_RESPONSES_STREAM_IDLE_TIMEOUT_SECS`). Default: 180 seconds.
+    #[serde(default = "default_responses_stream_idle_timeout_secs")]
+    pub responses_stream_idle_timeout_secs: u64,
+
     /// AWS maximum retry attempts (default: 8, from botocore parity)
     pub aws_max_retry_attempts: u32,
 
@@ -165,6 +177,7 @@ impl AppSettings {
             .set_default("log_level", "info")?
             .set_default("aws_connect_timeout_secs", 60u64)?
             .set_default("aws_read_timeout_secs", 900u64)?
+            .set_default("responses_stream_idle_timeout_secs", 180u64)?
             .set_default("aws_max_retry_attempts", 8u32)?
             .set_default("max_body_size_mb", 20u32)?
             .set_default(
@@ -208,6 +221,7 @@ impl AppSettings {
 /// `DISABLE_MANTLE`, `API_KEY`, `API_KEY_SECRET_ARN`, `API_KEY_PARAM_NAME`,
 /// `AWS_BEARER_TOKEN_BEDROCK` (alias `BEDROCK_API_KEY`), plus the operational
 /// knobs `PORT`, `BIND_ADDR`, `LOG_LEVEL`, `MAX_BODY_SIZE_MB`,
+/// `RESPONSES_STREAM_IDLE_TIMEOUT_SECS`,
 /// `MANTLE_BASE_URL_TEMPLATE`, `MANTLE_CHAT_BASE_URL_TEMPLATE`,
 /// `ALLOWED_MODELS`, `PROMPT_CACHE_TTL`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
 /// `OTEL_CAPTURE_CONTENT`.
@@ -273,6 +287,10 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
         ("PORT", "port"),
         ("AWS_CONNECT_TIMEOUT_SECS", "aws_connect_timeout_secs"),
         ("AWS_READ_TIMEOUT_SECS", "aws_read_timeout_secs"),
+        (
+            "RESPONSES_STREAM_IDLE_TIMEOUT_SECS",
+            "responses_stream_idle_timeout_secs",
+        ),
         ("AWS_MAX_RETRY_ATTEMPTS", "aws_max_retry_attempts"),
         ("MAX_BODY_SIZE_MB", "max_body_size_mb"),
     ] {

@@ -37,7 +37,9 @@ use crate::bedrock::provider::{
     converse_output_to_json,
 };
 use crate::bedrock::responses_response::from_converse_output_to_responses_with_tools;
-use crate::bedrock::responses_stream::converse_stream_to_openai_responses;
+use crate::bedrock::responses_stream::{
+    converse_stream_to_openai_responses, ResponsesStreamRuntime,
+};
 use crate::bedrock::responses_translate::{
     build_responses_tools, reasoning_outcome, to_responses_converse_input, ResponsesToolRegistry,
 };
@@ -530,9 +532,12 @@ impl ResponsesProvider for BedrockResponsesProvider {
             req.request.model.clone(),
             resp_id(),
             req.request.clone(),
-            req.request_id.clone(),
-            req.received_at,
             assembled.tool_registry,
+            ResponsesStreamRuntime::new(
+                req.request_id.clone(),
+                req.received_at,
+                std::time::Duration::from_secs(self.settings.responses_stream_idle_timeout_secs),
+            ),
         ))
     }
 }

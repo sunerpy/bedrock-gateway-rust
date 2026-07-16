@@ -23,11 +23,10 @@
 //!    `response.output_text.delta`* → `response.output_text.done` →
 //!    `response.content_part.done` → `response.output_item.done`).
 //! 4. Tool calls: a `function_call` output item (`response.output_item.added`
-//!    with `item.type == "function_call"` → `response.output_item.done` with the
-//!    complete `call_id` + JSON-parseable `arguments`). NO
-//!    `function_call_arguments.delta/.done` events are emitted — codex
-//!    reconstructs from the item add/done pair, and the variant does not exist in
-//!    the T7 schema.
+//!    plus `response.function_call_arguments.delta` fragments), followed only
+//!    after a successful `messageStop` and clean upstream EOF by
+//!    `function_call_arguments.done` and `response.output_item.done`.
+//!    Truncated/filtered/errored calls never become done.
 //! 5. `response.completed` carrying the FULL final [`ResponsesResponse`], built
 //!    by REUSING [`crate::bedrock::responses_response::from_converse_output_to_responses`]
 //!    over a Converse-output-equivalent JSON reconstructed from accumulated
@@ -61,7 +60,7 @@ use aws_sdk_bedrockruntime::types::{
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::bedrock::responses_response::{
     from_converse_output_to_responses_with_tools, tool_output_item,
@@ -79,6 +78,24 @@ use crate::openai::responses_schema::{
 /// emits one summary part (index 0) carrying the full reasoning text.
 const REASONING_SUMMARY_INDEX: u32 = 0;
 
+/// Per-request runtime controls and observability context for the async stream
+/// driver. Grouping these keeps the wire-state constructor independent.
+pub(crate) struct ResponsesStreamRuntime {
+    request_id: Arc<str>,
+    start: Instant,
+    idle_timeout: Duration,
+}
+
+impl ResponsesStreamRuntime {
+    pub(crate) fn new(request_id: Arc<str>, start: Instant, idle_timeout: Duration) -> Self {
+        Self {
+            request_id,
+            start,
+            idle_timeout,
+        }
+    }
+}
+
 /// Per-block tool-call bookkeeping, keyed by Bedrock `contentBlockIndex`.
 ///
 /// Captures the `toolUseId`/`name` at `contentBlockStart`, accumulates the
@@ -95,10 +112,13 @@ struct ToolAccum {
     arguments: String,
     /// The `output_index` assigned to this item's `output_item.added`.
     output_index: u32,
-    /// Whether the matching `output_item.done` was already emitted (on
-    /// `contentBlockStop`). A truncated stream may leave this false, in which
-    /// case `finish()` flushes the item so the tool call is not dropped (#8).
+    /// Whether Bedrock emitted the matching `contentBlockStop`. This alone does
+    /// NOT make the call executable: `messageStop` still has to confirm that
+    /// the response was not truncated or content-filtered.
     closed: bool,
+    /// Whether the matching Responses `output_item.done` was emitted after a
+    /// successful `messageStop`, JSON validation, and clean upstream EOF.
+    done_emitted: bool,
 }
 
 /// The streaming Responses lifecycle state machine.
@@ -157,6 +177,10 @@ pub struct ResponsesStreamState {
     usage: Option<Value>,
     /// Whether the response was already finalized (completed/failed emitted).
     finalized: bool,
+
+    /// Last Bedrock event kind observed. Metadata only; never contains payload
+    /// content. Used to distinguish upstream stalls from downstream cancels.
+    last_bedrock_event: &'static str,
 
     /// Gateway request id, stamped onto the terminal completion log.
     request_id: Arc<str>,
@@ -230,6 +254,7 @@ impl ResponsesStreamState {
             stop_reason: None,
             usage: None,
             finalized: false,
+            last_bedrock_event: "none",
             request_id,
             start,
             event_type_counts: Vec::new(),
@@ -311,6 +336,18 @@ impl ResponsesStreamState {
     /// arm, so newly-introduced variants are inert.
     pub fn map_event(&mut self, event: &ConverseStreamOutput) -> Vec<ResponseStreamEvent> {
         let mut out = Vec::new();
+        if self.finalized {
+            return out;
+        }
+        self.last_bedrock_event = match event {
+            ConverseStreamOutput::MessageStart(_) => "message_start",
+            ConverseStreamOutput::ContentBlockStart(_) => "content_block_start",
+            ConverseStreamOutput::ContentBlockDelta(_) => "content_block_delta",
+            ConverseStreamOutput::ContentBlockStop(_) => "content_block_stop",
+            ConverseStreamOutput::MessageStop(_) => "message_stop",
+            ConverseStreamOutput::Metadata(_) => "metadata",
+            _ => "unknown",
+        };
         self.ensure_started(&mut out);
 
         match event {
@@ -334,6 +371,7 @@ impl ResponsesStreamState {
                         arguments: String::new(),
                         output_index,
                         closed: false,
+                        done_emitted: false,
                     };
                     let delay_added =
                         self.tool_registry
@@ -366,8 +404,9 @@ impl ResponsesStreamState {
                 }
             }
 
-            // contentBlockStop → finalize the block. For tool blocks this emits
-            // the function_call item.done (complete call_id + arguments).
+            // contentBlockStop only confirms that the content block ended. The
+            // tool stays non-executable until messageStop supplies the overall
+            // stop reason and the upstream stream reaches a clean EOF.
             ConverseStreamOutput::ContentBlockStop(ev) => {
                 let block_index = ev.content_block_index();
                 self.close_tool_block(block_index, &mut out);
@@ -378,6 +417,19 @@ impl ResponsesStreamState {
                 self.stop_reason = Some(ev.stop_reason().as_str().to_string());
                 self.close_message_item(&mut out);
                 self.close_reasoning_item(&mut out);
+                if self.is_incomplete_stop() {
+                    let (tool_blocks, tool_argument_bytes) = self.tool_progress();
+                    if tool_blocks > 0 {
+                        tracing::warn!(
+                            request_id = %self.request_id,
+                            model = %self.model,
+                            stop_reason = %ev.stop_reason().as_str(),
+                            tool_blocks,
+                            tool_argument_bytes,
+                            "responses tool calls left incomplete by upstream stop reason"
+                        );
+                    }
+                }
             }
 
             // metadata → capture final usage; completed is emitted at recv end.
@@ -660,9 +712,11 @@ impl ResponsesStreamState {
         });
     }
 
-    /// Close a tool block (on contentBlockStop): emit the function_call
-    /// `output_item.done` with the complete `call_id` + accumulated arguments.
-    fn close_tool_block(&mut self, block_index: i32, out: &mut Vec<ResponseStreamEvent>) {
+    /// Record a tool block's `contentBlockStop`. Final Responses completion is
+    /// deliberately deferred until `messageStop` reveals the overall stop
+    /// reason and the upstream stream ends cleanly, preventing truncation or a
+    /// late receiver error from becoming executable.
+    fn close_tool_block(&mut self, block_index: i32, _out: &mut Vec<ResponseStreamEvent>) {
         let Some(pos) = self.tools.iter().position(|(idx, _)| *idx == block_index) else {
             return;
         };
@@ -670,6 +724,51 @@ impl ResponsesStreamState {
             return;
         }
         self.tools[pos].1.closed = true;
+    }
+
+    fn is_incomplete_stop(&self) -> bool {
+        matches!(
+            self.stop_reason.as_deref(),
+            Some("max_tokens" | "content_filtered")
+        )
+    }
+
+    fn tool_progress(&self) -> (usize, usize) {
+        (
+            self.tools.len(),
+            self.tools
+                .iter()
+                .map(|(_, accum)| accum.arguments.len())
+                .sum(),
+        )
+    }
+
+    /// Validate every stopped tool before emitting any completion event, then
+    /// finalize them in arrival order. This all-or-nothing check avoids a
+    /// partially executable batch if one parallel call is malformed.
+    fn finalize_closed_tools(&mut self, out: &mut Vec<ResponseStreamEvent>) -> Result<(), ()> {
+        if self.tools.iter().any(|(_, accum)| !accum.closed) {
+            return Err(());
+        }
+        let positions: Vec<usize> = self
+            .tools
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, (_, accum))| (accum.closed && !accum.done_emitted).then_some(pos))
+            .collect();
+        if positions.iter().any(|pos| {
+            serde_json::from_str::<Value>(&normalized_arguments(&self.tools[*pos].1)).is_err()
+        }) {
+            return Err(());
+        }
+        for pos in positions {
+            self.finalize_tool_block(pos, out);
+        }
+        Ok(())
+    }
+
+    fn finalize_tool_block(&mut self, pos: usize, out: &mut Vec<ResponseStreamEvent>) {
+        self.tools[pos].1.done_emitted = true;
         let accum = self.tools[pos].1.clone();
         if self
             .tool_registry
@@ -751,6 +850,22 @@ impl ResponsesStreamState {
         self.close_reasoning_item(&mut out);
         // Never synthesize output_item.done for a tool block Bedrock did not
         // close. Doing so turns truncated JSON into an executable tool call.
+        if !self.is_incomplete_stop() && self.finalize_closed_tools(&mut out).is_err() {
+            let (tool_blocks, tool_argument_bytes) = self.tool_progress();
+            tracing::error!(
+                request_id = %self.request_id,
+                model = %self.model,
+                stop_reason = self.stop_reason.as_deref().unwrap_or("missing"),
+                tool_blocks,
+                tool_argument_bytes,
+                "responses upstream ended with invalid tool-call JSON"
+            );
+            let err =
+                AppError::Internal("Upstream returned malformed tool-call arguments.".to_string());
+            out.extend(self.fail(&err));
+            self.tally(&out);
+            return out;
+        }
         self.finalized = true;
 
         let response = self.build_final_response();
@@ -842,7 +957,9 @@ impl ResponsesStreamState {
             content.push(json!({ "text": self.message_text }));
         }
         for (_, accum) in &self.tools {
-            let input: Value = serde_json::from_str(&accum.arguments).unwrap_or(json!({}));
+            let Ok(input) = serde_json::from_str::<Value>(&normalized_arguments(accum)) else {
+                continue;
+            };
             content.push(json!({
                 "toolUse": {
                     "toolUseId": accum.call_id,
@@ -971,21 +1088,21 @@ fn now_unix_secs() -> i64 {
 /// The Responses protocol has no terminal sentinel; codex terminates on
 /// `response.completed`. This stream yields typed events and then ENDS.
 ///
-/// ## No timeout
-///
-/// No timeout wraps the loop — applying one would sever the connection. (The
-/// route-level KeepAlive / timeout policy is T13's concern, not this module's.)
 pub(crate) fn converse_stream_to_openai_responses(
     output: ConverseStreamOutputOp,
     model: String,
     response_id: String,
     request: ResponsesRequest,
-    request_id: Arc<str>,
-    start: Instant,
     tool_registry: ResponsesToolRegistry,
+    runtime: ResponsesStreamRuntime,
 ) -> ResponsesStream {
     let s = stream! {
         let mut receiver = output.stream;
+        let ResponsesStreamRuntime {
+            request_id,
+            start,
+            idle_timeout,
+        } = runtime;
         let mut state = ResponsesStreamState::new_with_tools(
             model,
             response_id,
@@ -995,20 +1112,49 @@ pub(crate) fn converse_stream_to_openai_responses(
             tool_registry,
         );
         loop {
-            match receiver.recv().await {
-                Ok(Some(event)) => {
+            match tokio::time::timeout(idle_timeout, receiver.recv()).await {
+                Ok(Ok(Some(event))) => {
                     for ev in state.map_event(&event) {
                         yield Ok(ev);
                     }
                 }
-                Ok(None) => {
+                Ok(Ok(None)) => {
                     for ev in state.finish() {
                         yield Ok(ev);
                     }
                     break;
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
                     let app_err = from_bedrock_sdk_error(&err.into_service_error());
+                    let (tool_blocks, tool_argument_bytes) = state.tool_progress();
+                    tracing::error!(
+                        request_id = %state.request_id,
+                        model = %state.model,
+                        last_bedrock_event = state.last_bedrock_event,
+                        tool_blocks,
+                        tool_argument_bytes,
+                        error = %app_err,
+                        "responses upstream stream failed"
+                    );
+                    for ev in state.fail(&app_err) {
+                        yield Ok(ev);
+                    }
+                    break;
+                }
+                Err(_) => {
+                    let (tool_blocks, tool_argument_bytes) = state.tool_progress();
+                    tracing::error!(
+                        request_id = %state.request_id,
+                        model = %state.model,
+                        last_bedrock_event = state.last_bedrock_event,
+                        tool_blocks,
+                        tool_argument_bytes,
+                        idle_timeout_secs = idle_timeout.as_secs(),
+                        "responses upstream stream idle timeout"
+                    );
+                    let app_err = AppError::UpstreamBedrock(
+                        "Upstream response stream timed out while idle.".to_string(),
+                    );
                     for ev in state.fail(&app_err) {
                         yield Ok(ev);
                     }
@@ -1018,6 +1164,24 @@ pub(crate) fn converse_stream_to_openai_responses(
         }
     };
     s.boxed()
+}
+
+impl Drop for ResponsesStreamState {
+    fn drop(&mut self) {
+        if self.finalized {
+            return;
+        }
+        let (tool_blocks, tool_argument_bytes) = self.tool_progress();
+        tracing::warn!(
+            request_id = %self.request_id,
+            model = %self.model,
+            last_bedrock_event = self.last_bedrock_event,
+            tool_blocks,
+            tool_argument_bytes,
+            duration_ms = self.start.elapsed().as_millis(),
+            "responses stream dropped before terminal event"
+        );
+    }
 }
 
 #[cfg(test)]
