@@ -273,6 +273,39 @@ fn text_stream_emits_exact_event_order() {
     }
 }
 
+/// Regression for OpenCode `/compact`: AWS documents `metadata` as the sixth
+/// and final ConverseStream protocol event. The HTTP event-stream transport is
+/// allowed to remain open for connection reuse, so completion must not depend
+/// on observing a later transport EOF.
+#[test]
+fn metadata_finishes_response_without_transport_eof() {
+    let mut st = state();
+    for event in [
+        ev_message_start(),
+        ev_text("summary", 0),
+        ev_block_stop(0),
+        ev_message_stop(StopReason::EndTurn),
+    ] {
+        let emitted = st.map_event(&event);
+        assert!(
+            emitted
+                .iter()
+                .all(|item| item.event_type() != "response.completed"),
+            "response completed before final metadata"
+        );
+    }
+
+    let terminal = st.map_event(&ev_metadata(8, 2, 10));
+    assert!(
+        matches!(terminal.last(), Some(ResponseStreamEvent::Completed { .. })),
+        "final metadata must immediately emit response.completed"
+    );
+    assert!(
+        st.finish().is_empty(),
+        "metadata completion must finalize the state before transport EOF"
+    );
+}
+
 // -- Test 2: tool-use stream → arguments delta/done + item done ----------
 
 #[test]

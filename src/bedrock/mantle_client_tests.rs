@@ -37,6 +37,32 @@ const SSE_BODY: &str = "event: response.created\ndata: {\"type\":\"response.crea
 const TRUNCATED_SSE_BODY: &str =
     "event: response.created\ndata: {\"type\":\"response.created\"}\n\nevent: response.output_text.delta\ndata: {\"delta\":\"par";
 
+/// Regression for OpenCode subagent loops on mantle models: once the terminal
+/// Responses event has been forwarded, the downstream stream must close even
+/// if the upstream HTTP transport remains open. The terminal marker is split
+/// across chunks to lock incremental SSE parsing.
+#[tokio::test]
+async fn responses_stream_stops_after_terminal_frame_without_upstream_eof() {
+    let upstream = futures::stream::iter(vec![
+        Ok(Bytes::from_static(b"event: response.comp")),
+        Ok(Bytes::from_static(
+            b"leted\ndata: {\"type\":\"response.completed\"}\n\n",
+        )),
+    ])
+    .chain(futures::stream::pending());
+    let mut stream = terminate_responses_sse(upstream.boxed());
+
+    assert!(stream.next().await.is_some());
+    assert!(stream.next().await.is_some());
+    let ended = tokio::time::timeout(std::time::Duration::from_millis(100), stream.next())
+        .await
+        .expect("terminal response frame must not wait for upstream EOF");
+    assert!(
+        ended.is_none(),
+        "terminal response frame must close the stream"
+    );
+}
+
 /// Given a 200 from the mantle `/responses` endpoint,
 /// When `responses_nonstream` is called,
 /// Then the returned bytes equal the mock body AND the request carried the

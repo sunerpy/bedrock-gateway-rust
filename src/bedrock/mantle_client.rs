@@ -27,11 +27,114 @@
 //! The raw upstream response body is **never** placed into the error message or
 //! logged — only the status code and structured metadata.
 
+use async_stream::stream;
 use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
 use reqwest::StatusCode;
 
 use crate::error::AppError;
+
+const MAX_SSE_LINE_BYTES: usize = 8 * 1024;
+
+/// Incrementally recognizes a complete terminal Responses SSE frame while the
+/// surrounding bytes remain untouched. Reqwest chunk boundaries are unrelated
+/// to SSE frame boundaries, so only the current line is retained across chunks.
+#[derive(Default)]
+struct ResponsesSseTerminator {
+    line: Vec<u8>,
+    terminal_event: bool,
+}
+
+impl ResponsesSseTerminator {
+    fn observe(&mut self, chunk: &[u8]) -> bool {
+        for &byte in chunk {
+            if byte != b'\n' {
+                if self.line.len() < MAX_SSE_LINE_BYTES {
+                    self.line.push(byte);
+                }
+                continue;
+            }
+
+            let line = self
+                .line
+                .strip_suffix(b"\r")
+                .unwrap_or(self.line.as_slice());
+            if line.is_empty() {
+                self.line.clear();
+                if std::mem::take(&mut self.terminal_event) {
+                    return true;
+                }
+                continue;
+            }
+
+            if let Some(value) = line.strip_prefix(b"event:") {
+                self.terminal_event = is_terminal_responses_event(trim_ascii(value));
+            } else if let Some(value) = line.strip_prefix(b"data:") {
+                let value = trim_ascii(value);
+                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(value) {
+                    if value
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(is_terminal_responses_event_str)
+                    {
+                        self.terminal_event = true;
+                    }
+                }
+            }
+            self.line.clear();
+        }
+        false
+    }
+}
+
+fn trim_ascii(mut value: &[u8]) -> &[u8] {
+    while value.first().is_some_and(u8::is_ascii_whitespace) {
+        value = &value[1..];
+    }
+    while value.last().is_some_and(u8::is_ascii_whitespace) {
+        value = &value[..value.len() - 1];
+    }
+    value
+}
+
+fn is_terminal_responses_event(value: &[u8]) -> bool {
+    matches!(
+        value,
+        b"response.completed" | b"response.incomplete" | b"response.failed"
+    )
+}
+
+fn is_terminal_responses_event_str(value: &str) -> bool {
+    matches!(
+        value,
+        "response.completed" | "response.incomplete" | "response.failed"
+    )
+}
+
+fn terminate_responses_sse(
+    input: BoxStream<'static, Result<Bytes, AppError>>,
+) -> BoxStream<'static, Result<Bytes, AppError>> {
+    let output = stream! {
+        let mut input = input;
+        let mut terminator = ResponsesSseTerminator::default();
+        while let Some(item) = input.next().await {
+            match item {
+                Ok(bytes) => {
+                    let terminal = terminator.observe(&bytes);
+                    yield Ok(bytes);
+                    if terminal {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    yield Err(err);
+                    break;
+                }
+            }
+        }
+    };
+    output.boxed()
+}
 
 /// A thin HTTP client for the `bedrock-mantle` OpenAI-compatible Responses
 /// surface.
@@ -138,7 +241,7 @@ impl MantleClient {
                 AppError::UpstreamBedrock(format!("mantle stream transport error: {e}"))
             })
         });
-        Ok(stream.boxed())
+        Ok(terminate_responses_sse(stream.boxed()))
     }
 
     /// POST `body` to the mantle `/chat/completions` endpoint for `region` and
