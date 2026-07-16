@@ -50,6 +50,10 @@ fn minimal_builder() -> ConfigBuilder {
         .unwrap()
         .set_default("aws_max_retry_attempts", 8u32)
         .unwrap()
+        .set_default("max_body_size_mb", 20u32)
+        .unwrap()
+        .set_default("max_body_size_mb", 20u32)
+        .unwrap()
         .set_default(
             "mantle_base_url_template",
             "https://bedrock-mantle.{region}.api.aws/openai/v1",
@@ -96,6 +100,8 @@ fn test_defaults_load_without_env_or_file() {
         .set_default("aws_read_timeout_secs", 900u64)
         .unwrap()
         .set_default("aws_max_retry_attempts", 8u32)
+        .unwrap()
+        .set_default("max_body_size_mb", 20u32)
         .unwrap()
         .set_default(
             "mantle_base_url_template",
@@ -189,6 +195,7 @@ fn test_config_file_override() {
         .set_default("aws_read_timeout_secs", 900u64)
         .unwrap();
     builder = builder.set_default("aws_max_retry_attempts", 8u32).unwrap();
+    builder = builder.set_default("max_body_size_mb", 20u32).unwrap();
     builder = builder
         .set_default(
             "mantle_base_url_template",
@@ -252,6 +259,8 @@ fn test_optional_fields_none() {
         .unwrap()
         .set_default("aws_max_retry_attempts", 8u32)
         .unwrap()
+        .set_default("max_body_size_mb", 20u32)
+        .unwrap()
         .set_default(
             "mantle_base_url_template",
             "https://bedrock-mantle.{region}.api.aws/openai/v1",
@@ -304,6 +313,7 @@ fn test_optional_fields_with_values() {
         .set_default("aws_read_timeout_secs", 900u64)
         .unwrap();
     builder = builder.set_default("aws_max_retry_attempts", 8u32).unwrap();
+    builder = builder.set_default("max_body_size_mb", 20u32).unwrap();
     builder = builder
         .set_default(
             "mantle_base_url_template",
@@ -369,6 +379,7 @@ fn test_aws_timeouts_and_retries_override() {
         .set_default("aws_read_timeout_secs", 900u64)
         .unwrap();
     builder = builder.set_default("aws_max_retry_attempts", 8u32).unwrap();
+    builder = builder.set_default("max_body_size_mb", 20u32).unwrap();
     builder = builder
         .set_default(
             "mantle_base_url_template",
@@ -465,6 +476,8 @@ fn bare_env_overrides_map_to_typed_fields() {
         .set_default("aws_read_timeout_secs", 900u64)
         .unwrap()
         .set_default("aws_max_retry_attempts", 8u32)
+        .unwrap()
+        .set_default("max_body_size_mb", 20u32)
         .unwrap();
 
     let overridden = base
@@ -657,6 +670,57 @@ fn aws_bearer_token_wins_over_bedrock_api_key_alias() {
 
     std::env::remove_var("AWS_BEARER_TOKEN_BEDROCK");
     std::env::remove_var("BEDROCK_API_KEY");
+}
+
+#[test]
+fn max_body_size_mb_defaults_to_20() {
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+    std::env::remove_var("MAX_BODY_SIZE_MB");
+    std::env::remove_var("APP_MAX_BODY_SIZE_MB");
+
+    // Unset ⇒ the built-in default of 20 MB.
+    let settings = AppSettings::load().expect("settings load");
+    assert_eq!(
+        settings.max_body_size_mb, 20,
+        "unset MAX_BODY_SIZE_MB must default to 20"
+    );
+
+    // The minimal builder (no env, no file) must also default to 20.
+    let settings: AppSettings = minimal_builder()
+        .build()
+        .unwrap()
+        .try_deserialize()
+        .unwrap();
+    assert_eq!(settings.max_body_size_mb, 20);
+}
+
+#[test]
+fn max_body_size_mb_env_parses() {
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+    std::env::remove_var("MAX_BODY_SIZE_MB");
+    std::env::remove_var("APP_MAX_BODY_SIZE_MB");
+
+    // Bare name ⇒ parsed onto the typed field.
+    std::env::set_var("MAX_BODY_SIZE_MB", "50");
+    let settings = AppSettings::load().expect("settings load");
+    assert_eq!(settings.max_body_size_mb, 50);
+
+    // Non-numeric ⇒ leniently ignored, default retained (parity with PORT).
+    std::env::set_var("MAX_BODY_SIZE_MB", "not-a-number");
+    let settings = AppSettings::load().expect("settings load");
+    assert_eq!(settings.max_body_size_mb, 20);
+
+    // Bare name wins over the APP_-prefixed layer.
+    std::env::set_var("APP_MAX_BODY_SIZE_MB", "10");
+    std::env::set_var("MAX_BODY_SIZE_MB", "64");
+    let settings = AppSettings::load().expect("settings load");
+    assert_eq!(
+        settings.max_body_size_mb, 64,
+        "bare MAX_BODY_SIZE_MB must override the APP_-prefixed layer"
+    );
+
+    std::env::remove_var("MAX_BODY_SIZE_MB");
+    std::env::remove_var("APP_MAX_BODY_SIZE_MB");
 }
 
 #[test]

@@ -41,6 +41,7 @@ pub mod state;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use axum::extract::DefaultBodyLimit;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
@@ -266,8 +267,13 @@ fn supports_image_predicate(
 /// version, which is privacy-safe. [`CorsLayer::permissive`] mirrors the legacy
 /// FastAPI configuration (`allow_origins=["*"]`, all methods, all headers). No
 /// timeout layer is added because the chat route streams SSE.
-fn apply_layers(router: axum::Router) -> axum::Router {
+///
+/// `body_limit_bytes` caps the accepted request body via [`DefaultBodyLimit`],
+/// replacing axum's 2 MB default so base64-encoded image payloads fit; an
+/// over-limit body is rejected with `413 Payload Too Large`.
+fn apply_layers(router: axum::Router, body_limit_bytes: usize) -> axum::Router {
     router
+        .layer(DefaultBodyLimit::max(body_limit_bytes))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::new().level(Level::DEBUG))
@@ -293,8 +299,10 @@ pub async fn serve(settings: AppSettings) -> Result<()> {
     let bind = format!("{}:{}", settings.bind_addr, settings.port);
     let prefix = settings.api_route_prefix.clone();
 
+    let body_limit = (settings.max_body_size_mb as usize).saturating_mul(1024 * 1024);
+
     let state = build_app_state(settings.clone()).await?;
-    let app = apply_layers(routers::build_router(state, &prefix));
+    let app = apply_layers(routers::build_router(state, &prefix), body_limit);
 
     let listener = TcpListener::bind(&bind)
         .await
@@ -381,6 +389,7 @@ mod tests {
             aws_connect_timeout_secs: 60,
             aws_read_timeout_secs: 900,
             aws_max_retry_attempts: 8,
+            max_body_size_mb: 20,
             mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
                 .to_string(),
             mantle_chat_base_url_template: "https://bedrock-mantle.{region}.api.aws/v1".to_string(),
@@ -450,7 +459,7 @@ mod tests {
         let state = build_app_state(settings)
             .await
             .expect("state assembly must succeed without AWS creds");
-        let app = apply_layers(routers::build_router(state, &prefix));
+        let app = apply_layers(routers::build_router(state, &prefix), 20 * 1024 * 1024);
 
         let req = Request::builder()
             .method("GET")
@@ -470,7 +479,7 @@ mod tests {
         let settings = Arc::new(boot_settings());
         let prefix = settings.api_route_prefix.clone();
         let state = build_app_state(settings).await.unwrap();
-        let app = apply_layers(routers::build_router(state, &prefix));
+        let app = apply_layers(routers::build_router(state, &prefix), 20 * 1024 * 1024);
 
         let req = Request::builder()
             .method("GET")
@@ -497,7 +506,7 @@ mod tests {
         let settings = Arc::new(boot_settings());
         let prefix = settings.api_route_prefix.clone();
         let state = build_app_state(settings).await.unwrap();
-        let app = apply_layers(routers::build_router(state, &prefix));
+        let app = apply_layers(routers::build_router(state, &prefix), 20 * 1024 * 1024);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -519,6 +528,45 @@ mod tests {
 
         tx.send(()).unwrap();
         server.await.expect("server task must exit cleanly");
+    }
+
+    /// A request body over the configured limit is rejected with `413 Payload
+    /// Too Large`, while a body under the limit is NOT rejected with 413. Uses a
+    /// tiny 1-byte limit so a small JSON payload trips the guard deterministically.
+    #[tokio::test]
+    async fn body_limit_rejects_over_limit_with_413() {
+        let settings = Arc::new(boot_settings());
+        let prefix = settings.api_route_prefix.clone();
+        let state = build_app_state(settings).await.unwrap();
+        let app = apply_layers(routers::build_router(state, &prefix), 1);
+
+        let over = Request::builder()
+            .method("POST")
+            .uri("/api/v1/chat/completions")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer testkey")
+            .body(Body::from("{\"model\":\"x\"}"))
+            .unwrap();
+        let resp = app.clone().oneshot(over).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "body over the configured limit must return 413"
+        );
+
+        let under = Request::builder()
+            .method("POST")
+            .uri("/api/v1/chat/completions")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer testkey")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(under).await.unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "an empty body must not be rejected by the size limit"
+        );
     }
 
     /// Sanity: the explicit field map in `build_app_state` keeps the catalog and
