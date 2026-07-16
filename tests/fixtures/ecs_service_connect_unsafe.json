@@ -1,0 +1,28 @@
+{
+  "services": [
+    {
+      "serviceName": "bedrock-rust-us-service",
+      "deployments": [
+        {
+          "status": "PRIMARY",
+          "serviceConnectConfiguration": {
+            "enabled": true,
+            "namespace": "caela.internal",
+            "services": [
+              {
+                "portName": "api-port",
+                "discoveryName": "bedrock-rust",
+                "clientAliases": [
+                  {
+                    "port": 8080,
+                    "dnsName": "bedrock-rust"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

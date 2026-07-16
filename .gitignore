@@ -170,6 +170,9 @@ Config
 # Rust
 /target
 
+# Release-only Docker context assembled from GitHub Actions artifacts
+/docker-bin/
+
 # Legacy Python reference copy (do not commit)
 .legacy-python/
 # Relocated Python originals (parity reference, not tracked)
