@@ -370,7 +370,8 @@ Resources:
         - Name: bedrock-gateway
           Image: !Ref ContainerImageUri
           Essential: true
-          StopTimeout: 30
+          # Fargate maximum: let axum drain in-flight SSE responses after SIGTERM.
+          StopTimeout: 120
           PortMappings:
             - ContainerPort: 8080
               Protocol: tcp
@@ -427,7 +428,8 @@ Resources:
       HealthCheckGracePeriodSeconds: 60
       DeploymentConfiguration:
         MaximumPercent: 200
-        MinimumHealthyPercent: 50
+        # Keep full serving capacity while replacement tasks become healthy.
+        MinimumHealthyPercent: 100
         DeploymentCircuitBreaker:
           Enable: true
           Rollback: true
@@ -480,8 +482,9 @@ Resources:
       Matcher:
         HttpCode: "200"
       TargetGroupAttributes:
+        # Match the task stop grace period so active streams can finish draining.
         - Key: deregistration_delay.timeout_seconds
-          Value: "30"
+          Value: "120"
 
   AlbListener:
     Type: AWS::ElasticLoadBalancingV2::Listener

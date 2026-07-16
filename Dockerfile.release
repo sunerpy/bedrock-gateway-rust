@@ -1,0 +1,22 @@
+# Release image assembler: package the static musl binaries produced by the
+# GitHub Actions Linux build matrix. No compiler or emulation is required here.
+FROM gcr.io/distroless/static-debian12:nonroot
+
+ARG TARGETARCH
+
+COPY --chmod=0555 docker-bin/${TARGETARCH}/bedrock-gateway /usr/local/bin/bedrock-gateway
+COPY config /etc/bedrock-gateway/config
+
+WORKDIR /etc/bedrock-gateway
+
+EXPOSE 8080
+
+ENV API_ROUTE_PREFIX="/api/v1" \
+    PORT=8080 \
+    AWS_REGION="us-west-2" \
+    LOG_LEVEL="info"
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/bedrock-gateway", "--health-check"]
+
+ENTRYPOINT ["/usr/local/bin/bedrock-gateway"]

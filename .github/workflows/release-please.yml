@@ -5,7 +5,7 @@ on:
     branches:
       - main
   # Manual re-trigger for re-attaching binaries / re-pushing the Docker image to
-  # an ALREADY-released tag (e.g. when the original build-binaries jobs failed).
+  # an ALREADY-released tag (e.g. when the original binary build jobs failed).
   # This path deliberately SKIPS publish-crate: the crate version is immutable on
   # crates.io and must never be re-published. Provide the existing tag + version.
   workflow_dispatch:
@@ -61,20 +61,26 @@ jobs:
         id: gate
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "build_artifacts=true" >> "$GITHUB_OUTPUT"
-            echo "tag_name=${{ inputs.tag_name }}" >> "$GITHUB_OUTPUT"
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            {
+              echo "build_artifacts=true"
+              echo "tag_name=${{ inputs.tag_name }}"
+              echo "version=${{ inputs.version }}"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "build_artifacts=${{ steps.release.outputs.release_created }}" >> "$GITHUB_OUTPUT"
-            echo "tag_name=${{ steps.release.outputs.tag_name }}" >> "$GITHUB_OUTPUT"
-            echo "version=${{ steps.release.outputs.version }}" >> "$GITHUB_OUTPUT"
+            {
+              echo "build_artifacts=${{ steps.release.outputs.release_created }}"
+              echo "tag_name=${{ steps.release.outputs.tag_name }}"
+              echo "version=${{ steps.release.outputs.version }}"
+            } >> "$GITHUB_OUTPUT"
           fi
 
   # ----------------------------------------------------------------
-  # build-binaries: cross-compile release artifacts for all targets.
-  # Gated on release_created so it only runs when a tag is cut.
+  # build-linux-binaries: cross-compile the two static musl binaries used by
+  # both GitHub Release assets and the multi-arch container image. Keeping
+  # these in their own matrix lets the Docker job start as soon as Linux is
+  # ready instead of waiting for the unrelated macOS / Windows builds.
   # ----------------------------------------------------------------
-  build-binaries:
+  build-linux-binaries:
     name: Build ${{ matrix.target }}
     needs: release-please
     if: needs.release-please.outputs.build_artifacts == 'true'
@@ -92,18 +98,6 @@ jobs:
             os: ubuntu-latest
             use_zigbuild: true
             archive: tar.gz
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            use_zigbuild: false
-            archive: tar.gz
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            use_zigbuild: false
-            archive: tar.gz
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            use_zigbuild: false
-            archive: zip
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -170,12 +164,81 @@ jobs:
           retention-days: 1
 
   # ----------------------------------------------------------------
+  # build-native-binaries: release assets that are not consumed by Docker.
+  # This matrix stays parallel with Linux, but it is intentionally not a
+  # dependency of the Docker job.
+  # ----------------------------------------------------------------
+  build-native-binaries:
+    name: Build ${{ matrix.target }}
+    needs: release-please
+    if: needs.release-please.outputs.build_artifacts == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (unix tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -czf "dist/${BINARY_NAME}-${{ needs.release-please.outputs.version }}-${{ matrix.target }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release" "${BINARY_NAME}"
+
+      - name: Package (windows zip)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          mkdir -p dist
+          7z a "dist/${BINARY_NAME}-${{ needs.release-please.outputs.version }}-${{ matrix.target }}.zip" \
+            "./target/${{ matrix.target }}/release/${BINARY_NAME}.exe"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          retention-days: 1
+
+  # ----------------------------------------------------------------
   # upload-assets: gather all artifacts, render release notes with
   # git-cliff, and attach binaries to the GitHub Release.
   # ----------------------------------------------------------------
   upload-assets:
     name: Upload Release Assets
-    needs: [release-please, build-binaries]
+    needs: [release-please, build-linux-binaries, build-native-binaries]
     if: needs.release-please.outputs.build_artifacts == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -213,11 +276,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ----------------------------------------------------------------
-  # docker: build the multi-arch image ONCE and push it to BOTH
-  # registries — Docker Hub and AWS ECR Public — in a single
-  # build-push-action step. A single docker/metadata-action lists both
-  # image references, so one build produces one manifest that is pushed
-  # to every tag ({version} + latest) across both registries.
+  # docker: package the already-built Linux musl release binaries into a
+  # multi-arch image and push it ONCE to BOTH registries. This job deliberately
+  # does not compile Rust again: build-linux-binaries is the single source of
+  # the amd64 / arm64 executables used by both release assets and containers.
   #
   # Docker Hub auth: docker/login-action with DOCKERHUB_USERNAME/TOKEN.
   # ECR Public auth: GitHub OIDC — configure-aws-credentials assumes the
@@ -240,7 +302,7 @@ jobs:
   # ----------------------------------------------------------------
   docker:
     name: Docker Multi-Arch Publish
-    needs: release-please
+    needs: [release-please, build-linux-binaries]
     if: needs.release-please.outputs.build_artifacts == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -256,8 +318,26 @@ jobs:
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Download Linux release binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*-unknown-linux-musl
+          path: dist
+
+      - name: Prepare architecture-specific Docker context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docker-bin/amd64 docker-bin/arm64
+          tar -xzf \
+            "dist/dist-x86_64-unknown-linux-musl/${BINARY_NAME}-${{ needs.release-please.outputs.version }}-x86_64-unknown-linux-musl.tar.gz" \
+            -C docker-bin/amd64
+          tar -xzf \
+            "dist/dist-aarch64-unknown-linux-musl/${BINARY_NAME}-${{ needs.release-please.outputs.version }}-aarch64-unknown-linux-musl.tar.gz" \
+            -C docker-bin/arm64
+          chmod 0555 "docker-bin/amd64/${BINARY_NAME}" "docker-bin/arm64/${BINARY_NAME}"
+          file "docker-bin/amd64/${BINARY_NAME}" | grep -q 'x86-64'
+          file "docker-bin/arm64/${BINARY_NAME}" | grep -Eq 'ARM aarch64|ARM64'
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -294,6 +374,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: Dockerfile.release
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
