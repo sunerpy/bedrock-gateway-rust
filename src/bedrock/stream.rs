@@ -55,7 +55,7 @@
 //! No model-id literals appear here. `model` flows through verbatim from the
 //! caller and is echoed into every chunk's `model` field.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -64,12 +64,15 @@ use aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamOutput as 
 use aws_sdk_bedrockruntime::types::{
     ContentBlockDelta, ContentBlockStart, ConverseStreamOutput, ReasoningContentBlockDelta,
 };
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures::StreamExt;
+use serde_json::{json, Value};
 
+use crate::bedrock::capsule::{encode_capsule, reasoning_block_is_valid, CapsuleRuntime};
 use crate::bedrock::response::convert_finish_reason;
 use crate::bedrock::tokens::{compute_token_usage, estimate_reasoning_tokens};
 use crate::domain::ChatStream;
-use crate::error::from_bedrock_sdk_error;
+use crate::error::{from_bedrock_sdk_error, AppError};
 use crate::openai::schema::{
     ChatResponseMessage, ChatStreamResponse, ChoiceDelta, CompletionTokensDetails,
     PromptTokensDetails, ResponseFunction, ToolCall, Usage,
@@ -85,6 +88,17 @@ struct ToolMeta {
     index: i32,
     id: String,
     name: String,
+    capsule_id_emitted: bool,
+}
+
+#[derive(Default)]
+struct ReasoningBlockAccum {
+    text: String,
+    signature: String,
+    redacted: Vec<u8>,
+    text_seen: bool,
+    signature_seen: bool,
+    redacted_seen: bool,
 }
 
 /// The streaming `<think>`/tool/usage state machine.
@@ -98,7 +112,7 @@ struct ToolMeta {
 ///
 /// Construct one per stream, then feed every Bedrock event through
 /// [`StreamState::map_event`] in order.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct StreamState {
     /// Whether an unclosed `<think>` tag is currently open.
     think_emitted: bool,
@@ -108,6 +122,11 @@ pub struct StreamState {
     next_tool_index: i32,
     /// Accumulated reasoning tokens (estimated, cl100k_base) for the usage chunk.
     reasoning_tokens: u32,
+    capsule: Option<Arc<CapsuleRuntime>>,
+    reasoning_by_block: HashMap<i32, ReasoningBlockAccum>,
+    reasoning_blocks: BTreeMap<i32, Value>,
+    incomplete_reasoning: bool,
+    tool_use_seen: bool,
 }
 
 impl StreamState {
@@ -115,6 +134,14 @@ impl StreamState {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn with_capsule(capsule: Option<Arc<CapsuleRuntime>>) -> Self {
+        Self {
+            capsule: capsule.filter(|runtime| runtime.encoder_enabled),
+            ..Self::default()
+        }
     }
 
     /// Map Bedrock block index → contiguous OpenAI tool-call index.
@@ -133,6 +160,7 @@ impl StreamState {
             index,
             id: String::new(),
             name: String::new(),
+            capsule_id_emitted: false,
         });
         index
     }
@@ -184,8 +212,8 @@ impl StreamState {
         include_usage: bool,
         request_id: &str,
         start: Instant,
-    ) -> Option<ChatStreamResponse> {
-        match event {
+    ) -> Result<Option<ChatStreamResponse>, AppError> {
+        let chunk = match event {
             // messageStart → role delta (bedrock.py:1419-1423).
             ConverseStreamOutput::MessageStart(ev) => {
                 let role = ev.role().as_str().to_string();
@@ -200,26 +228,41 @@ impl StreamState {
             // contentBlockStart → tool-call start (bedrock.py:1425-1449).
             ConverseStreamOutput::ContentBlockStart(ev) => {
                 let block_index = ev.content_block_index();
-                let tool_use = ev.start().and_then(|s| match s {
+                let Some(tool_use) = ev.start().and_then(|s| match s {
                     ContentBlockStart::ToolUse(tu) => Some(tu),
                     _ => None,
-                })?;
+                }) else {
+                    return Ok(None);
+                };
                 let index = self.tool_index_for(block_index);
                 let id = tool_use.tool_use_id().to_string();
                 let name = tool_use.name().to_string();
-                // Record id/name so later input fragments reuse them.
+                if self.capsule.is_some() {
+                    // Some Converse models start the tool block without first
+                    // emitting ContentBlockStop for the signed reasoning block.
+                    // Treat tool start as an implicit boundary while preserving
+                    // fail-closed validation for missing signatures.
+                    self.finalize_pending_reasoning_blocks();
+                    self.ensure_reasoning_complete()?;
+                    self.tool_use_seen = true;
+                }
+                let (wire_id, capsule_id_emitted) = self.tool_id_for_wire(&id)?;
+                // Preserve the legacy repeated id/name deltas unless this tool
+                // emitted a capsule. Re-emitting the original id after a capsule
+                // would corrupt client-side stream assembly.
                 self.tool_meta.insert(
                     block_index,
                     ToolMeta {
                         index,
-                        id: id.clone(),
+                        id,
                         name: name.clone(),
+                        capsule_id_emitted,
                     },
                 );
                 let delta = ChatResponseMessage {
                     tool_calls: Some(vec![ToolCall {
                         index: Some(index),
-                        id: Some(id),
+                        id: Some(wire_id),
                         r#type: "function".to_string(),
                         function: ResponseFunction {
                             name: Some(name),
@@ -234,12 +277,19 @@ impl StreamState {
             // contentBlockDelta → text / reasoning / tool input (bedrock.py:1451-1505).
             ConverseStreamOutput::ContentBlockDelta(ev) => {
                 let block_index = ev.content_block_index();
-                let delta = ev.delta()?;
-                self.map_content_block_delta(delta, block_index, model, message_id)
+                let Some(delta) = ev.delta() else {
+                    return Ok(None);
+                };
+                self.map_content_block_delta(delta, block_index, model, message_id)?
             }
 
             // contentBlockStop → finalize block; no chunk needed (bedrock.py: implicit).
-            ConverseStreamOutput::ContentBlockStop(_) => None,
+            ConverseStreamOutput::ContentBlockStop(ev) => {
+                if self.capsule.is_some() {
+                    self.finalize_reasoning_block(ev.content_block_index());
+                }
+                None
+            }
 
             // messageStop always publishes the terminal finish reason. If an
             // inline reasoning block is still open, close it in the same chunk.
@@ -259,7 +309,9 @@ impl StreamState {
 
             // metadata → usage chunk with empty choices (bedrock.py:1526-1562 + 692-699).
             ConverseStreamOutput::Metadata(ev) => {
-                let usage = ev.usage()?;
+                let Some(usage) = ev.usage() else {
+                    return Ok(None);
+                };
                 let counts = compute_token_usage(
                     usage.input_tokens(),
                     usage.output_tokens(),
@@ -284,7 +336,7 @@ impl StreamState {
                 );
 
                 if !include_usage {
-                    return None;
+                    return Ok(None);
                 }
                 let cache_write = usage.cache_write_input_tokens().unwrap_or(0);
                 let prompt_tokens_details = if counts.cached_tokens > 0 || cache_write > 0 {
@@ -326,7 +378,8 @@ impl StreamState {
 
             // #[non_exhaustive] catch-all — newly introduced variants are inert.
             _ => None,
-        }
+        };
+        Ok(chunk)
     }
 
     /// Handle a `contentBlockDelta` payload (bedrock.py:1451-1505).
@@ -336,8 +389,8 @@ impl StreamState {
         block_index: i32,
         model: &str,
         message_id: &str,
-    ) -> Option<ChatStreamResponse> {
-        match delta {
+    ) -> Result<Option<ChatStreamResponse>, AppError> {
+        let chunk = match delta {
             // Regular text — close <think> if open (bedrock.py:1453-1460).
             ContentBlockDelta::Text(text) => {
                 let mut content = text.clone();
@@ -353,39 +406,50 @@ impl StreamState {
             }
 
             // Reasoning content (bedrock.py:1461-1475).
-            ContentBlockDelta::ReasoningContent(rc) => match rc {
-                ReasoningContentBlockDelta::Text(text) => {
-                    // Accumulate reasoning tokens BEFORE rendering (parity with
-                    // chat_stream pre-processing at bedrock.py:670-674).
-                    self.reasoning_tokens += estimate_reasoning_tokens(text);
-                    let mut content = text.clone();
-                    if !self.think_emitted {
-                        content = format!("<think>{content}");
-                        self.think_emitted = true;
+            ContentBlockDelta::ReasoningContent(rc) => {
+                if self.capsule.is_some() {
+                    if self.tool_use_seen {
+                        return Err(AppError::Internal(
+                            "interleaved reasoning after tool use is not representable in a brtc_v1 capsule"
+                                .to_string(),
+                        ));
                     }
-                    let msg = ChatResponseMessage {
-                        content: Some(content),
-                        ..Default::default()
-                    };
-                    Some(Self::message_chunk(model, message_id, msg, None))
+                    self.accumulate_reasoning_delta(block_index, rc);
                 }
-                ReasoningContentBlockDelta::Signature(_) => {
-                    // signature_delta: close <think> if open, else skip
-                    // (bedrock.py:1469-1475).
-                    if self.think_emitted {
-                        self.think_emitted = false;
+                match rc {
+                    ReasoningContentBlockDelta::Text(text) => {
+                        // Accumulate reasoning tokens BEFORE rendering (parity with
+                        // chat_stream pre-processing at bedrock.py:670-674).
+                        self.reasoning_tokens += estimate_reasoning_tokens(text);
+                        let mut content = text.clone();
+                        if !self.think_emitted {
+                            content = format!("<think>{content}");
+                            self.think_emitted = true;
+                        }
                         let msg = ChatResponseMessage {
-                            content: Some("</think>".to_string()),
+                            content: Some(content),
                             ..Default::default()
                         };
                         Some(Self::message_chunk(model, message_id, msg, None))
-                    } else {
-                        None
                     }
+                    ReasoningContentBlockDelta::Signature(_) => {
+                        // signature_delta: close <think> if open, else skip
+                        // (bedrock.py:1469-1475).
+                        if self.think_emitted {
+                            self.think_emitted = false;
+                            let msg = ChatResponseMessage {
+                                content: Some("</think>".to_string()),
+                                ..Default::default()
+                            };
+                            Some(Self::message_chunk(model, message_id, msg, None))
+                        } else {
+                            None
+                        }
+                    }
+                    // redactedContent / unknown reasoning deltas: no output.
+                    _ => None,
                 }
-                // redactedContent / unknown reasoning deltas: no output.
-                _ => None,
-            },
+            }
 
             // Tool input fragment (bedrock.py:1476-1505).
             ContentBlockDelta::ToolUse(tool_delta) => {
@@ -402,12 +466,12 @@ impl StreamState {
                     .get(&block_index)
                     .cloned()
                     .unwrap_or_default();
-                let name = if meta.name.is_empty() {
+                let name = if meta.capsule_id_emitted || meta.name.is_empty() {
                     None
                 } else {
                     Some(meta.name.clone())
                 };
-                let id = if meta.id.is_empty() {
+                let id = if meta.capsule_id_emitted || meta.id.is_empty() {
                     None
                 } else {
                     Some(meta.id.clone())
@@ -427,7 +491,82 @@ impl StreamState {
 
             // citation / image / toolResult / unknown deltas: no output.
             _ => None,
+        };
+        Ok(chunk)
+    }
+
+    fn accumulate_reasoning_delta(&mut self, block_index: i32, delta: &ReasoningContentBlockDelta) {
+        let accum = self.reasoning_by_block.entry(block_index).or_default();
+        match delta {
+            ReasoningContentBlockDelta::Text(text) => {
+                accum.text_seen = true;
+                accum.text.push_str(text);
+            }
+            ReasoningContentBlockDelta::Signature(signature) => {
+                accum.signature_seen = true;
+                accum.signature.push_str(signature);
+            }
+            ReasoningContentBlockDelta::RedactedContent(redacted) => {
+                accum.redacted_seen = true;
+                accum.redacted.extend_from_slice(redacted.as_ref());
+            }
+            _ => {}
         }
+    }
+
+    fn finalize_reasoning_block(&mut self, block_index: i32) {
+        let Some(accum) = self.reasoning_by_block.remove(&block_index) else {
+            return;
+        };
+        let content_seen = accum.text_seen || accum.signature_seen || accum.redacted_seen;
+        // Converse may omit a Text delta when the signed reasoning text is
+        // empty. A signature still defines a replayable reasoningText block;
+        // normalize the missing text delta to the accumulator's empty string.
+        let block = if accum.signature_seen {
+            Some(json!({
+                "reasoningText": {
+                    "text": accum.text,
+                    "signature": accum.signature,
+                }
+            }))
+        } else if accum.redacted_seen {
+            Some(json!({ "redactedContent": STANDARD.encode(accum.redacted) }))
+        } else {
+            None
+        };
+        if let Some(block) = block.filter(reasoning_block_is_valid) {
+            self.reasoning_blocks.insert(block_index, block);
+        } else if content_seen {
+            self.incomplete_reasoning = true;
+        }
+    }
+
+    fn finalize_pending_reasoning_blocks(&mut self) {
+        let pending = self.reasoning_by_block.keys().copied().collect::<Vec<_>>();
+        for block_index in pending {
+            self.finalize_reasoning_block(block_index);
+        }
+    }
+
+    fn ensure_reasoning_complete(&self) -> Result<(), AppError> {
+        if self.incomplete_reasoning {
+            return Err(AppError::Internal(
+                "reasoning block was incomplete before the tool call id was emitted".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn tool_id_for_wire(&self, tool_use_id: &str) -> Result<(String, bool), AppError> {
+        let Some(runtime) = self.capsule.as_deref() else {
+            return Ok((tool_use_id.to_string(), false));
+        };
+        if self.reasoning_blocks.is_empty() {
+            return Ok((tool_use_id.to_string(), false));
+        }
+        let reasoning_blocks = self.reasoning_blocks.values().cloned().collect::<Vec<_>>();
+        let wire_id = encode_capsule(tool_use_id, &reasoning_blocks, &runtime.keyring)?;
+        Ok((wire_id, true))
     }
 }
 
@@ -468,17 +607,28 @@ pub fn converse_stream_to_openai(
     include_usage: bool,
     request_id: Arc<str>,
     start: Instant,
+    capsule: Option<Arc<CapsuleRuntime>>,
 ) -> ChatStream {
     let s = stream! {
         let mut receiver = output.stream;
-        let mut state = StreamState::new();
+        let mut state = StreamState::with_capsule(capsule);
         loop {
             match receiver.recv().await {
                 Ok(Some(event)) => {
-                    if let Some(chunk) =
-                        state.map_event(&event, &model, &message_id, include_usage, &request_id, start)
-                    {
-                        yield Ok(chunk);
+                    match state.map_event(
+                        &event,
+                        &model,
+                        &message_id,
+                        include_usage,
+                        &request_id,
+                        start,
+                    ) {
+                        Ok(Some(chunk)) => yield Ok(chunk),
+                        Ok(None) => {}
+                        Err(error) => {
+                            yield Err(error);
+                            break;
+                        }
                     }
                 }
                 Ok(None) => break,

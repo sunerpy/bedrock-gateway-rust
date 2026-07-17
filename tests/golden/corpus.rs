@@ -123,6 +123,7 @@ async fn assemble_args(req: &ChatRequest, caps: &ConfigModelCapabilities) -> Val
             ))
         },
         tool_config,
+        capsule: None,
     };
     let resolver = CorpusResolver;
     let mut args = to_converse_args(&chat, caps, &resolver, &extras)
@@ -303,7 +304,7 @@ async fn translation_response_format_json_schema() {
 fn run_response(case: &str, model: &str, extra_ignore: &[&str]) {
     let bedrock_output = load_json(format!("response/{case}/bedrock_output.json"));
     let expected = load_json(format!("response/{case}/expected_openai_response.json"));
-    let resp = response::from_converse_output(&bedrock_output, model, "chatcmpl-x")
+    let resp = response::from_converse_output(&bedrock_output, model, "chatcmpl-x", None)
         .expect("from_converse_output");
     let actual = serde_json::to_value(&resp).expect("serialize ChatResponse");
 
@@ -544,14 +545,17 @@ fn run_stream(case: &str, model: &str, include_usage: bool, extra_ignore: &[&str
         let value: Value = serde_json::from_str(line)
             .unwrap_or_else(|e| panic!("case {case} line {}: bad JSON: {e}", lineno + 1));
         let event = stream_events::build(&value);
-        if let Some(chunk) = state.map_event(
-            &event,
-            model,
-            "chatcmpl-x",
-            include_usage,
-            "req-test",
-            std::time::Instant::now(),
-        ) {
+        if let Some(chunk) = state
+            .map_event(
+                &event,
+                model,
+                "chatcmpl-x",
+                include_usage,
+                "req-test",
+                std::time::Instant::now(),
+            )
+            .expect("chat stream event maps")
+        {
             let payload = serde_json::to_value(&chunk).expect("serialize chunk");
             actual.push(payload_to_event(payload));
         }

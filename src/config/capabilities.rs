@@ -80,6 +80,18 @@ pub enum ReasoningPath {
     None,
 }
 
+impl ReasoningPath {
+    #[must_use]
+    pub fn requires_signature_replay(self) -> bool {
+        match self {
+            Self::AdaptiveThinking => true,
+            Self::BudgetTokens => true,
+            Self::DeepseekString => false,
+            Self::None => false,
+        }
+    }
+}
+
 /// Budget-token ratios per reasoning effort level.
 ///
 /// Defaults documented at `.legacy-python/src/api/models/bedrock.py`

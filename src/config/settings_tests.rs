@@ -11,8 +11,23 @@ const TIMEOUT_RETRY_VARS: [&str; 5] = [
     "PORT",
 ];
 
+const CAPSULE_VARS: [&str; 6] = [
+    "CHAT_REASONING_CAPSULE_ENABLED",
+    "CHAT_REASONING_CAPSULE_ACTIVE_KID",
+    "CHAT_REASONING_CAPSULE_KEYS",
+    "APP_CHAT_REASONING_CAPSULE_ENABLED",
+    "APP_CHAT_REASONING_CAPSULE_ACTIVE_KID",
+    "APP_CHAT_REASONING_CAPSULE_KEYS",
+];
+
 fn clear_timeout_retry_vars() {
     for name in TIMEOUT_RETRY_VARS {
+        std::env::remove_var(name);
+    }
+}
+
+fn clear_capsule_vars() {
+    for name in CAPSULE_VARS {
         std::env::remove_var(name);
     }
 }
@@ -590,6 +605,44 @@ fn bare_timeout_retry_env_vars_non_numeric_falls_back_to_defaults() {
     assert_eq!(settings.aws_max_retry_attempts, 8);
 
     clear_timeout_retry_vars();
+}
+
+#[test]
+fn capsule_settings_default_to_disabled_without_keys() {
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+    clear_capsule_vars();
+
+    let settings = AppSettings::load().expect("settings load");
+
+    assert!(!settings.chat_reasoning_capsule_enabled);
+    assert_eq!(settings.chat_reasoning_capsule_active_kid, None);
+    assert_eq!(settings.chat_reasoning_capsule_keys, None);
+
+    clear_capsule_vars();
+}
+
+#[test]
+fn bare_capsule_env_vars_override_defaults() {
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+    clear_capsule_vars();
+
+    std::env::set_var("CHAT_REASONING_CAPSULE_ENABLED", "true");
+    std::env::set_var("CHAT_REASONING_CAPSULE_ACTIVE_KID", "current");
+    std::env::set_var("CHAT_REASONING_CAPSULE_KEYS", "current:c2VjcmV0");
+
+    let settings = AppSettings::load().expect("settings load");
+
+    assert!(settings.chat_reasoning_capsule_enabled);
+    assert_eq!(
+        settings.chat_reasoning_capsule_active_kid,
+        Some("current".to_string())
+    );
+    assert_eq!(
+        settings.chat_reasoning_capsule_keys,
+        Some("current:c2VjcmV0".to_string())
+    );
+
+    clear_capsule_vars();
 }
 
 #[test]

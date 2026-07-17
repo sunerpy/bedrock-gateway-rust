@@ -76,6 +76,7 @@ use aws_sdk_bedrockruntime::operation::converse_stream::{
 use crate::bedrock::cache::PromptCachingControl;
 use crate::bedrock::cache_support::{send_with_cache_strip_retry, CacheSupportRegistry, SendError};
 use crate::bedrock::capabilities::normalize_for_match;
+use crate::bedrock::capsule::CapsuleRuntime;
 use crate::bedrock::client::{region_config_override, BedrockClients};
 use crate::bedrock::translate::{to_converse_args, ConverseArgs, ConverseExtras, ImageResolver};
 use crate::bedrock::{cache, reasoning, response, stream, tools};
@@ -653,6 +654,7 @@ pub struct BedrockChatProvider {
     /// strip-and-retry safety net at the send points; the same `Arc` is shared
     /// with the Responses provider via `build_app_state`.
     cache_support: Arc<CacheSupportRegistry>,
+    capsule: Arc<CapsuleRuntime>,
 }
 
 impl BedrockChatProvider {
@@ -664,6 +666,7 @@ impl BedrockChatProvider {
         image_resolver: Arc<dyn ImageResolver>,
         settings: Arc<AppSettings>,
         cache_support: Arc<CacheSupportRegistry>,
+        capsule: Arc<CapsuleRuntime>,
     ) -> Self {
         Self {
             clients,
@@ -672,6 +675,7 @@ impl BedrockChatProvider {
             image_resolver,
             settings,
             cache_support,
+            capsule,
         }
     }
 
@@ -721,10 +725,25 @@ impl BedrockChatProvider {
                 OpenAiMessage::Tool { .. } => true,
                 _ => false,
             });
-        let reasoning_outcome = match (chat.reasoning_effort, has_tool_context) {
-            // Chat Completions has no standard field that can replay Bedrock's
-            // reasoning signature on a tool continuation. Keep tool calling
-            // reliable by not enabling extended thinking for this combination.
+        let capsule_encoder_on = self.capsule.encoder_enabled;
+        let reasoning_outcome = match (
+            chat.reasoning_effort,
+            has_tool_context && caps.reasoning_path(resolved).requires_signature_replay(),
+        ) {
+            (Some(effort), true) if capsule_encoder_on => {
+                tracing::debug!(
+                    request_id = %req.request_id,
+                    model = %resolved,
+                    "reasoning enabled for Chat tool request via signature capsule"
+                );
+                reasoning::build_reasoning_config(
+                    resolved,
+                    effort,
+                    chat.max_tokens,
+                    chat.max_completion_tokens,
+                    caps,
+                )
+            }
             (Some(_), true) => {
                 tracing::warn!(
                     request_id = %req.request_id,
@@ -762,6 +781,22 @@ impl BedrockChatProvider {
             )?),
             _ => None,
         };
+        let forced_tool_choice = matches!(
+            &chat.tool_choice,
+            crate::openai::schema::ToolChoice::String(choice) if choice == "required"
+        ) || matches!(
+            &chat.tool_choice,
+            crate::openai::schema::ToolChoice::Object(_)
+        );
+        if forced_tool_choice
+            && !reasoning_outcome.is_empty()
+            && caps.reasoning_path(resolved).requires_signature_replay()
+        {
+            return Err(AppError::BadRequest(
+                "forced tool_choice ('required' or a specific tool) is not supported when extended thinking is enabled; use 'auto' or 'none'"
+                    .to_string(),
+            ));
+        }
 
         // --- 3. Prompt-caching control: parse + strip from extra_body --------
         let caching = PromptCachingControl::extract_and_strip(&mut chat.extra_body);
@@ -776,6 +811,7 @@ impl BedrockChatProvider {
                 ))
             },
             tool_config,
+            capsule: Some(Arc::clone(&self.capsule)),
         };
         let mut args = to_converse_args(&chat, caps, self.image_resolver.as_ref(), &extras).await?;
         if args.tool_config.is_none() {
@@ -1084,7 +1120,12 @@ impl ChatProvider for BedrockChatProvider {
         // the parity-tested pure mapper.
         let output_json = converse_output_to_json(&output);
         let message_id = format!("chatcmpl-{}", req_id());
-        response::from_converse_output(&output_json, &req.request.model, &message_id)
+        response::from_converse_output(
+            &output_json,
+            &req.request.model,
+            &message_id,
+            Some(&self.capsule),
+        )
     }
 
     async fn chat_stream(&self, req: &NormalizedChatRequest) -> Result<ChatStream, AppError> {
@@ -1120,6 +1161,7 @@ impl ChatProvider for BedrockChatProvider {
             include_usage,
             req.request_id.clone(),
             req.received_at,
+            Some(Arc::clone(&self.capsule)),
         ))
     }
 }

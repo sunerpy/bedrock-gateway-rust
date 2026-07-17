@@ -7,17 +7,20 @@ use super::*;
 use std::collections::HashMap;
 use std::time::Instant;
 
+use crate::bedrock::capsule::resolve_capsule_runtime;
 use crate::bedrock::client::build_aws_config;
 use crate::bedrock::translate::ReqwestImageResolver;
 use crate::domain::{BudgetRatios, Capability, ReasoningPath, ResponsesBackend};
 use crate::openai::schema::{
-    Function, Message as OpenAiMessage, ResponseFunction, Tool as OpenAiTool, ToolCall,
-    ToolChoice as OpenAiToolChoice, ToolContentInput,
+    Function, Message as OpenAiMessage, ReasoningEffort, ResponseFunction, Tool as OpenAiTool,
+    ToolCall, ToolChoice as OpenAiToolChoice, ToolContentInput,
 };
 use serde_json::json;
 
 #[derive(Debug)]
-struct StubCaps;
+struct StubCaps {
+    reasoning_path: ReasoningPath,
+}
 
 impl ModelCapabilities for StubCaps {
     fn has(&self, _model: &str, _cap: Capability) -> bool {
@@ -53,7 +56,7 @@ impl ModelCapabilities for StubCaps {
     }
 
     fn reasoning_path(&self, _model: &str) -> ReasoningPath {
-        ReasoningPath::None
+        self.reasoning_path
     }
 
     fn responses_backend(&self, _model: &str) -> ResponsesBackend {
@@ -80,6 +83,9 @@ fn test_settings() -> AppSettings {
         enable_application_inference_profiles: true,
         enable_prompt_caching: true,
         prompt_cache_ttl: "5m".to_string(),
+        chat_reasoning_capsule_enabled: false,
+        chat_reasoning_capsule_active_kid: None,
+        chat_reasoning_capsule_keys: None,
         api_key: None,
         api_key_secret_arn: None,
         api_key_param_name: None,
@@ -102,15 +108,34 @@ fn test_settings() -> AppSettings {
 }
 
 async fn test_provider() -> BedrockChatProvider {
-    let settings = Arc::new(test_settings());
+    test_provider_with_reasoning_path(ReasoningPath::None).await
+}
+
+async fn test_provider_with_reasoning_path(reasoning_path: ReasoningPath) -> BedrockChatProvider {
+    test_provider_with_reasoning_path_and_capsule_encoder(reasoning_path, false).await
+}
+
+async fn test_provider_with_reasoning_path_and_capsule_encoder(
+    reasoning_path: ReasoningPath,
+    encoder_enabled: bool,
+) -> BedrockChatProvider {
+    let mut settings = test_settings();
+    if encoder_enabled {
+        settings.chat_reasoning_capsule_enabled = true;
+        settings.chat_reasoning_capsule_active_kid = Some("current".to_string());
+        settings.chat_reasoning_capsule_keys = Some("current:c2VjcmV0".to_string());
+    }
+    let settings = Arc::new(settings);
+    let capsule = Arc::new(resolve_capsule_runtime(&settings).expect("capsule runtime resolves"));
     let sdk_config = build_aws_config(&settings).await;
     BedrockChatProvider::new(
         BedrockClients::new(&sdk_config),
-        Arc::new(StubCaps),
+        Arc::new(StubCaps { reasoning_path }),
         Arc::new(RegionRoutingConfig::default()),
         Arc::new(ReqwestImageResolver::new(|_| false)),
         settings,
         Arc::new(CacheSupportRegistry::new()),
+        capsule,
     )
 }
 
@@ -239,6 +264,112 @@ async fn chat_assemble_real_tools_unchanged() {
         first_tool_description(tool_config),
         Some("Real weather tool")
     );
+}
+
+#[tokio::test]
+async fn chat_assemble_keeps_deepseek_reasoning_with_tools() {
+    for encoder_enabled in [false, true] {
+        let provider = test_provider_with_reasoning_path_and_capsule_encoder(
+            ReasoningPath::DeepseekString,
+            encoder_enabled,
+        )
+        .await;
+        let mut request = base_chat_request(
+            vec![assistant_tool_call("get_weather"), tool_result_message()],
+            Some(vec![function_tool("get_weather", "Real weather tool")]),
+        );
+        request.reasoning_effort = Some(ReasoningEffort::Medium);
+        request.tool_choice = OpenAiToolChoice::String("required".to_string());
+        let req = normalized_chat_request(request);
+
+        let (args, _) = provider.assemble(&req, false).await.expect("assemble");
+
+        assert_eq!(
+            args.additional_model_request_fields,
+            Some(json!({ "reasoning_config": "medium" }))
+        );
+    }
+}
+
+#[tokio::test]
+async fn chat_assemble_disables_signature_reasoning_on_first_tool_turn_without_encoder() {
+    let provider = test_provider_with_reasoning_path(ReasoningPath::AdaptiveThinking).await;
+    let mut request = base_chat_request(
+        vec![OpenAiMessage::User {
+            name: None,
+            content: crate::openai::schema::ContentInput::Text("weather?".to_string()),
+        }],
+        Some(vec![function_tool("get_weather", "Real weather tool")]),
+    );
+    request.reasoning_effort = Some(ReasoningEffort::Medium);
+    let req = normalized_chat_request(request);
+
+    let (args, _) = provider.assemble(&req, false).await.expect("assemble");
+
+    assert!(args.additional_model_request_fields.is_none());
+}
+
+#[tokio::test]
+async fn chat_assemble_enables_signature_reasoning_on_first_tool_turn_with_encoder() {
+    let provider = test_provider_with_reasoning_path_and_capsule_encoder(
+        ReasoningPath::AdaptiveThinking,
+        true,
+    )
+    .await;
+    let mut request = base_chat_request(
+        vec![OpenAiMessage::User {
+            name: None,
+            content: crate::openai::schema::ContentInput::Text("weather?".to_string()),
+        }],
+        Some(vec![function_tool("get_weather", "Real weather tool")]),
+    );
+    request.reasoning_effort = Some(ReasoningEffort::Medium);
+    let req = normalized_chat_request(request);
+
+    let (args, _) = provider.assemble(&req, false).await.expect("assemble");
+
+    assert_eq!(
+        args.additional_model_request_fields,
+        Some(json!({
+            "thinking": { "type": "adaptive" },
+            "output_config": { "effort": "medium" }
+        }))
+    );
+}
+
+#[tokio::test]
+async fn chat_assemble_rejects_forced_tool_choice_with_extended_thinking() {
+    let provider = test_provider_with_reasoning_path_and_capsule_encoder(
+        ReasoningPath::AdaptiveThinking,
+        true,
+    )
+    .await;
+
+    for tool_choice in [
+        OpenAiToolChoice::String("required".to_string()),
+        OpenAiToolChoice::Object(json!({
+            "type": "function",
+            "function": { "name": "get_weather" }
+        })),
+    ] {
+        let mut request = base_chat_request(
+            vec![OpenAiMessage::User {
+                name: None,
+                content: crate::openai::schema::ContentInput::Text("weather?".to_string()),
+            }],
+            Some(vec![function_tool("get_weather", "Real weather tool")]),
+        );
+        request.reasoning_effort = Some(ReasoningEffort::Medium);
+        request.tool_choice = tool_choice;
+        let req = normalized_chat_request(request);
+
+        let error = provider
+            .assemble(&req, false)
+            .await
+            .expect_err("forced tool choice must fail before Bedrock");
+
+        assert!(matches!(error, AppError::BadRequest(_)));
+    }
 }
 
 // ----- json_to_document / document_to_json round trips -------------------
@@ -641,7 +772,7 @@ fn converse_output_to_json_text_and_usage() {
     assert_eq!(value["usage"]["totalTokens"], 10);
 
     // And feeding it through the pure mapper yields a clean ChatResponse.
-    let resp = response::from_converse_output(&value, "m", "chatcmpl-x").expect("map");
+    let resp = response::from_converse_output(&value, "m", "chatcmpl-x", None).expect("map");
     assert_eq!(resp.choices[0].message.content.as_deref(), Some("Hi there"));
     assert_eq!(resp.usage.prompt_tokens, 8);
 }
@@ -683,7 +814,7 @@ fn converse_output_to_json_tool_use() {
     assert_eq!(tool_use["name"], "get_weather");
     assert_eq!(tool_use["input"], json!({ "city": "Paris" }));
 
-    let resp = response::from_converse_output(&value, "m", "id").expect("map");
+    let resp = response::from_converse_output(&value, "m", "id", None).expect("map");
     assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("tool_calls"));
     let calls = resp.choices[0].message.tool_calls.as_ref().expect("calls");
     assert_eq!(calls[0].id.as_deref(), Some("call_1"));

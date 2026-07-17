@@ -6,15 +6,16 @@
 
 use super::*;
 use crate::bedrock::capabilities::ConfigModelCapabilities;
+use crate::bedrock::capsule::{encode_capsule, CapsuleKeyring, CapsuleRuntime};
 use crate::config::ModelCapabilityConfig;
 use crate::openai::schema::{
     ContentInput, ContentPart, ImageContent, ImageUrl, JsonSchemaSpec, Message, ResponseFormat,
-    SystemContentInput, TextContent,
+    ResponseFunction, SystemContentInput, TextContent, ToolCall,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 
 const MODELS_TOML: &str = "config/models.toml";
-
 fn caps() -> ConfigModelCapabilities {
     let config = ModelCapabilityConfig::load(MODELS_TOML).expect("load models.toml");
     ConfigModelCapabilities::new(config)
@@ -74,6 +75,48 @@ fn user_text(text: &str) -> Message {
     Message::User {
         name: None,
         content: ContentInput::Text(text.to_string()),
+    }
+}
+
+fn capsule_runtime() -> Arc<CapsuleRuntime> {
+    Arc::new(CapsuleRuntime {
+        keyring: CapsuleKeyring::new(
+            HashMap::from([("current".to_string(), b"test-capsule-key".to_vec())]),
+            Some("current".to_string()),
+        ),
+        encoder_enabled: false,
+    })
+}
+
+fn capsule_extras(runtime: Arc<CapsuleRuntime>) -> ConverseExtras {
+    ConverseExtras {
+        capsule: Some(runtime),
+        ..Default::default()
+    }
+}
+
+fn signed_reasoning(text: &str, signature: &str) -> Vec<Value> {
+    vec![json!({
+        "reasoningText": {
+            "text": text,
+            "signature": signature,
+        }
+    })]
+}
+
+fn capsule_id(runtime: &CapsuleRuntime, tool_use_id: &str, blocks: &[Value]) -> String {
+    encode_capsule(tool_use_id, blocks, &runtime.keyring).expect("capsule encodes")
+}
+
+fn tool_call(id: &str, name: &str) -> ToolCall {
+    ToolCall {
+        index: None,
+        id: Some(id.to_string()),
+        r#type: "function".to_string(),
+        function: ResponseFunction {
+            name: Some(name.to_string()),
+            arguments: r#"{"city":"SF"}"#.to_string(),
+        },
     }
 }
 
@@ -851,6 +894,7 @@ async fn reasoning_seam_fields_merge_into_additional() {
     let extras = ConverseExtras {
         reasoning_fields: Some(json!({"reasoning_config": {"type": "enabled"}})),
         tool_config: Some(json!({"tools": []})),
+        capsule: None,
     };
     let args = to_converse_args(&req, &c, &r, &extras)
         .await
@@ -865,7 +909,6 @@ async fn reasoning_seam_fields_merge_into_additional() {
 
 #[tokio::test]
 async fn assistant_tool_calls_become_tool_use_blocks() {
-    use crate::openai::schema::{ResponseFunction, ToolCall};
     let req = base_request(
         "anthropic.claude-3-sonnet-v1:0",
         vec![
@@ -897,6 +940,307 @@ async fn assistant_tool_calls_become_tool_use_blocks() {
     assert_eq!(tu["toolUseId"], "call_1");
     assert_eq!(tu["name"], "get_weather");
     assert_eq!(tu["input"]["city"], "SF");
+}
+
+#[tokio::test]
+async fn capsule_round_trip_restores_reasoning_and_tool_ids() {
+    let runtime = capsule_runtime();
+    let blocks = signed_reasoning("private reasoning", "provider-signature");
+    let capsule = capsule_id(&runtime, "tool-123", &blocks);
+    let req = base_request(
+        "anthropic.claude-3-sonnet-v1:0",
+        vec![
+            Message::Assistant {
+                name: None,
+                content: Some(ContentInput::Text(
+                    "<think>private reasoning</think>rest".to_string(),
+                )),
+                tool_calls: Some(vec![tool_call(&capsule, "get_weather")]),
+            },
+            Message::Tool {
+                content: ToolContentInput::Text("72F sunny".to_string()),
+                tool_call_id: capsule,
+            },
+        ],
+    );
+
+    let args = to_converse_args(&req, &caps(), &resolver(false), &capsule_extras(runtime))
+        .await
+        .expect("capsule continuation translates");
+
+    assert_eq!(
+        args.messages,
+        json!([
+            {
+                "role": "assistant",
+                "content": [
+                    {"reasoningContent": blocks[0].clone()},
+                    {"text": "rest"},
+                    {"toolUse": {
+                        "toolUseId": "tool-123",
+                        "name": "get_weather",
+                        "input": {"city": "SF"}
+                    }}
+                ]
+            },
+            {
+                "role": "user",
+                "content": [{"toolResult": {
+                    "toolUseId": "tool-123",
+                    "content": [{"text": "72F sunny"}]
+                }}]
+            }
+        ])
+    );
+}
+
+#[tokio::test]
+async fn redacted_capsule_injects_reasoning_without_think_prefix() {
+    let runtime = capsule_runtime();
+    let blocks = vec![json!({"redactedContent": "opaque-redacted-block"})];
+    let capsule = capsule_id(&runtime, "tool-redacted", &blocks);
+    let req = base_request(
+        "anthropic.claude-3-sonnet-v1:0",
+        vec![Message::Assistant {
+            name: None,
+            content: Some(ContentInput::Text("ordinary text".to_string())),
+            tool_calls: Some(vec![tool_call(&capsule, "lookup")]),
+        }],
+    );
+
+    let args = to_converse_args(&req, &caps(), &resolver(false), &capsule_extras(runtime))
+        .await
+        .expect("redacted capsule translates");
+    let content = args.messages[0]["content"].as_array().expect("content");
+
+    assert_eq!(content[0], json!({"reasoningContent": blocks[0].clone()}));
+    assert_eq!(content[1], json!({"text": "ordinary text"}));
+    assert_eq!(content[2]["toolUse"]["toolUseId"], "tool-redacted");
+}
+
+#[tokio::test]
+async fn capsule_with_none_content_injects_reasoning() {
+    let runtime = capsule_runtime();
+    let blocks = signed_reasoning("private reasoning", "provider-signature");
+    let capsule = capsule_id(&runtime, "tool-none", &blocks);
+    let req = base_request(
+        "anthropic.claude-3-sonnet-v1:0",
+        vec![Message::Assistant {
+            name: None,
+            content: None,
+            tool_calls: Some(vec![tool_call(&capsule, "lookup")]),
+        }],
+    );
+
+    let args = to_converse_args(&req, &caps(), &resolver(false), &capsule_extras(runtime))
+        .await
+        .expect("content-less capsule translates");
+    let content = args.messages[0]["content"].as_array().expect("content");
+
+    assert_eq!(content.len(), 2);
+    assert_eq!(content[0], json!({"reasoningContent": blocks[0].clone()}));
+    assert_eq!(content[1]["toolUse"]["toolUseId"], "tool-none");
+}
+
+#[tokio::test]
+async fn mismatched_think_prefix_is_bad_request() {
+    let runtime = capsule_runtime();
+    let blocks = signed_reasoning("private reasoning", "provider-signature");
+    let capsule = capsule_id(&runtime, "tool-mismatch", &blocks);
+    let req = base_request(
+        "anthropic.claude-3-sonnet-v1:0",
+        vec![Message::Assistant {
+            name: None,
+            content: Some(ContentInput::Text(
+                "<think>tampered reasoning</think>rest".to_string(),
+            )),
+            tool_calls: Some(vec![tool_call(&capsule, "lookup")]),
+        }],
+    );
+
+    let error = to_converse_args(&req, &caps(), &resolver(false), &capsule_extras(runtime))
+        .await
+        .expect_err("mismatched reasoning must fail");
+
+    assert!(matches!(error, AppError::BadRequest(_)));
+}
+
+#[tokio::test]
+async fn matching_leading_text_part_strips_think_prefix() {
+    let runtime = capsule_runtime();
+    let blocks = signed_reasoning("private reasoning", "provider-signature");
+    let capsule = capsule_id(&runtime, "tool-parts", &blocks);
+    let req = base_request(
+        "anthropic.claude-3-sonnet-v1:0",
+        vec![Message::Assistant {
+            name: None,
+            content: Some(ContentInput::Parts(vec![
+                ContentPart::Text(TextContent {
+                    r#type: "text".to_string(),
+                    text: "<think>private reasoning</think>rest".to_string(),
+                }),
+                ContentPart::Text(TextContent {
+                    r#type: "text".to_string(),
+                    text: "second".to_string(),
+                }),
+            ])),
+            tool_calls: Some(vec![tool_call(&capsule, "lookup")]),
+        }],
+    );
+
+    let args = to_converse_args(&req, &caps(), &resolver(false), &capsule_extras(runtime))
+        .await
+        .expect("parts continuation translates");
+    let content = args.messages[0]["content"].as_array().expect("content");
+
+    assert_eq!(content[0], json!({"reasoningContent": blocks[0].clone()}));
+    assert_eq!(content[1], json!({"text": "rest"}));
+    assert_eq!(content[2], json!({"text": "second"}));
+    assert_eq!(content[3]["toolUse"]["toolUseId"], "tool-parts");
+}
+
+#[tokio::test]
+async fn parts_without_leading_text_are_bad_request() {
+    let runtime = capsule_runtime();
+    let blocks = signed_reasoning("private reasoning", "provider-signature");
+    let capsule = capsule_id(&runtime, "tool-image", &blocks);
+    let req = base_request(
+        "anthropic.claude-3-sonnet-v1:0",
+        vec![Message::Assistant {
+            name: None,
+            content: Some(ContentInput::Parts(vec![ContentPart::Image(
+                ImageContent {
+                    r#type: "image_url".to_string(),
+                    image_url: ImageUrl {
+                        url: "data:image/png;base64,aGk=".to_string(),
+                        detail: "auto".to_string(),
+                    },
+                },
+            )])),
+            tool_calls: Some(vec![tool_call(&capsule, "lookup")]),
+        }],
+    );
+
+    let error = to_converse_args(&req, &caps(), &resolver(true), &capsule_extras(runtime))
+        .await
+        .expect_err("unlocatable leading text must fail");
+
+    assert!(matches!(error, AppError::BadRequest(_)));
+}
+
+#[tokio::test]
+async fn divergent_parallel_capsules_are_bad_request() {
+    let runtime = capsule_runtime();
+    let first = capsule_id(
+        &runtime,
+        "tool-first",
+        &signed_reasoning("first reasoning", "first-signature"),
+    );
+    let second = capsule_id(
+        &runtime,
+        "tool-second",
+        &signed_reasoning("second reasoning", "second-signature"),
+    );
+    let req = base_request(
+        "anthropic.claude-3-sonnet-v1:0",
+        vec![Message::Assistant {
+            name: None,
+            content: Some(ContentInput::Text(
+                "<think>first reasoning</think>rest".to_string(),
+            )),
+            tool_calls: Some(vec![tool_call(&first, "one"), tool_call(&second, "two")]),
+        }],
+    );
+
+    let error = to_converse_args(&req, &caps(), &resolver(false), &capsule_extras(runtime))
+        .await
+        .expect_err("divergent envelopes must fail");
+
+    assert!(matches!(error, AppError::BadRequest(_)));
+}
+
+#[tokio::test]
+async fn identical_parallel_capsules_inject_shared_reasoning_once() {
+    let runtime = capsule_runtime();
+    let blocks = signed_reasoning("shared reasoning", "shared-signature");
+    let first = capsule_id(&runtime, "tool-first", &blocks);
+    let second = capsule_id(&runtime, "tool-second", &blocks);
+    let req = base_request(
+        "anthropic.claude-3-sonnet-v1:0",
+        vec![Message::Assistant {
+            name: None,
+            content: Some(ContentInput::Text(
+                "<think>shared reasoning</think>rest".to_string(),
+            )),
+            tool_calls: Some(vec![tool_call(&first, "one"), tool_call(&second, "two")]),
+        }],
+    );
+
+    let args = to_converse_args(&req, &caps(), &resolver(false), &capsule_extras(runtime))
+        .await
+        .expect("parallel capsules translate");
+    let content = args.messages[0]["content"].as_array().expect("content");
+
+    assert_eq!(
+        content
+            .iter()
+            .filter(|block| block.get("reasoningContent").is_some())
+            .count(),
+        1
+    );
+    assert_eq!(content[2]["toolUse"]["toolUseId"], "tool-first");
+    assert_eq!(content[3]["toolUse"]["toolUseId"], "tool-second");
+}
+
+#[tokio::test]
+async fn mixed_plain_and_capsule_ids_decode_independently() {
+    let runtime = capsule_runtime();
+    let blocks = signed_reasoning("shared reasoning", "shared-signature");
+    let capsule = capsule_id(&runtime, "tool-capsule", &blocks);
+    let req = base_request(
+        "anthropic.claude-3-sonnet-v1:0",
+        vec![Message::Assistant {
+            name: None,
+            content: Some(ContentInput::Text(
+                "<think>shared reasoning</think>rest".to_string(),
+            )),
+            tool_calls: Some(vec![
+                tool_call("plain-id", "plain"),
+                tool_call(&capsule, "capsule"),
+            ]),
+        }],
+    );
+
+    let args = to_converse_args(&req, &caps(), &resolver(false), &capsule_extras(runtime))
+        .await
+        .expect("mixed ids translate");
+    let content = args.messages[0]["content"].as_array().expect("content");
+
+    assert_eq!(content[2]["toolUse"]["toolUseId"], "plain-id");
+    assert_eq!(content[3]["toolUse"]["toolUseId"], "tool-capsule");
+}
+
+#[tokio::test]
+async fn plain_ids_only_are_identical_with_or_without_capsule_runtime() {
+    let req = base_request(
+        "anthropic.claude-3-sonnet-v1:0",
+        vec![Message::Assistant {
+            name: None,
+            content: Some(ContentInput::Text("ordinary text".to_string())),
+            tool_calls: Some(vec![tool_call("plain-id", "plain")]),
+        }],
+    );
+    let c = caps();
+    let r = resolver(false);
+
+    let baseline = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+        .await
+        .expect("baseline translates");
+    let with_runtime = to_converse_args(&req, &c, &r, &capsule_extras(capsule_runtime()))
+        .await
+        .expect("plain ids translate with runtime");
+
+    assert_eq!(with_runtime.messages, baseline.messages);
 }
 
 #[tokio::test]
@@ -1118,7 +1462,7 @@ proptest! {
 
 use crate::config::{BudgetRatios, ReasoningPath};
 use crate::domain::ResponsesBackend;
-use crate::openai::schema::{ResponseFunction, ToolCall, ToolContentInput};
+use crate::openai::schema::ToolContentInput;
 
 /// A minimal [`ModelCapabilities`] stub that reports exactly one capability and
 /// a fixed beta-header list. Lets tests exercise the de-hardcoded beta-header

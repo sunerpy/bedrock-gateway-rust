@@ -55,6 +55,20 @@ pub struct AppSettings {
     #[serde(default = "default_prompt_cache_ttl")]
     pub prompt_cache_ttl: String,
 
+    /// Enable Chat reasoning capsule encoding (default: false). Capsule decoding
+    /// remains available regardless of this encoder gate.
+    #[serde(default)]
+    pub chat_reasoning_capsule_enabled: bool,
+
+    /// Optional key id used to sign newly encoded Chat reasoning capsules.
+    #[serde(default)]
+    pub chat_reasoning_capsule_active_kid: Option<String>,
+
+    /// Optional comma-separated `kid:base64url-no-pad-key` keyring used only for
+    /// Chat reasoning capsules. Keys must use URL-safe base64 without padding.
+    #[serde(default)]
+    pub chat_reasoning_capsule_keys: Option<String>,
+
     /// Optional API key (env: API_KEY)
     pub api_key: Option<String>,
 
@@ -171,6 +185,7 @@ impl AppSettings {
             // per-request `extra_body.prompt_caching` overrides either way.
             .set_default("enable_prompt_caching", true)?
             .set_default("prompt_cache_ttl", "5m")?
+            .set_default("chat_reasoning_capsule_enabled", false)?
             .set_default("disable_mantle", false)?
             .set_default("bind_addr", "0.0.0.0")?
             .set_default("port", 8080)?
@@ -223,8 +238,9 @@ impl AppSettings {
 /// knobs `PORT`, `BIND_ADDR`, `LOG_LEVEL`, `MAX_BODY_SIZE_MB`,
 /// `RESPONSES_STREAM_IDLE_TIMEOUT_SECS`,
 /// `MANTLE_BASE_URL_TEMPLATE`, `MANTLE_CHAT_BASE_URL_TEMPLATE`,
-/// `ALLOWED_MODELS`, `PROMPT_CACHE_TTL`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
-/// `OTEL_CAPTURE_CONTENT`.
+/// `ALLOWED_MODELS`, `PROMPT_CACHE_TTL`, `CHAT_REASONING_CAPSULE_ENABLED`,
+/// `CHAT_REASONING_CAPSULE_ACTIVE_KID`, `CHAT_REASONING_CAPSULE_KEYS`,
+/// `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_CAPTURE_CONTENT`.
 fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder> {
     // String-valued overrides.
     for (env_name, field) in [
@@ -244,6 +260,11 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
         ),
         ("ALLOWED_MODELS", "allowed_models"),
         ("PROMPT_CACHE_TTL", "prompt_cache_ttl"),
+        (
+            "CHAT_REASONING_CAPSULE_ACTIVE_KID",
+            "chat_reasoning_capsule_active_kid",
+        ),
+        ("CHAT_REASONING_CAPSULE_KEYS", "chat_reasoning_capsule_keys"),
         ("OTEL_EXPORTER_OTLP_ENDPOINT", "otel_exporter_otlp_endpoint"),
     ] {
         if let Some(value) = non_empty_env(env_name) {
@@ -272,6 +293,10 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
             "enable_application_inference_profiles",
         ),
         ("ENABLE_PROMPT_CACHING", "enable_prompt_caching"),
+        (
+            "CHAT_REASONING_CAPSULE_ENABLED",
+            "chat_reasoning_capsule_enabled",
+        ),
         ("DISABLE_MANTLE", "disable_mantle"),
         ("OTEL_CAPTURE_CONTENT", "otel_capture_content"),
     ] {

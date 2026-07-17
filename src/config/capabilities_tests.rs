@@ -140,6 +140,14 @@ fn test_reasoning_path_hints() {
 }
 
 #[test]
+fn reasoning_path_signature_replay_requirements() {
+    assert!(ReasoningPath::AdaptiveThinking.requires_signature_replay());
+    assert!(ReasoningPath::BudgetTokens.requires_signature_replay());
+    assert!(!ReasoningPath::DeepseekString.requires_signature_replay());
+    assert!(!ReasoningPath::None.requires_signature_replay());
+}
+
+#[test]
 fn test_extension_requires_toml_only() {
     // Proves a NEW model can be added by editing TOML alone — no code change,
     // no recompile of the schema. We append a [[model]] table to a copy of
