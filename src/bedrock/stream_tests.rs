@@ -19,11 +19,17 @@
 //! machine is driven with in-memory SDK events, never timers.
 
 use super::*;
+use std::collections::HashMap;
+
 use aws_sdk_bedrockruntime::types::{
     ContentBlockDeltaEvent, ContentBlockStartEvent, ContentBlockStopEvent, ConversationRole,
     MessageStartEvent, MessageStopEvent, ReasoningContentBlockDelta, StopReason, TokenUsage,
     ToolUseBlockDelta, ToolUseBlockStart,
 };
+use serde_json::json;
+
+use crate::bedrock::capsule::{decode_capsule, CapsuleKeyring, CapsuleRuntime};
+use crate::error::AppError;
 
 const MODEL: &str = "anthropic.claude-3-sonnet-20240229-v1:0";
 const MID: &str = "chatcmpl-test";
@@ -71,6 +77,41 @@ fn ev_reasoning_signature(sig: &str, block: i32) -> ConverseStreamOutput {
             .build()
             .unwrap(),
     )
+}
+
+fn ev_reasoning_redacted(bytes: &[u8], block: i32) -> ConverseStreamOutput {
+    ConverseStreamOutput::ContentBlockDelta(
+        ContentBlockDeltaEvent::builder()
+            .delta(ContentBlockDelta::ReasoningContent(
+                ReasoningContentBlockDelta::RedactedContent(aws_smithy_types::Blob::new(bytes)),
+            ))
+            .content_block_index(block)
+            .build()
+            .unwrap(),
+    )
+}
+
+fn capsule_keyring() -> CapsuleKeyring {
+    CapsuleKeyring::new(
+        HashMap::from([("current".to_string(), b"stream-test-key".to_vec())]),
+        Some("current".to_string()),
+    )
+}
+
+fn capsule_runtime(encoder_enabled: bool) -> Arc<CapsuleRuntime> {
+    Arc::new(CapsuleRuntime {
+        keyring: capsule_keyring(),
+        encoder_enabled,
+    })
+}
+
+fn tool_call(chunk: &ChatStreamResponse) -> &ToolCall {
+    chunk.choices[0]
+        .delta
+        .tool_calls
+        .as_ref()
+        .and_then(|calls| calls.first())
+        .expect("tool-call delta")
 }
 
 fn ev_tool_start(block: i32, id: &str, name: &str) -> ConverseStreamOutput {
@@ -157,6 +198,7 @@ fn message_start_emits_role_delta() {
             RID,
             t0(),
         )
+        .expect("event maps")
         .expect("role chunk");
     assert_eq!(chunk.object, "chat.completion.chunk");
     assert_eq!(chunk.id, MID);
@@ -175,6 +217,7 @@ fn text_delta_emits_content() {
     let mut st = StreamState::new();
     let chunk = st
         .map_event(&ev_text("Hello", 0), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .expect("text");
     assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("Hello"));
     assert!(chunk.choices[0].delta.role.is_none());
@@ -203,6 +246,7 @@ fn reasoning_opens_think_then_text_closes_it() {
             RID,
             t0(),
         )
+        .expect("event maps")
         .expect("r1");
     assert_eq!(
         c1.choices[0].delta.content.as_deref(),
@@ -213,6 +257,7 @@ fn reasoning_opens_think_then_text_closes_it() {
     // Subsequent reasoning delta does NOT re-open.
     let c2 = st
         .map_event(&ev_reasoning_text(" more", 0), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .expect("r2");
     assert_eq!(c2.choices[0].delta.content.as_deref(), Some(" more"));
     assert!(st.think_emitted);
@@ -220,6 +265,7 @@ fn reasoning_opens_think_then_text_closes_it() {
     // Transition to regular text prepends </think>.
     let c3 = st
         .map_event(&ev_text("the answer", 0), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .expect("t");
     assert_eq!(
         c3.choices[0].delta.content.as_deref(),
@@ -232,6 +278,7 @@ fn reasoning_opens_think_then_text_closes_it() {
 fn signature_closes_open_think() {
     let mut st = StreamState::new();
     st.map_event(&ev_reasoning_text("hmm", 0), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .expect("open");
     assert!(st.think_emitted);
     let c = st
@@ -243,6 +290,7 @@ fn signature_closes_open_think() {
             RID,
             t0(),
         )
+        .expect("event maps")
         .expect("sig closes");
     assert_eq!(c.choices[0].delta.content.as_deref(), Some("</think>"));
     assert!(!st.think_emitted);
@@ -252,14 +300,16 @@ fn signature_closes_open_think() {
 fn signature_without_open_think_is_skipped() {
     let mut st = StreamState::new();
     // No <think> open → signature yields nothing.
-    let out = st.map_event(
-        &ev_reasoning_signature("sig", 0),
-        MODEL,
-        MID,
-        true,
-        RID,
-        t0(),
-    );
+    let out = st
+        .map_event(
+            &ev_reasoning_signature("sig", 0),
+            MODEL,
+            MID,
+            true,
+            RID,
+            t0(),
+        )
+        .expect("event maps");
     assert!(out.is_none());
     assert!(!st.think_emitted);
 }
@@ -275,6 +325,7 @@ fn message_stop_closes_open_think_first() {
         RID,
         t0(),
     )
+    .expect("event maps")
     .expect("open");
     assert!(st.think_emitted);
     // messageStop while think open closes the tag and retains the terminal reason.
@@ -287,6 +338,7 @@ fn message_stop_closes_open_think_first() {
             RID,
             t0(),
         )
+        .expect("event maps")
         .expect("close");
     assert_eq!(c.choices[0].delta.content.as_deref(), Some("</think>"));
     assert_eq!(c.choices[0].finish_reason.as_deref(), Some("stop"));
@@ -307,6 +359,7 @@ fn message_stop_emits_finish_reason() {
             RID,
             t0(),
         )
+        .expect("event maps")
         .expect("stop");
     assert_eq!(c.choices[0].finish_reason.as_deref(), Some("stop"));
     // delta is empty.
@@ -326,6 +379,7 @@ fn message_stop_tool_use_maps_to_tool_calls() {
             RID,
             t0(),
         )
+        .expect("event maps")
         .expect("stop");
     assert_eq!(c.choices[0].finish_reason.as_deref(), Some("tool_calls"));
 }
@@ -342,6 +396,7 @@ fn message_stop_max_tokens_maps_to_length() {
             RID,
             t0(),
         )
+        .expect("event maps")
         .expect("stop");
     assert_eq!(c.choices[0].finish_reason.as_deref(), Some("length"));
 }
@@ -361,7 +416,10 @@ fn tool_block_open_at_stop_is_flushed() {
         ev_message_stop(StopReason::MaxTokens),
     ];
     for e in &events {
-        if let Some(c) = st.map_event(e, MODEL, MID, true, RID, t0()) {
+        if let Some(c) = st
+            .map_event(e, MODEL, MID, true, RID, t0())
+            .expect("event maps")
+        {
             chunks.push(c);
         }
     }
@@ -406,6 +464,7 @@ fn content_block_stop_yields_nothing() {
     let mut st = StreamState::new();
     assert!(st
         .map_event(&ev_block_stop(0), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .is_none());
 }
 
@@ -425,6 +484,7 @@ fn tool_call_start_then_input_fragments() {
             RID,
             t0(),
         )
+        .expect("event maps")
         .expect("start");
     let calls = start.choices[0]
         .delta
@@ -441,6 +501,7 @@ fn tool_call_start_then_input_fragments() {
     // input fragment → arguments delta, reuses id/name from the block.
     let frag = st
         .map_event(&ev_tool_input(1, "{\"city\":"), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .expect("frag1");
     let calls = frag.choices[0].delta.tool_calls.as_ref().expect("tc");
     assert_eq!(calls[0].index, Some(0));
@@ -450,6 +511,7 @@ fn tool_call_start_then_input_fragments() {
 
     let frag2 = st
         .map_event(&ev_tool_input(1, "\"Paris\"}"), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .expect("frag2");
     let calls = frag2.choices[0].delta.tool_calls.as_ref().expect("tc");
     assert_eq!(calls[0].function.arguments, "\"Paris\"}");
@@ -461,9 +523,11 @@ fn tool_call_indices_are_contiguous_across_blocks() {
     // Bedrock uses block indices 3 and 5; OpenAI indices must be 0 and 1.
     let a = st
         .map_event(&ev_tool_start(3, "id-a", "fa"), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .expect("a");
     let b = st
         .map_event(&ev_tool_start(5, "id-b", "fb"), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .expect("b");
     assert_eq!(
         a.choices[0].delta.tool_calls.as_ref().unwrap()[0].index,
@@ -477,6 +541,7 @@ fn tool_call_indices_are_contiguous_across_blocks() {
     // A later input fragment on block 3 keeps index 0.
     let frag = st
         .map_event(&ev_tool_input(3, "{}"), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .expect("frag");
     assert_eq!(
         frag.choices[0].delta.tool_calls.as_ref().unwrap()[0].index,
@@ -490,6 +555,7 @@ fn tool_input_without_prior_start_has_no_id_or_name() {
     // No contentBlockStart was seen for this block.
     let frag = st
         .map_event(&ev_tool_input(7, "{\"a\":1}"), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .expect("frag");
     let calls = frag.choices[0].delta.tool_calls.as_ref().expect("tc");
     assert_eq!(calls[0].index, Some(0)); // freshly allocated contiguous index
@@ -514,6 +580,7 @@ fn metadata_usage_chunk_with_include_usage() {
             RID,
             t0(),
         )
+        .expect("event maps")
         .expect("usage chunk");
     // Empty choices for the usage chunk (per OpenAI doc).
     assert!(c.choices.is_empty());
@@ -532,14 +599,16 @@ fn metadata_usage_chunk_with_include_usage() {
 #[test]
 fn metadata_usage_chunk_suppressed_without_include_usage() {
     let mut st = StreamState::new();
-    let out = st.map_event(
-        &ev_metadata(9, 5, 20, None, None),
-        MODEL,
-        MID,
-        false,
-        RID,
-        t0(),
-    );
+    let out = st
+        .map_event(
+            &ev_metadata(9, 5, 20, None, None),
+            MODEL,
+            MID,
+            false,
+            RID,
+            t0(),
+        )
+        .expect("event maps");
     assert!(out.is_none(), "no usage chunk when include_usage is false");
 }
 
@@ -555,6 +624,7 @@ fn metadata_no_cache_omits_prompt_details() {
             RID,
             t0(),
         )
+        .expect("event maps")
         .expect("usage");
     let usage = c.usage.as_ref().expect("usage");
     assert!(usage.prompt_tokens_details.is_none());
@@ -573,7 +643,8 @@ fn reasoning_tokens_patched_into_usage_chunk() {
         true,
         RID,
         t0(),
-    );
+    )
+    .expect("event maps");
     st.map_event(
         &ev_reasoning_text(" continuing the analysis carefully", 0),
         MODEL,
@@ -581,7 +652,8 @@ fn reasoning_tokens_patched_into_usage_chunk() {
         true,
         RID,
         t0(),
-    );
+    )
+    .expect("event maps");
     assert!(st.reasoning_tokens > 0);
     let captured = st.reasoning_tokens;
 
@@ -594,6 +666,7 @@ fn reasoning_tokens_patched_into_usage_chunk() {
             RID,
             t0(),
         )
+        .expect("event maps")
         .expect("usage");
     let details = c
         .usage
@@ -620,7 +693,10 @@ fn full_text_sequence_serializes_clean() {
     ];
     let mut chunks = Vec::new();
     for e in &events {
-        if let Some(c) = st.map_event(e, MODEL, MID, true, RID, t0()) {
+        if let Some(c) = st
+            .map_event(e, MODEL, MID, true, RID, t0())
+            .expect("event maps")
+        {
             chunks.push(c);
         }
     }
@@ -655,7 +731,10 @@ fn full_reasoning_sequence_think_wrapped() {
     ];
     let mut content = String::new();
     for e in &events {
-        if let Some(c) = st.map_event(e, MODEL, MID, true, RID, t0()) {
+        if let Some(c) = st
+            .map_event(e, MODEL, MID, true, RID, t0())
+            .expect("event maps")
+        {
             if let Some(text) = &c.choices.first().and_then(|ch| ch.delta.content.clone()) {
                 content.push_str(text);
             }
@@ -694,7 +773,10 @@ fn redacted_reasoning_delta_yields_nothing_and_leaves_think_closed() {
             .unwrap(),
     );
     // redactedContent is not rendered; no <think> is opened.
-    assert!(st.map_event(&ev, MODEL, MID, true, RID, t0()).is_none());
+    assert!(st
+        .map_event(&ev, MODEL, MID, true, RID, t0())
+        .expect("event maps")
+        .is_none());
     assert!(!st.think_emitted);
 }
 
@@ -709,7 +791,10 @@ fn tool_result_content_delta_is_inert() {
             .build()
             .unwrap(),
     );
-    assert!(st.map_event(&ev, MODEL, MID, true, RID, t0()).is_none());
+    assert!(st
+        .map_event(&ev, MODEL, MID, true, RID, t0())
+        .expect("event maps")
+        .is_none());
 }
 
 #[test]
@@ -718,6 +803,7 @@ fn empty_reasoning_text_still_opens_think() {
     // Empty reasoning text estimates 0 tokens but still opens the <think> tag.
     let c = st
         .map_event(&ev_reasoning_text("", 0), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .expect("opens think");
     assert_eq!(c.choices[0].delta.content.as_deref(), Some("<think>"));
     assert!(st.think_emitted);
@@ -738,6 +824,7 @@ fn metadata_cache_write_only_still_emits_prompt_details_with_zero_cached() {
             RID,
             t0(),
         )
+        .expect("event maps")
         .expect("usage");
     let usage = c.usage.as_ref().expect("usage");
     // prompt = input(10) + cacheRead(0) + cacheWrite(50) = 60; total = 63.
@@ -759,12 +846,374 @@ fn signature_before_any_reasoning_is_inert_then_text_is_plain() {
     // Signature with no open <think> → nothing.
     assert!(st
         .map_event(&ev_reasoning_signature("s", 0), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .is_none());
     // A following plain-text delta is emitted verbatim (no stray </think>).
     let c = st
         .map_event(&ev_text("plain", 0), MODEL, MID, true, RID, t0())
+        .expect("event maps")
         .expect("text");
     assert_eq!(c.choices[0].delta.content.as_deref(), Some("plain"));
+}
+
+#[test]
+fn capsule_mode_signed_reasoning_emits_decodable_tool_id_and_think_text() {
+    let mut st = StreamState::with_capsule(Some(capsule_runtime(true)));
+    let mut visible = String::new();
+    for event in [
+        ev_reasoning_text("private reasoning", 0),
+        ev_reasoning_signature("provider-signature", 0),
+        ev_block_stop(0),
+    ] {
+        if let Some(chunk) = st
+            .map_event(&event, MODEL, MID, true, RID, t0())
+            .expect("reasoning event maps")
+        {
+            if let Some(content) = chunk.choices[0].delta.content.as_deref() {
+                visible.push_str(content);
+            }
+        }
+    }
+
+    let start = st
+        .map_event(
+            &ev_tool_start(1, "tool-123", "get_weather"),
+            MODEL,
+            MID,
+            true,
+            RID,
+            t0(),
+        )
+        .expect("tool start maps")
+        .expect("tool start emits");
+    let capsule = tool_call(&start).id.as_deref().expect("capsule id");
+    let decoded = decode_capsule(capsule, &capsule_keyring()).expect("capsule decodes");
+
+    assert_eq!(visible, "<think>private reasoning</think>");
+    assert_eq!(decoded.tool_use_id, "tool-123");
+    assert_eq!(
+        decoded.reasoning_blocks,
+        vec![json!({
+            "reasoningText": {
+                "text": "private reasoning",
+                "signature": "provider-signature"
+            }
+        })]
+    );
+}
+
+#[test]
+fn capsule_mode_tool_start_finalizes_complete_pending_reasoning() {
+    let mut st = StreamState::with_capsule(Some(capsule_runtime(true)));
+    for event in [
+        ev_reasoning_text("pending reasoning", 0),
+        ev_reasoning_signature("pending-signature", 0),
+    ] {
+        st.map_event(&event, MODEL, MID, true, RID, t0())
+            .expect("reasoning event maps");
+    }
+
+    let start = st
+        .map_event(
+            &ev_tool_start(1, "tool-pending", "get_weather"),
+            MODEL,
+            MID,
+            true,
+            RID,
+            t0(),
+        )
+        .expect("tool start maps")
+        .expect("tool start emits");
+    let decoded = decode_capsule(
+        tool_call(&start).id.as_deref().expect("capsule id"),
+        &capsule_keyring(),
+    )
+    .expect("capsule decodes");
+
+    assert_eq!(decoded.tool_use_id, "tool-pending");
+    assert_eq!(
+        decoded.reasoning_blocks,
+        vec![json!({
+            "reasoningText": {
+                "text": "pending reasoning",
+                "signature": "pending-signature"
+            }
+        })]
+    );
+    assert!(st
+        .map_event(&ev_block_stop(0), MODEL, MID, true, RID, t0())
+        .expect("late reasoning stop is inert")
+        .is_none());
+}
+
+#[test]
+fn capsule_mode_signature_only_normalizes_to_empty_reasoning_text() {
+    let mut st = StreamState::with_capsule(Some(capsule_runtime(true)));
+    st.map_event(
+        &ev_reasoning_signature("signature-only", 0),
+        MODEL,
+        MID,
+        true,
+        RID,
+        t0(),
+    )
+    .expect("signature maps");
+
+    let start = st
+        .map_event(
+            &ev_tool_start(1, "tool-signature-only", "get_weather"),
+            MODEL,
+            MID,
+            true,
+            RID,
+            t0(),
+        )
+        .expect("tool start maps")
+        .expect("tool start emits");
+    let decoded = decode_capsule(
+        tool_call(&start).id.as_deref().expect("capsule id"),
+        &capsule_keyring(),
+    )
+    .expect("capsule decodes");
+
+    assert_eq!(decoded.tool_use_id, "tool-signature-only");
+    assert_eq!(
+        decoded.reasoning_blocks,
+        vec![json!({
+            "reasoningText": {
+                "text": "",
+                "signature": "signature-only"
+            }
+        })]
+    );
+}
+
+#[test]
+fn capsule_mode_parallel_tools_share_the_same_reasoning_envelope() {
+    let mut st = StreamState::with_capsule(Some(capsule_runtime(true)));
+    for event in [
+        ev_reasoning_text("shared reasoning", 0),
+        ev_reasoning_signature("shared-signature", 0),
+        ev_block_stop(0),
+    ] {
+        st.map_event(&event, MODEL, MID, true, RID, t0())
+            .expect("reasoning event maps");
+    }
+
+    let first = st
+        .map_event(
+            &ev_tool_start(1, "tool-a", "first"),
+            MODEL,
+            MID,
+            true,
+            RID,
+            t0(),
+        )
+        .expect("first tool maps")
+        .expect("first tool emits");
+    let second = st
+        .map_event(
+            &ev_tool_start(2, "tool-b", "second"),
+            MODEL,
+            MID,
+            true,
+            RID,
+            t0(),
+        )
+        .expect("second tool maps")
+        .expect("second tool emits");
+    let first = decode_capsule(
+        tool_call(&first).id.as_deref().expect("first capsule"),
+        &capsule_keyring(),
+    )
+    .expect("first capsule decodes");
+    let second = decode_capsule(
+        tool_call(&second).id.as_deref().expect("second capsule"),
+        &capsule_keyring(),
+    )
+    .expect("second capsule decodes");
+
+    assert_eq!(first.tool_use_id, "tool-a");
+    assert_eq!(second.tool_use_id, "tool-b");
+    assert_eq!(first.reasoning_blocks, second.reasoning_blocks);
+}
+
+#[test]
+fn capsule_mode_redacted_reasoning_is_preserved() {
+    let mut st = StreamState::with_capsule(Some(capsule_runtime(true)));
+    assert!(st
+        .map_event(
+            &ev_reasoning_redacted(b"secret", 0),
+            MODEL,
+            MID,
+            true,
+            RID,
+            t0(),
+        )
+        .expect("redacted event maps")
+        .is_none());
+    st.map_event(&ev_block_stop(0), MODEL, MID, true, RID, t0())
+        .expect("reasoning stop maps");
+
+    let start = st
+        .map_event(
+            &ev_tool_start(1, "tool-redacted", "inspect"),
+            MODEL,
+            MID,
+            true,
+            RID,
+            t0(),
+        )
+        .expect("tool start maps")
+        .expect("tool start emits");
+    let decoded = decode_capsule(
+        tool_call(&start).id.as_deref().expect("capsule id"),
+        &capsule_keyring(),
+    )
+    .expect("capsule decodes");
+
+    assert_eq!(
+        decoded.reasoning_blocks,
+        vec![json!({ "redactedContent": "c2VjcmV0" })]
+    );
+}
+
+#[test]
+fn capsule_mode_rejects_reasoning_after_tool_start() {
+    let mut st = StreamState::with_capsule(Some(capsule_runtime(true)));
+    st.map_event(
+        &ev_tool_start(0, "tool-123", "get_weather"),
+        MODEL,
+        MID,
+        true,
+        RID,
+        t0(),
+    )
+    .expect("tool start maps");
+
+    let error = st
+        .map_event(
+            &ev_reasoning_text("late reasoning", 1),
+            MODEL,
+            MID,
+            true,
+            RID,
+            t0(),
+        )
+        .expect_err("interleaving must fail");
+
+    assert!(matches!(error, AppError::Internal(_)));
+}
+
+#[test]
+fn capsule_mode_rejects_unsigned_reasoning_before_tool_id() {
+    let mut st = StreamState::with_capsule(Some(capsule_runtime(true)));
+    st.map_event(
+        &ev_reasoning_text("unsigned reasoning", 0),
+        MODEL,
+        MID,
+        true,
+        RID,
+        t0(),
+    )
+    .expect("reasoning maps");
+
+    let error = st
+        .map_event(
+            &ev_tool_start(1, "tool-123", "get_weather"),
+            MODEL,
+            MID,
+            true,
+            RID,
+            t0(),
+        )
+        .expect_err("missing signature must fail");
+
+    assert!(matches!(error, AppError::Internal(_)));
+}
+
+#[test]
+fn capsule_mode_tool_without_reasoning_keeps_raw_id() {
+    let mut st = StreamState::with_capsule(Some(capsule_runtime(true)));
+
+    let start = st
+        .map_event(
+            &ev_tool_start(0, "ordinary-tool-id", "get_weather"),
+            MODEL,
+            MID,
+            true,
+            RID,
+            t0(),
+        )
+        .expect("tool start maps")
+        .expect("tool start emits");
+
+    assert_eq!(tool_call(&start).id.as_deref(), Some("ordinary-tool-id"));
+
+    let arguments = st
+        .map_event(
+            &ev_tool_input(0, r#"{"city":"SF"}"#),
+            MODEL,
+            MID,
+            true,
+            RID,
+            t0(),
+        )
+        .expect("tool input maps")
+        .expect("tool input emits");
+    assert_eq!(
+        tool_call(&arguments).id.as_deref(),
+        Some("ordinary-tool-id")
+    );
+    assert_eq!(
+        tool_call(&arguments).function.name.as_deref(),
+        Some("get_weather")
+    );
+}
+
+#[test]
+fn disabled_capsule_runtime_matches_legacy_tool_start() {
+    let event = ev_tool_start(3, "tool-legacy", "get_weather");
+    let legacy = StreamState::new()
+        .map_event(&event, MODEL, MID, true, RID, t0())
+        .expect("legacy maps")
+        .expect("legacy emits");
+    let disabled = StreamState::with_capsule(Some(capsule_runtime(false)))
+        .map_event(&event, MODEL, MID, true, RID, t0())
+        .expect("disabled maps")
+        .expect("disabled emits");
+
+    assert_eq!(
+        serde_json::to_value(disabled).expect("disabled serializes"),
+        serde_json::to_value(legacy).expect("legacy serializes")
+    );
+}
+
+#[test]
+fn capsule_mode_propagates_encoder_oversize_as_internal_error() {
+    let mut st = StreamState::with_capsule(Some(capsule_runtime(true)));
+    let oversized_reasoning = "x".repeat(65_536);
+    for event in [
+        ev_reasoning_text(&oversized_reasoning, 0),
+        ev_reasoning_signature("signature", 0),
+        ev_block_stop(0),
+    ] {
+        st.map_event(&event, MODEL, MID, true, RID, t0())
+            .expect("reasoning event maps");
+    }
+
+    let error = st
+        .map_event(
+            &ev_tool_start(1, "tool-123", "get_weather"),
+            MODEL,
+            MID,
+            true,
+            RID,
+            t0(),
+        )
+        .expect_err("oversize capsule must fail");
+
+    assert!(matches!(error, AppError::Internal(_)));
 }
 
 // ===========================================================================
@@ -827,8 +1276,9 @@ mod prop_tests {
             let mut st = StreamState::new();
             let mut content = String::new();
             for ev in &seq {
-                if let Some(c) =
-                    st.map_event(&to_output(ev), MODEL, MID, true, RID, t0())
+                if let Some(c) = st
+                    .map_event(&to_output(ev), MODEL, MID, true, RID, t0())
+                    .expect("event maps")
                 {
                     if let Some(text) = c.choices.first().and_then(|ch| ch.delta.content.clone()) {
                         content.push_str(&text);
@@ -836,8 +1286,9 @@ mod prop_tests {
                 }
             }
             // Terminal messageStop closes any still-open <think>.
-            if let Some(c) =
-                st.map_event(&ev_message_stop(StopReason::EndTurn), MODEL, MID, true, RID, t0())
+            if let Some(c) = st
+                .map_event(&ev_message_stop(StopReason::EndTurn), MODEL, MID, true, RID, t0())
+                .expect("event maps")
             {
                 if let Some(text) = c.choices.first().and_then(|ch| ch.delta.content.clone()) {
                     content.push_str(&text);
@@ -889,6 +1340,7 @@ mod prop_tests {
             let mut st = StreamState::new();
             let c = st
                 .map_event(&ev_text(&text, 0), MODEL, MID, true, RID, t0())
+                .expect("event maps")
                 .expect("text chunk");
             prop_assert_eq!(c.choices[0].delta.content.as_deref(), Some(text.as_str()));
             prop_assert!(c.choices[0].delta.role.is_none());
@@ -925,6 +1377,7 @@ mod prop_tests {
                 let name = format!("fn-{call_no}");
                 let chunk = st
                     .map_event(&ev_tool_start(block, &id, &name), MODEL, MID, true, RID, t0())
+                    .expect("event maps")
                     .expect("tool start chunk");
                 let got = chunk.choices[0].delta.tool_calls.as_ref().unwrap()[0]
                     .index

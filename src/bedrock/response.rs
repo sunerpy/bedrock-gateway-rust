@@ -46,6 +46,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+use crate::bedrock::capsule::{encode_capsule, reasoning_block_is_valid, CapsuleRuntime};
 use crate::bedrock::tokens::{compute_token_usage, estimate_reasoning_tokens};
 use crate::error::AppError;
 use crate::openai::schema::{
@@ -71,6 +72,7 @@ pub fn from_converse_output(
     output: &Value,
     model: &str,
     message_id: &str,
+    capsule: Option<&CapsuleRuntime>,
 ) -> Result<ChatResponse, AppError> {
     // --- Extract content blocks (output.message.content) ---------------------
     let content = output
@@ -114,8 +116,13 @@ pub fn from_converse_output(
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     let mut text = String::new();
     let mut reasoning = String::new();
+    let capsule = capsule.filter(|runtime| runtime.encoder_enabled);
+    let mut reasoning_blocks = Vec::new();
+    let mut invalid_reasoning_seen = false;
+    let mut tool_use_seen = false;
     for c in content {
         if let Some(part) = c.get("toolUse") {
+            tool_use_seen = true;
             let id = part.get("toolUseId").and_then(Value::as_str);
             let name = part.get("name").and_then(Value::as_str);
             // arguments = json.dumps(tool["input"]) (bedrock.py:1344).
@@ -133,6 +140,19 @@ pub fn from_converse_output(
                 },
             });
         } else if let Some(reasoning_block) = c.get("reasoningContent") {
+            if capsule.is_some() && tool_use_seen {
+                return Err(AppError::Internal(
+                    "interleaved reasoning after tool use is not representable in a brtc_v1 capsule"
+                        .to_string(),
+                ));
+            }
+            if capsule.is_some() {
+                if reasoning_block_is_valid(reasoning_block) {
+                    reasoning_blocks.push(reasoning_block.clone());
+                } else {
+                    invalid_reasoning_seen = true;
+                }
+            }
             if let Some(t) = reasoning_block
                 .get("reasoningText")
                 .and_then(|rt| rt.get("text"))
@@ -145,6 +165,24 @@ pub fn from_converse_output(
             text = t.to_string();
         }
         // Unknown blocks are ignored (Python logs a warning; parity-neutral).
+    }
+
+    if capsule.is_some() && !tool_calls.is_empty() && invalid_reasoning_seen {
+        return Err(AppError::Internal(
+            "reasoning block is missing replayable signed content for a brtc_v1 capsule"
+                .to_string(),
+        ));
+    }
+    if let Some(runtime) = capsule.filter(|_| !reasoning_blocks.is_empty()) {
+        for call in &mut tool_calls {
+            if let Some(tool_use_id) = call.id.as_deref() {
+                call.id = Some(encode_capsule(
+                    tool_use_id,
+                    &reasoning_blocks,
+                    &runtime.keyring,
+                )?);
+            }
+        }
     }
 
     if !tool_calls.is_empty() {

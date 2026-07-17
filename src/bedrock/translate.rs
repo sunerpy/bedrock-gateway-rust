@@ -48,9 +48,12 @@
 //! [`ConverseArgs::tool_config`]. This keeps the parity-critical message/system
 //! logic in one place without duplicating reasoning/tool logic here.
 
+use std::sync::Arc;
+
 use base64::Engine as _;
 use serde_json::{json, Map, Value};
 
+use crate::bedrock::capsule::{decode_capsule, is_capsule, CapsuleRuntime, DecodedCapsule};
 use crate::domain::{Capability, ModelCapabilities};
 use crate::error::AppError;
 use crate::openai::schema::{
@@ -113,7 +116,7 @@ impl ConverseArgs {
 /// This is the explicit integration seam: callers that have run reasoning/tool
 /// normalization pass the results in here. The default ([`ConverseExtras::default`])
 /// contributes nothing, which is exactly the behavior for a plain chat request.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ConverseExtras {
     /// Additional model request fields produced by reasoning normalization
     /// (e.g. `{"thinking": {...}}` or `{"reasoning_config": {...}}`). Merged
@@ -123,6 +126,9 @@ pub struct ConverseExtras {
     /// The fully-built `toolConfig` object (task 17). Placed verbatim into
     /// [`ConverseArgs::tool_config`].
     pub tool_config: Option<Value>,
+    /// Chat reasoning capsule decoder state. Decoding is independent of the
+    /// encoder feature flag and applies only to reserved `brtc_v1.` ids.
+    pub capsule: Option<Arc<CapsuleRuntime>>,
 }
 
 /// Resolves an image URL into raw bytes + a Bedrock image `format`.
@@ -358,6 +364,74 @@ struct IntermediateMessage {
     content: Vec<Value>,
 }
 
+fn decode_continuation_capsule(
+    candidate: &str,
+    runtime: Option<&CapsuleRuntime>,
+) -> Result<DecodedCapsule, AppError> {
+    let runtime = runtime.ok_or_else(|| {
+        AppError::BadRequest("reasoning capsule decoder is unavailable".to_string())
+    })?;
+    decode_capsule(candidate, &runtime.keyring)
+}
+
+fn strip_replayed_reasoning(
+    content: &Option<ContentInput>,
+    reasoning_blocks: &[Value],
+) -> Result<Option<ContentInput>, AppError> {
+    let mut reasoning_text = String::new();
+    let mut has_reasoning_text = false;
+    for block in reasoning_blocks {
+        if let Some(text) = block
+            .get("reasoningText")
+            .and_then(|reasoning| reasoning.get("text"))
+            .and_then(Value::as_str)
+        {
+            has_reasoning_text = true;
+            reasoning_text.push_str(text);
+        }
+    }
+
+    if !has_reasoning_text || content.is_none() {
+        return Ok(content.clone());
+    }
+
+    let expected_prefix = format!("<think>{reasoning_text}</think>");
+    match content {
+        Some(ContentInput::Text(text)) => text
+            .strip_prefix(&expected_prefix)
+            .map(|rest| Some(ContentInput::Text(rest.to_string())))
+            .ok_or_else(|| {
+                AppError::BadRequest(
+                    "assistant reasoning prefix does not match the reasoning capsule".to_string(),
+                )
+            }),
+        Some(ContentInput::Parts(parts)) => {
+            let mut stripped = parts.clone();
+            let leading_text = match stripped.first_mut() {
+                Some(ContentPart::Text(text)) => text,
+                Some(ContentPart::Image(_)) | None => {
+                    return Err(AppError::BadRequest(
+                        "assistant content parts have no leading text for reasoning replay"
+                            .to_string(),
+                    ));
+                }
+            };
+            leading_text.text = leading_text
+                .text
+                .strip_prefix(&expected_prefix)
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    AppError::BadRequest(
+                        "assistant reasoning prefix does not match the reasoning capsule"
+                            .to_string(),
+                    )
+                })?;
+            Ok(Some(ContentInput::Parts(stripped)))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Build the per-message intermediate list (pre-reframe).
 ///
 /// Ports the body of `_parse_messages` (bedrock.py:786-858): user → content
@@ -367,6 +441,7 @@ struct IntermediateMessage {
 async fn build_intermediate_messages(
     req: &ChatRequest,
     resolver: &dyn ImageResolver,
+    capsule: Option<&CapsuleRuntime>,
 ) -> Result<Vec<IntermediateMessage>, AppError> {
     let mut out: Vec<IntermediateMessage> = Vec::new();
     for message in &req.messages {
@@ -390,14 +465,29 @@ async fn build_intermediate_messages(
                 ..
             } => {
                 let mut assistant_content: Vec<Value> = Vec::new();
-                if assistant_has_text(content) {
-                    if let Some(c) = content {
-                        let blocks = parse_content_parts(c, &req.model, resolver).await?;
-                        assistant_content.extend(blocks);
-                    }
-                }
+                let mut shared_reasoning: Option<Vec<Value>> = None;
+                let mut tool_use_blocks = Vec::new();
                 if let Some(calls) = tool_calls {
                     for call in calls {
+                        let tool_use_id = match call.id.as_deref() {
+                            Some(id) if is_capsule(id) => {
+                                let decoded = decode_continuation_capsule(id, capsule)?;
+                                if shared_reasoning
+                                    .as_ref()
+                                    .is_some_and(|blocks| blocks != &decoded.reasoning_blocks)
+                                {
+                                    return Err(AppError::BadRequest(
+                                        "parallel reasoning capsules carry different reasoning blocks"
+                                            .to_string(),
+                                    ));
+                                }
+                                if shared_reasoning.is_none() {
+                                    shared_reasoning = Some(decoded.reasoning_blocks);
+                                }
+                                Some(decoded.tool_use_id)
+                            }
+                            _ => call.id.clone(),
+                        };
                         // Tool-call arguments are a JSON string (bedrock.py:815).
                         let input: Value =
                             serde_json::from_str(&call.function.arguments).map_err(|e| {
@@ -405,15 +495,35 @@ async fn build_intermediate_messages(
                                     "invalid tool_call arguments JSON: {e}"
                                 ))
                             })?;
-                        assistant_content.push(json!({
+                        tool_use_blocks.push(json!({
                             "toolUse": {
-                                "toolUseId": call.id,
+                                "toolUseId": tool_use_id,
                                 "name": call.function.name,
                                 "input": input,
                             }
                         }));
                     }
                 }
+
+                let replayed_content = if let Some(reasoning_blocks) = shared_reasoning {
+                    let stripped_content = strip_replayed_reasoning(content, &reasoning_blocks)?;
+                    assistant_content.extend(
+                        reasoning_blocks
+                            .into_iter()
+                            .map(|block| json!({"reasoningContent": block})),
+                    );
+                    Some(stripped_content)
+                } else {
+                    None
+                };
+                let content = replayed_content.as_ref().unwrap_or(content);
+                if assistant_has_text(content) {
+                    if let Some(content) = content {
+                        assistant_content
+                            .extend(parse_content_parts(content, &req.model, resolver).await?);
+                    }
+                }
+                assistant_content.extend(tool_use_blocks);
                 // Only add the message if it has content (bedrock.py:827).
                 if !assistant_content.is_empty() {
                     out.push(IntermediateMessage {
@@ -427,11 +537,16 @@ async fn build_intermediate_messages(
                 tool_call_id,
             } => {
                 let tool_content = extract_tool_content(content);
+                let decoded_tool_call_id = if is_capsule(tool_call_id) {
+                    decode_continuation_capsule(tool_call_id, capsule)?.tool_use_id
+                } else {
+                    tool_call_id.clone()
+                };
                 out.push(IntermediateMessage {
                     role: "user".to_string(),
                     content: vec![json!({
                         "toolResult": {
-                            "toolUseId": tool_call_id,
+                            "toolUseId": decoded_tool_call_id,
                             "content": [{ "text": tool_content }],
                         }
                     })],
@@ -562,8 +677,9 @@ pub async fn parse_messages(
     req: &ChatRequest,
     caps: &dyn ModelCapabilities,
     resolver: &dyn ImageResolver,
+    capsule: Option<&CapsuleRuntime>,
 ) -> Result<Value, AppError> {
-    let intermediates = build_intermediate_messages(req, resolver).await?;
+    let intermediates = build_intermediate_messages(req, resolver, capsule).await?;
     Ok(reframe_messages(intermediates, req, caps))
 }
 
@@ -667,7 +783,7 @@ pub async fn to_converse_args(
     resolver: &dyn ImageResolver,
     extras: &ConverseExtras,
 ) -> Result<ConverseArgs, AppError> {
-    let messages = parse_messages(req, caps, resolver).await?;
+    let messages = parse_messages(req, caps, resolver, extras.capsule.as_deref()).await?;
     let system = parse_system_prompts(req)?;
     let mut inference_config = build_inference_config(req, caps);
 

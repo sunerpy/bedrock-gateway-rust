@@ -50,6 +50,7 @@ use tower_http::LatencyUnit;
 use tracing::Level;
 
 use crate::bedrock::cache_support::CacheSupportRegistry;
+use crate::bedrock::capsule::resolve_capsule_runtime;
 use crate::bedrock::client::{build_aws_config, BedrockClients};
 use crate::bedrock::embeddings::BedrockEmbeddingProvider;
 use crate::bedrock::mantle_chat_provider::MantleChatProvider;
@@ -82,6 +83,7 @@ const REGIONS_CONFIG_FILE: &str = "regions.toml";
 /// binding a socket. A failing catalog refresh degrades to an empty catalog
 /// rather than erroring, matching the production best-effort contract.
 async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
+    let capsule = Arc::new(resolve_capsule_runtime(&settings)?);
     let aws_config = build_aws_config(&settings).await;
     let clients = BedrockClients::new(&aws_config);
 
@@ -159,6 +161,7 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
         image_resolver.clone(),
         settings.clone(),
         cache_support.clone(),
+        capsule,
     ));
     let converse_responses: Arc<dyn ResponsesProvider> = Arc::new(BedrockResponsesProvider::new(
         clients.clone(),
@@ -378,6 +381,9 @@ mod tests {
             enable_application_inference_profiles: false,
             enable_prompt_caching: false,
             prompt_cache_ttl: "5m".to_string(),
+            chat_reasoning_capsule_enabled: false,
+            chat_reasoning_capsule_active_kid: None,
+            chat_reasoning_capsule_keys: None,
             api_key: Some("testkey".to_string()),
             api_key_secret_arn: None,
             api_key_param_name: None,
@@ -398,6 +404,21 @@ mod tests {
             otel_exporter_otlp_endpoint: None,
             otel_capture_content: false,
         }
+    }
+
+    #[tokio::test]
+    async fn build_app_state_rejects_invalid_capsule_configuration() {
+        let mut settings = boot_settings();
+        settings.chat_reasoning_capsule_enabled = true;
+
+        let error = build_app_state(Arc::new(settings))
+            .await
+            .err()
+            .expect("invalid capsule configuration must fail boot");
+
+        assert!(error
+            .to_string()
+            .contains("capsule encoder is enabled without an active kid"));
     }
 
     #[test]

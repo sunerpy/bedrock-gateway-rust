@@ -6,6 +6,8 @@ pub mod cache_support;
 
 pub mod capabilities;
 
+pub mod capsule;
+
 pub mod client;
 
 pub mod embeddings;

@@ -12,8 +12,27 @@
 //! `assert_semantic_eq` helper — which is part of the integration-test crate —
 //! is exercised there rather than duplicated here.
 
+use std::collections::HashMap;
+
 use super::*;
+use crate::bedrock::capsule::{
+    decode_capsule, is_capsule, CapsuleKeyring, CapsuleRuntime, DecodedCapsule,
+};
 use serde_json::json;
+
+fn capsule_runtime(encoder_enabled: bool) -> CapsuleRuntime {
+    CapsuleRuntime {
+        keyring: CapsuleKeyring::new(
+            HashMap::from([("current".to_string(), b"response-test-key".to_vec())]),
+            Some("current".to_string()),
+        ),
+        encoder_enabled,
+    }
+}
+
+fn decode_tool_call_id(id: &str, runtime: &CapsuleRuntime) -> DecodedCapsule {
+    decode_capsule(id, &runtime.keyring).expect("tool call capsule decodes")
+}
 
 // -- convert_finish_reason: full table (bedrock.py:1858-1878) -------------
 
@@ -78,6 +97,7 @@ fn text_response_maps_content_and_usage() {
         &output,
         "anthropic.claude-3-sonnet-20240229-v1:0",
         "chatcmpl-1",
+        None,
     )
     .expect("map text response");
 
@@ -112,7 +132,7 @@ fn usage_rebuilds_when_total_tokens_absent() {
         "stopReason": "end_turn",
         "usage": { "inputTokens": 5, "outputTokens": 3 }
     });
-    let resp = from_converse_output(&output, "m", "id").expect("map");
+    let resp = from_converse_output(&output, "m", "id", None).expect("map");
     assert_eq!(resp.usage.prompt_tokens, 5);
     assert_eq!(resp.usage.completion_tokens, 3);
     assert_eq!(resp.usage.total_tokens, 8);
@@ -135,7 +155,7 @@ fn tool_use_builds_tool_calls_and_content_none() {
         "usage": { "inputTokens": 12, "outputTokens": 6, "totalTokens": 18 }
     });
 
-    let resp = from_converse_output(&output, "m", "id").expect("map tool_use");
+    let resp = from_converse_output(&output, "m", "id", None).expect("map tool_use");
     let choice = &resp.choices[0];
     assert_eq!(choice.finish_reason.as_deref(), Some("tool_calls"));
     // content is None for tool_use.
@@ -166,7 +186,7 @@ fn tool_use_multiple_blocks_indexed() {
         "stopReason": "tool_use",
         "usage": { "outputTokens": 1, "totalTokens": 2 }
     });
-    let resp = from_converse_output(&output, "m", "id").expect("map");
+    let resp = from_converse_output(&output, "m", "id", None).expect("map");
     let calls = resp.choices[0].message.tool_calls.as_ref().expect("calls");
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].index, Some(0));
@@ -195,7 +215,7 @@ fn max_tokens_with_tooluse_returns_tool_calls_and_length() {
         "usage": { "inputTokens": 12, "outputTokens": 6, "totalTokens": 18 }
     });
 
-    let resp = from_converse_output(&output, "m", "id").expect("map max_tokens+tool");
+    let resp = from_converse_output(&output, "m", "id", None).expect("map max_tokens+tool");
     let choice = &resp.choices[0];
     // finish_reason stays "length" (max_tokens truncation, wire-faithful).
     assert_eq!(choice.finish_reason.as_deref(), Some("length"));
@@ -232,7 +252,7 @@ fn malformed_tool_use_still_extracts_tool_calls() {
         "usage": { "inputTokens": 3, "outputTokens": 2, "totalTokens": 5 }
     });
 
-    let resp = from_converse_output(&output, "m", "id").expect("map malformed_tool_use");
+    let resp = from_converse_output(&output, "m", "id", None).expect("map malformed_tool_use");
     let choice = &resp.choices[0];
     // Lowercased passthrough — convert_finish_reason table unchanged.
     assert_eq!(choice.finish_reason.as_deref(), Some("malformed_tool_use"));
@@ -256,7 +276,7 @@ fn tool_use_with_text_keeps_both_content_and_tool_calls() {
         "stopReason": "tool_use",
         "usage": { "inputTokens": 5, "outputTokens": 4, "totalTokens": 9 }
     });
-    let resp = from_converse_output(&output, "m", "id").expect("map both");
+    let resp = from_converse_output(&output, "m", "id", None).expect("map both");
     let choice = &resp.choices[0];
     assert_eq!(
         choice.message.content.as_deref(),
@@ -280,7 +300,7 @@ fn reasoning_renders_inline_think_and_never_serializes_wire_key() {
         "usage": { "inputTokens": 10, "outputTokens": 5, "totalTokens": 15 }
     });
 
-    let resp = from_converse_output(&output, "m", "id").expect("map reasoning");
+    let resp = from_converse_output(&output, "m", "id", None).expect("map reasoning");
     let msg = &resp.choices[0].message;
     // <think> inline rendering.
     assert_eq!(
@@ -319,7 +339,7 @@ fn reasoning_only_renders_think_with_empty_tail() {
         "stopReason": "end_turn",
         "usage": { "inputTokens": 4, "outputTokens": 2, "totalTokens": 6 }
     });
-    let resp = from_converse_output(&output, "m", "id").expect("map reasoning-only");
+    let resp = from_converse_output(&output, "m", "id", None).expect("map reasoning-only");
     let msg = &resp.choices[0].message;
     assert_eq!(msg.content.as_deref(), Some("<think>just thinking</think>"));
     assert!(msg.reasoning_content.is_none());
@@ -333,7 +353,7 @@ fn no_reasoning_means_no_completion_details() {
         "stopReason": "end_turn",
         "usage": { "inputTokens": 1, "outputTokens": 1, "totalTokens": 2 }
     });
-    let resp = from_converse_output(&output, "m", "id").expect("map");
+    let resp = from_converse_output(&output, "m", "id", None).expect("map");
     assert!(resp.usage.completion_tokens_details.is_none());
     assert_eq!(resp.choices[0].message.content.as_deref(), Some("plain"));
 }
@@ -348,7 +368,7 @@ fn unknown_block_is_ignored_and_yields_empty_content() {
         "stopReason": "end_turn",
         "usage": { "inputTokens": 2, "outputTokens": 0, "totalTokens": 2 }
     });
-    let resp = from_converse_output(&output, "m", "id").expect("map unknown block");
+    let resp = from_converse_output(&output, "m", "id", None).expect("map unknown block");
     let msg = &resp.choices[0].message;
     assert_eq!(msg.content.as_deref(), Some(""));
     assert!(msg.tool_calls.is_none());
@@ -372,7 +392,7 @@ fn cached_tokens_reflect_cache_read_only() {
         }
     });
 
-    let resp = from_converse_output(&output, "m", "id").expect("map cache");
+    let resp = from_converse_output(&output, "m", "id", None).expect("map cache");
     assert_eq!(resp.usage.prompt_tokens, 20); // 9 + 4 + 7
     assert_eq!(resp.usage.total_tokens, 25); // 20 + 5
     let details = resp
@@ -405,11 +425,233 @@ fn cache_details_present_even_when_only_write() {
             "cacheWriteInputTokens": 3
         }
     });
-    let resp = from_converse_output(&output, "m", "id").expect("map");
+    let resp = from_converse_output(&output, "m", "id", None).expect("map");
     assert_eq!(resp.usage.prompt_tokens, 3); // 0 + 0 + 3
     assert_eq!(resp.usage.total_tokens, 5); // 3 + 2
     let details = resp.usage.prompt_tokens_details.as_ref().expect("details");
     assert_eq!(details.cached_tokens, 0);
+}
+
+#[test]
+fn signed_reasoning_and_tool_use_mint_round_trip_capsule() {
+    let reasoning_block = json!({
+        "reasoningText": {
+            "text": "private reasoning",
+            "signature": "provider-signature"
+        }
+    });
+    let output = json!({
+        "output": { "message": { "content": [
+            { "reasoningContent": reasoning_block.clone() },
+            { "toolUse": { "toolUseId": "tool-123", "name": "lookup", "input": {} } }
+        ] } },
+        "stopReason": "tool_use",
+        "usage": { "inputTokens": 1, "outputTokens": 1 }
+    });
+    let runtime = capsule_runtime(true);
+
+    let response = from_converse_output(&output, "m", "id", Some(&runtime)).expect("map response");
+
+    let message = &response.choices[0].message;
+    let calls = message.tool_calls.as_ref().expect("tool calls");
+    let capsule = calls[0].id.as_deref().expect("tool call id");
+    assert!(is_capsule(capsule));
+    let decoded = decode_tool_call_id(capsule, &runtime);
+    assert_eq!(decoded.tool_use_id, "tool-123");
+    assert_eq!(decoded.reasoning_blocks, vec![reasoning_block]);
+    assert_eq!(
+        message.content.as_deref(),
+        Some("<think>private reasoning</think>")
+    );
+}
+
+#[test]
+fn parallel_tool_uses_mint_capsules_with_shared_reasoning() {
+    let reasoning_blocks = vec![
+        json!({
+            "reasoningText": {
+                "text": "first",
+                "signature": "signature-1"
+            }
+        }),
+        json!({
+            "reasoningText": {
+                "text": "second",
+                "signature": "signature-2"
+            }
+        }),
+    ];
+    let output = json!({
+        "output": { "message": { "content": [
+            { "reasoningContent": reasoning_blocks[0].clone() },
+            { "reasoningContent": reasoning_blocks[1].clone() },
+            { "toolUse": { "toolUseId": "tool-a", "name": "first_tool", "input": {} } },
+            { "toolUse": { "toolUseId": "tool-b", "name": "second_tool", "input": {} } }
+        ] } },
+        "stopReason": "tool_use",
+        "usage": {}
+    });
+    let runtime = capsule_runtime(true);
+
+    let response = from_converse_output(&output, "m", "id", Some(&runtime)).expect("map response");
+
+    let calls = response.choices[0]
+        .message
+        .tool_calls
+        .as_ref()
+        .expect("tool calls");
+    let decoded: Vec<DecodedCapsule> = calls
+        .iter()
+        .map(|call| {
+            let id = call.id.as_deref().expect("tool call id");
+            assert!(is_capsule(id));
+            decode_tool_call_id(id, &runtime)
+        })
+        .collect();
+    assert_eq!(decoded[0].tool_use_id, "tool-a");
+    assert_eq!(decoded[1].tool_use_id, "tool-b");
+    assert_eq!(decoded[0].reasoning_blocks, reasoning_blocks);
+    assert_eq!(decoded[1].reasoning_blocks, decoded[0].reasoning_blocks);
+}
+
+#[test]
+fn redacted_reasoning_and_tool_use_mint_capsule() {
+    let reasoning_block = json!({ "redactedContent": "opaque-content" });
+    let output = json!({
+        "output": { "message": { "content": [
+            { "reasoningContent": reasoning_block.clone() },
+            { "toolUse": { "toolUseId": "tool-redacted", "name": "lookup", "input": {} } }
+        ] } },
+        "stopReason": "tool_use",
+        "usage": {}
+    });
+    let runtime = capsule_runtime(true);
+
+    let response = from_converse_output(&output, "m", "id", Some(&runtime)).expect("map response");
+
+    let capsule = response.choices[0]
+        .message
+        .tool_calls
+        .as_ref()
+        .and_then(|calls| calls[0].id.as_deref())
+        .expect("tool call capsule");
+    let decoded = decode_tool_call_id(capsule, &runtime);
+    assert_eq!(decoded.tool_use_id, "tool-redacted");
+    assert_eq!(decoded.reasoning_blocks, vec![reasoning_block]);
+}
+
+#[test]
+fn reasoning_after_tool_use_fails_closed() {
+    let output = json!({
+        "output": { "message": { "content": [
+            { "toolUse": { "toolUseId": "tool-123", "name": "lookup", "input": {} } },
+            { "reasoningContent": {
+                "reasoningText": { "text": "late", "signature": "signature" }
+            } }
+        ] } },
+        "stopReason": "tool_use",
+        "usage": {}
+    });
+    let runtime = capsule_runtime(true);
+
+    let error = from_converse_output(&output, "m", "id", Some(&runtime))
+        .expect_err("interleaved reasoning must fail");
+
+    assert!(matches!(error, AppError::Internal(_)));
+}
+
+#[test]
+fn unsigned_reasoning_before_tool_use_fails_closed() {
+    let output = json!({
+        "output": { "message": { "content": [
+            { "reasoningContent": {
+                "reasoningText": { "text": "unsigned" }
+            } },
+            { "toolUse": { "toolUseId": "tool-123", "name": "lookup", "input": {} } }
+        ] } },
+        "stopReason": "tool_use",
+        "usage": {}
+    });
+    let runtime = capsule_runtime(true);
+
+    let error = from_converse_output(&output, "m", "id", Some(&runtime))
+        .expect_err("unsigned reasoning cannot be replayed safely");
+
+    assert!(matches!(error, AppError::Internal(_)));
+}
+
+#[test]
+fn signed_reasoning_without_tool_use_only_renders_think() {
+    let output = json!({
+        "output": { "message": { "content": [
+            { "reasoningContent": {
+                "reasoningText": { "text": "standalone", "signature": "signature" }
+            } },
+            { "text": "answer" }
+        ] } },
+        "stopReason": "end_turn",
+        "usage": {}
+    });
+    let runtime = capsule_runtime(true);
+
+    let response = from_converse_output(&output, "m", "id", Some(&runtime)).expect("map response");
+
+    let message = &response.choices[0].message;
+    assert!(message.tool_calls.is_none());
+    assert_eq!(
+        message.content.as_deref(),
+        Some("<think>standalone</think>answer")
+    );
+}
+
+#[test]
+fn tool_use_without_reasoning_keeps_raw_id() {
+    let output = json!({
+        "output": { "message": { "content": [
+            { "toolUse": { "toolUseId": "tool-raw", "name": "lookup", "input": {} } }
+        ] } },
+        "stopReason": "tool_use",
+        "usage": {}
+    });
+    let runtime = capsule_runtime(true);
+
+    let response = from_converse_output(&output, "m", "id", Some(&runtime)).expect("map response");
+
+    let id = response.choices[0]
+        .message
+        .tool_calls
+        .as_ref()
+        .and_then(|calls| calls[0].id.as_deref())
+        .expect("tool call id");
+    assert_eq!(id, "tool-raw");
+    assert!(!is_capsule(id));
+}
+
+#[test]
+fn disabled_encoder_keeps_raw_tool_use_id() {
+    let output = json!({
+        "output": { "message": { "content": [
+            { "reasoningContent": {
+                "reasoningText": { "text": "private", "signature": "signature" }
+            } },
+            { "toolUse": { "toolUseId": "tool-disabled", "name": "lookup", "input": {} } }
+        ] } },
+        "stopReason": "tool_use",
+        "usage": {}
+    });
+    let runtime = capsule_runtime(false);
+
+    let response = from_converse_output(&output, "m", "id", Some(&runtime)).expect("map response");
+
+    let message = &response.choices[0].message;
+    let id = message
+        .tool_calls
+        .as_ref()
+        .and_then(|calls| calls[0].id.as_deref())
+        .expect("tool call id");
+    assert_eq!(id, "tool-disabled");
+    assert!(!is_capsule(id));
+    assert_eq!(message.content.as_deref(), Some("<think>private</think>"));
 }
 
 // -- error path -----------------------------------------------------------
@@ -421,7 +663,7 @@ fn missing_content_array_errors() {
         "stopReason": "end_turn",
         "usage": { "totalTokens": 1, "outputTokens": 0 }
     });
-    let err = from_converse_output(&output, "m", "id").expect_err("should error");
+    let err = from_converse_output(&output, "m", "id", None).expect_err("should error");
     assert!(matches!(err, AppError::Internal(_)));
 }
 
@@ -434,7 +676,7 @@ fn serialized_top_level_keys_are_openai_only() {
         "stopReason": "end_turn",
         "usage": { "inputTokens": 1, "outputTokens": 1, "totalTokens": 2 }
     });
-    let resp = from_converse_output(&output, "m", "id").expect("map");
+    let resp = from_converse_output(&output, "m", "id", None).expect("map");
     let value: Value = serde_json::to_value(&resp).expect("to_value");
     let obj = value.as_object().expect("object");
     let allowed = [
