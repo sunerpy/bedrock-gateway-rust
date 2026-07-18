@@ -54,15 +54,17 @@ pub enum ResponsesBackend {
 /// be chat-only on mantle while remaining Converse on the Responses surface, or
 /// vice versa. Config-driven (never inferred from the model name): a model entry
 /// in `config/models.toml` selects `Mantle` by declaring
-/// `params.chat_backend = "mantle"`; every other value — and the absence of the
-/// field — maps to `Converse`. `Converse` is the conceptual default so every
-/// existing model keeps routing through the Bedrock Converse path unchanged.
+/// `params.chat_backend = "mantle"` selects native Chat passthrough, while
+/// `"responses"` selects the Responses-to-Chat protocol adapter. Every other
+/// value — and the absence of the field — maps to `Converse`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatBackend {
     /// The default Bedrock Converse / ConverseStream path.
     Converse,
     /// The Bedrock Mantle (OpenAI-compatible) upstream path.
     Mantle,
+    /// Adapt the model's existing Responses API provider to Chat Completions.
+    Responses,
 }
 
 /// Generate a gateway request id of the form `req-{nanos:x}-{counter:x}`.

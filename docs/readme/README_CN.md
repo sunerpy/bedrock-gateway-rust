@@ -305,9 +305,9 @@ response = client.chat.completions.create(
 # 推理内容以 <think>...</think> 内联在 content 中
 ```
 
-### GPT-5.x（Responses API）
+### GPT-5.x（Responses 与 Chat Completions）
 
-GPT-5.x 模型仅支持 `/api/v1/responses`，不支持 `/chat/completions`，在 `GET /models` 中以裸别名 `gpt-5.4` / `gpt-5.5` 列出（`GET /models/{id}` 亦可解析）。区域门控：`gpt-5.5` 仅限 `us-east-2`；`gpt-5.4` 支持 `us-east-2` 或 `us-west-2`。需要设置 `AWS_BEARER_TOKEN_BEDROCK`。
+GPT-5.4、GPT-5.5 和 GPT-5.6 Sol/Terra/Luna 使用 Mantle Responses 上游，同时可通过内置的无状态 Responses-to-Chat 适配器使用 `/api/v1/chat/completions`。推理摘要渲染为 `<think>`，reasoning token 统计会保留，工具续轮使用带认证的 `rsc_v1` capsule。详细设计见 [GPT Responses 转 Chat 适配](../gpt-responses-chat-adapter.md)。
 
 **非流式：**
 
@@ -325,6 +325,15 @@ curl http://localhost:8080/api/v1/responses \
   -H "Authorization: Bearer sk-my-secret-key" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-5.4","input":"count to 5","stream":true}'
+```
+
+**通过 Chat Completions 使用推理：**
+
+```bash
+curl http://localhost:8080/api/v1/chat/completions \
+  -H "Authorization: Bearer sk-my-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"计算 17 * 23"}],"reasoning_effort":"high","stream":true}'
 ```
 
 ### codex 配置
@@ -379,7 +388,7 @@ src/
 - **Claude** — Sonnet 4.x、Haiku 4.x、Opus 4.x 系列（通过 Bedrock 模型 ID 和跨区域 inference profile）
 - **Amazon Nova** — 多模态和文本模型
 - **DeepSeek** — v3（字符串形式推理路径）
-- **GPT-5.x** — `gpt-5.4` 和 `gpt-5.5`，仅支持 `/api/v1/responses`，通过 AWS Bedrock mantle 上游提供。客户端发送裸别名，网关在分发前改写为规范 `openai.gpt-*` ID。不支持 `/chat/completions`。在 `GET /models` 中以裸别名 `gpt-5.4` / `gpt-5.5` 列出；`GET /models/{id}` 可解析这些名称。区域门控：`gpt-5.5` 仅限 `us-east-2`；`gpt-5.4` 支持 `us-east-2` 或 `us-west-2`。需要设置 `AWS_BEARER_TOKEN_BEDROCK`（否则启动失败）。
+- **GPT-5.x** — `gpt-5.4`、`gpt-5.5` 和 `gpt-5.6-sol/terra/luna`，支持 `/api/v1/responses` 以及适配后的 `/api/v1/chat/completions`，通过 AWS Bedrock Mantle Responses 上游提供。区域范围由 `config/models.toml` 声明。需要设置 `AWS_BEARER_TOKEN_BEDROCK`；reasoning 与工具同时续轮还需要共享的 `CHAT_REASONING_CAPSULE_*` keyring。
 - 账户中可访问的任何 Bedrock 基础模型或 inference profile — 模型目录在启动时从控制面刷新
 
 添加新模型只需一条 `config/models.toml` 条目，无需重新编译。

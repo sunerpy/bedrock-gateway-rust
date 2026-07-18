@@ -138,11 +138,11 @@ pub async fn chat_completions(
         "chat request received"
     );
     // A model served by mantle ONLY on the Responses surface (responses_backend
-    // == Mantle) with no chat backend is Responses-API-only (GPT-5.x). Reject it
-    // here with a clean 400. A mantle CHAT model (chat_backend == Mantle) is
-    // allowed and served through the raw passthrough lane below.
+    // == Mantle) with no chat backend is Responses-API-only. Reject it here
+    // with a clean 400. Native Mantle Chat and Responses-adapted Chat backends
+    // are both allowed.
     if state.caps.responses_backend(&client_model) == ResponsesBackend::Mantle
-        && state.caps.chat_backend(&client_model) != ChatBackend::Mantle
+        && state.caps.chat_backend(&client_model) == ChatBackend::Converse
     {
         return Err(AppError::BadRequest(format!(
             "model {client_model} is only available on the /responses endpoint"
@@ -1578,15 +1578,13 @@ mod tests {
         assert_eq!(value["error"]["code"], "unsupported");
     }
 
-    // ---- mantle-only models rejected on /chat/completions -----------------
+    // ---- Responses-backed models allowed on /chat/completions -------------
 
-    /// A mantle-only model (GPT-5.x is Responses-API-only) MUST be rejected on
-    /// `/chat/completions` with a clean OpenAI 400 envelope. The gate is
-    /// capability-driven (`responses_backend == Mantle`), NOT model-name
-    /// matching: `gpt-5.5` aliases to `openai.gpt-5.5` which declares
-    /// `responses_backend = "mantle"` in `config/models.toml`.
+    /// A model with `chat_backend = "responses"` is not rejected by the
+    /// Responses-only guard. The injected test provider stands in for the
+    /// protocol adapter here; adapter behavior is tested in its own module.
     #[tokio::test]
-    async fn chat_completions_rejects_mantle_only_model_with_400() {
+    async fn chat_completions_allows_responses_backed_model() {
         let body = r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}]}"#;
         let (status, bytes, _ct) = send(
             app(),
@@ -1596,17 +1594,9 @@ mod tests {
             Some(body),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(status, StatusCode::OK);
         let value: Value = serde_json::from_slice(&bytes).unwrap();
-        // Full OpenAI error envelope shape.
-        assert_eq!(value["error"]["type"], "invalid_request_error");
-        assert_eq!(value["error"]["code"], "bad_request");
-        let message = value["error"]["message"].as_str().unwrap_or_default();
-        assert!(
-            message.contains("/responses"),
-            "rejection message must point the caller to /responses, got: {message}"
-        );
-        assert!(value.get("detail").is_none());
+        assert_eq!(value["object"], "chat.completion");
     }
 
     /// A mantle-chat model (gpt-oss) streaming through the raw lane: the body

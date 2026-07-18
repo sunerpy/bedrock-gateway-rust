@@ -88,6 +88,30 @@ fn test_sonnet_4_6_has_context_1m_beta() {
 }
 
 #[test]
+fn test_sonnet_5_capabilities_and_reasoning_path() {
+    let cfg = load_project_config();
+    let entry = cfg
+        .entry_for_match("claude-sonnet-5")
+        .expect("claude-sonnet-5 entry must exist");
+    let caps: HashSet<Capability> = entry.capabilities.iter().copied().collect();
+    let expected: HashSet<Capability> = [
+        Capability::AdaptiveThinking,
+        Capability::DropSamplingParams,
+        Capability::StructuredOutput,
+        Capability::CacheTtl1h,
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(caps, expected);
+    assert_eq!(
+        entry.params.reasoning_path,
+        Some(ReasoningPath::AdaptiveThinking)
+    );
+    assert_eq!(entry.params.cache_min_tokens, Some(4096));
+}
+
+#[test]
 fn test_nova_max_cache_tokens() {
     // bedrock.py:454,470: Nova models have a 20,000 token caching limit.
     let cfg = load_project_config();

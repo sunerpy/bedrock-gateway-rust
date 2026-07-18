@@ -80,6 +80,21 @@ fn terminal_observer_extracts_reasoning_usage_across_chunks() {
     assert_eq!(terminal.reasoning_tokens, Some(3000));
 }
 
+#[test]
+fn terminal_observer_preserves_data_before_event_metadata() {
+    let mut terminator = ResponsesSseTerminator::default();
+    let frame = b"data: {\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":11,\"output_tokens\":5,\"output_tokens_details\":{\"reasoning_tokens\":2},\"total_tokens\":16}},\"type\":\"response.completed\"}\nevent: response.completed\n\n";
+
+    let terminal = terminator.observe(frame).expect("terminal event metadata");
+
+    assert_eq!(terminal.event_type, "response.completed");
+    assert_eq!(terminal.status.as_deref(), Some("completed"));
+    assert_eq!(terminal.input_tokens, Some(11));
+    assert_eq!(terminal.output_tokens, Some(5));
+    assert_eq!(terminal.total_tokens, Some(16));
+    assert_eq!(terminal.reasoning_tokens, Some(2));
+}
+
 #[tokio::test]
 async fn terminal_observer_preserves_bytes_and_reports_reasoning_usage() {
     let chunks = [

@@ -1,11 +1,12 @@
 //! Composite [`ChatProvider`] that routes by backend + startup validation.
 //!
 //! The chat-surface analogue of [`crate::server::composite::CompositeResponsesProvider`].
-//! The gateway serves `/chat/completions` from TWO backends — the default Bedrock
-//! Converse path ([`crate::bedrock::provider::BedrockChatProvider`]) and the
-//! OpenAI-compatible bedrock-mantle upstream
+//! The gateway serves `/chat/completions` from three config-selected backends:
+//! the default Bedrock Converse path, the OpenAI-compatible bedrock-mantle
+//! upstream
 //! ([`crate::bedrock::mantle_chat_provider::MantleChatProvider`]) for the gpt-oss
-//! family. [`CompositeChatProvider`] hides both behind the single
+//! family, and a Responses-to-Chat adapter for Responses-only models.
+//! [`CompositeChatProvider`] hides them behind the single
 //! `Arc<dyn ChatProvider>` that [`crate::server::state::AppState`] holds.
 //!
 //! ## Routing
@@ -35,7 +36,7 @@ use crate::openai::schema::ChatResponse;
 /// The config value of `params.chat_backend` that selects the mantle upstream.
 const MANTLE_BACKEND: &str = "mantle";
 
-/// A [`ChatProvider`] that dispatches each request to one of two inner providers
+/// A [`ChatProvider`] that dispatches each request to one of three inner providers
 /// based on the model's configured chat backend.
 ///
 /// Cheap to clone — every field is `Arc`-backed.
@@ -45,6 +46,8 @@ pub struct CompositeChatProvider {
     converse: Arc<dyn ChatProvider>,
     /// The bedrock-mantle (OpenAI-compatible) chat provider.
     mantle: Arc<dyn ChatProvider>,
+    /// Protocol adapter backed by the model's configured Responses provider.
+    responses: Arc<dyn ChatProvider>,
     /// The capability resolver used to pick the backend per request.
     caps: Arc<dyn ModelCapabilities>,
     /// Whether mantle requests may be dispatched to the mantle provider.
@@ -58,12 +61,14 @@ impl CompositeChatProvider {
     pub fn new(
         converse: Arc<dyn ChatProvider>,
         mantle: Arc<dyn ChatProvider>,
+        responses: Arc<dyn ChatProvider>,
         caps: Arc<dyn ModelCapabilities>,
         mantle_enabled: bool,
     ) -> Self {
         Self {
             converse,
             mantle,
+            responses,
             caps,
             mantle_enabled,
         }
@@ -76,6 +81,7 @@ impl CompositeChatProvider {
     fn select(&self, backend: ChatBackend) -> &Arc<dyn ChatProvider> {
         match backend {
             ChatBackend::Mantle => &self.mantle,
+            ChatBackend::Responses => &self.responses,
             ChatBackend::Converse => &self.converse,
         }
     }
