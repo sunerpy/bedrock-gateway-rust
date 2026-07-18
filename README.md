@@ -313,9 +313,9 @@ response = client.chat.completions.create(
 # Reasoning appears inline as <think>...</think> inside content
 ```
 
-### GPT-5.x (Responses API)
+### GPT-5.x (Responses and Chat Completions)
 
-GPT-5.x models are available on `/api/v1/responses` only — not `/chat/completions`, listed in `GET /models` under the bare names `gpt-5.4` / `gpt-5.5` (and `GET /models/{id}` resolves them). Region-gated: `gpt-5.5` requires `us-east-2`; `gpt-5.4` accepts `us-east-2` or `us-west-2`. Requires `AWS_BEARER_TOKEN_BEDROCK` to be set.
+GPT-5.4, GPT-5.5, and GPT-5.6 Sol/Terra/Luna use the Mantle Responses upstream. They are also available on `/api/v1/chat/completions` through the built-in stateless Responses-to-Chat adapter. Reasoning summaries render as `<think>`, reasoning token usage is preserved, and function-tool continuations use authenticated `rsc_v1` capsules. See [the adapter design](docs/gpt-responses-chat-adapter.md).
 
 **Non-streaming:**
 
@@ -333,6 +333,15 @@ curl http://localhost:8080/api/v1/responses \
   -H "Authorization: Bearer sk-my-secret-key" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-5.4","input":"count to 5","stream":true}'
+```
+
+**Chat Completions with reasoning:**
+
+```bash
+curl http://localhost:8080/api/v1/chat/completions \
+  -H "Authorization: Bearer sk-my-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"Solve 17 * 23"}],"reasoning_effort":"high","stream":true}'
 ```
 
 ### codex configuration
@@ -387,7 +396,7 @@ The authoritative list is `config/models.toml` and the live `GET /api/v1/models`
 - **Claude** — Sonnet 4.x, Haiku 4.x, Opus 4.x (via Bedrock model IDs and cross-region inference profiles)
 - **Amazon Nova** — multimodal and text models
 - **DeepSeek** — v3 (string-form reasoning path)
-- **GPT-5.x** — `gpt-5.4` and `gpt-5.5` on `/api/v1/responses` only, via the AWS Bedrock mantle upstream. Send the bare alias name; the gateway rewrites it to the canonical `openai.gpt-*` ID before dispatch. Not available on `/chat/completions`. Listed in `GET /models` under the bare alias names `gpt-5.4` / `gpt-5.5`; `GET /models/{id}` resolves those names. Region-gated: `gpt-5.5` requires `us-east-2`; `gpt-5.4` requires `us-east-2` or `us-west-2`. Requires `AWS_BEARER_TOKEN_BEDROCK` to be set (startup fails otherwise).
+- **GPT-5.x** — `gpt-5.4`, `gpt-5.5`, and `gpt-5.6-sol/terra/luna` on `/api/v1/responses` plus adapted `/api/v1/chat/completions`, via the AWS Bedrock mantle Responses upstream. Region availability is declared in `config/models.toml`. Requires `AWS_BEARER_TOKEN_BEDROCK`; reasoning + tool continuation additionally requires the shared `CHAT_REASONING_CAPSULE_*` keyring.
 - **gpt-oss** — `gpt-oss-120b` and `gpt-oss-20b` on `/api/v1/chat/completions` only, via the AWS Bedrock mantle upstream (`chat_backend = "mantle"`). Byte-level raw SSE passthrough; the gateway appends `data: [DONE]` at the stream tail. Not available on `/completions`. Listed in `GET /models` under the bare alias names `gpt-oss-120b` / `gpt-oss-20b`. Region-gated: `us-east-1` / `us-east-2` / `us-west-2`. Requires `AWS_BEARER_TOKEN_BEDROCK` to be set (otherwise those models are disabled with a WARN; the gateway still starts).
 - Any Bedrock foundation model or inference profile accessible in your account — the catalog refreshes from the control plane at startup
 

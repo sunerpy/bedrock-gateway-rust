@@ -720,9 +720,9 @@ async fn malformed_json_returns_400_envelope() {
 // ---- Mantle gate: capability-driven, not model-name matching -----------------
 
 #[tokio::test]
-async fn mantle_only_model_rejected_on_chat_completions_with_400() {
-    // `gpt-5.5` aliases to `openai.gpt-5.5` which declares
-    // `responses_backend = "mantle"` in config/models.toml → chat is 400.
+async fn responses_backed_model_is_allowed_on_chat_completions() {
+    // `gpt-5.5` declares `chat_backend = "responses"` and therefore reaches the
+    // injected Chat provider instead of the old Responses-only route guard.
     let body = r#"{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}]}"#;
     let (status, bytes, _ct) = send(
         ok_app(),
@@ -732,14 +732,9 @@ async fn mantle_only_model_rejected_on_chat_completions_with_400() {
         Some(body),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_error_envelope(&bytes, "bad_request");
+    assert_eq!(status, StatusCode::OK);
     let value: Value = serde_json::from_slice(&bytes).unwrap();
-    let message = value["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        message.contains("/responses"),
-        "rejection must point to /responses, got: {message}"
-    );
+    assert_eq!(value["object"], "chat.completion");
 }
 
 // ---- Handler error-severity branches (5xx error! vs 4xx warn!) ---------------

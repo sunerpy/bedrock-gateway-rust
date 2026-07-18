@@ -262,6 +262,7 @@ impl ModelCapabilities for ConfigModelCapabilities {
             .and_then(|e| e.params.chat_backend.as_deref())
         {
             Some("mantle") => ChatBackend::Mantle,
+            Some("responses") => ChatBackend::Responses,
             _ => ChatBackend::Converse,
         }
     }

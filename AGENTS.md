@@ -88,6 +88,8 @@ src/
 │   ├── responses_provider.rs   # BedrockResponsesProvider implements ResponsesProvider — composes
 │   │                           #   responses_translate + reasoning + cache → converse/converse_stream
 │   │                           #   → responses_response/responses_stream mapping
+│   ├── responses_chat_provider.rs # ResponsesChatProvider adapts ResponsesProvider to ChatProvider;
+│   │                              #   Chat↔Responses mapping, incremental SSE decoding, rsc_v1 replay
 │   ├── mantle_client.rs        # MantleClient: raw HTTP client for the bedrock-mantle OpenAI-compatible
 │   │                           #   upstream (bedrock-mantle.{region}.api.aws); byte-level SSE passthrough
 │   │                           #   via responses_nonstream / responses_stream; pre-stream errors mapped
@@ -110,7 +112,7 @@ src/
     │                    #   resolve_mantle_enabled: disables mantle if no bedrock_api_key;
     │                    #   soft WARN for region mismatches at boot
     ├── composite_chat.rs # CompositeChatProvider: single Arc<dyn ChatProvider> that dispatches to
-    │                    #   Converse (BedrockChatProvider) or Mantle (MantleChatProvider) by
+    │                    #   Converse, native Mantle Chat, or ResponsesChatProvider by
     │                    #   caps.chat_backend(model); overrides both raw chat lanes;
     │                    #   resolve_mantle_chat_enabled mirrors resolve_mantle_enabled
     ├── mod.rs           # serve(AppSettings) entrypoint, apply_layers (TraceLayer + CorsLayer)
@@ -261,15 +263,16 @@ from = "short-name"      # what the client sends
 to   = "provider.full-id"  # the canonical id the gateway resolves it to
 ```
 
-Alias resolution runs before the runtime inference-profile map, so it works even with no live Bedrock catalog. The current aliases are `gpt-5.4` → `openai.gpt-5.4` and `gpt-5.5` → `openai.gpt-5.5`.
+Alias resolution runs before the runtime inference-profile map, so it works even with no live Bedrock catalog. The current GPT aliases include `gpt-5.4`, `gpt-5.5`, and `gpt-5.6-sol/terra/luna`, each mapped to its `openai.*` canonical id.
 
 #### GPT-5.x via bedrock-mantle (`responses_backend = "mantle"`)
 
-Models served through AWS Bedrock's mantle OpenAI-compatible upstream use a different backend than the standard Converse path. Two extra `[model.params]` fields control this:
+Models served through AWS Bedrock's mantle OpenAI-compatible upstream use a different backend than the standard Converse path. Three `[model.params]` fields control this:
 
 | Field               | Type              | Meaning                                                                                           |
 | ------------------- | ----------------- | ------------------------------------------------------------------------------------------------- |
 | `responses_backend` | `"mantle"`        | Routes this model to `MantleResponsesProvider` instead of `BedrockResponsesProvider`              |
+| `chat_backend`      | `"responses"`     | Exposes Chat Completions through the stateless `ResponsesChatProvider` protocol adapter            |
 | `available_regions` | array of strings  | Region allow-list; absent = available everywhere; non-empty = per-request 400 if region not listed |
 
 Example (from `config/models.toml`):
@@ -280,6 +283,7 @@ match = "openai.gpt-5.5"
 capabilities = []
 [model.params]
 responses_backend = "mantle"
+chat_backend = "responses"
 available_regions = ["us-east-2"]
 ```
 
@@ -288,9 +292,11 @@ available_regions = ["us-east-2"]
 **Mantle endpoint template:** the upstream URL is controlled by `MANTLE_BASE_URL_TEMPLATE` (default `https://bedrock-mantle.{region}.api.aws/openai/v1`). The literal `{region}` placeholder is replaced with the gateway's `AWS_REGION` at call time. Change this env var to point at a private or test mantle endpoint without recompiling.
 
 **Constraints for mantle models:**
-- `/responses` only — `/chat/completions` returns 400.
-- Raw SSE byte passthrough — the gateway forwards the mantle stream verbatim; no `[DONE]` sentinel is appended, and the stream terminates on mantle's own `response.completed` event.
-- Listed in `GET /models` under their bare alias names (`gpt-5.4` / `gpt-5.5`), injected from the `[[alias]]` config (the Bedrock control plane itself does not return mantle models, so the gateway surfaces them from config); `GET /models/{id}` resolves those names.
+- `/responses` remains raw SSE byte passthrough: no `[DONE]`; the stream terminates on mantle's `response.completed`.
+- `/chat/completions` is supported through `chat_backend = "responses"`; it maps Chat requests and Responses output without calling mantle's unsupported native Chat route.
+- Reasoning summaries become inline `<think>` text; raw chain-of-thought is never exposed. Reasoning + tool continuation requires the shared `CHAT_REASONING_CAPSULE_*` keyring and uses authenticated `rsc_v1` tool ids.
+- `/completions` remains unsupported.
+- Listed in `GET /models` under bare aliases including `gpt-5.4`, `gpt-5.5`, and `gpt-5.6-sol/terra/luna`, injected from config because the control plane omits mantle models.
 - Auth reuses the same `bedrock_api_key` bearer (`AWS_BEARER_TOKEN_BEDROCK`) the gateway uses for Converse calls.
 
 #### gpt-oss chat via bedrock-mantle (`chat_backend = "mantle"`)
@@ -422,7 +428,7 @@ When you add a new translation path, add a golden fixture alongside the implemen
 | Responses `function_call_arguments.delta`  | N/A                                                 | Emits ordered `delta` / `done` events; `.done` includes the function name and precedes `response.output_item.done` |
 | Responses `namespace` / `custom` / client tools | N/A                                            | SUPPORTED — reversible `custom` string input; namespace names are flattened only toward Bedrock and restored as `namespace` + bare `name`; `local_shell` / `shell` / `apply_patch` retain their Responses item types |
 | Responses hosted server tools              | N/A                                                 | SILENTLY DROPPED (`web_search` / `file_search` / `code_interpreter` / `tool_search` / `mcp` / `computer` / `image_generation` + any unknown type) — never a 400, so codex sessions bundling hosted tools survive; `ResponsesTool` has a `#[serde(other)] Unknown` catch-all |
-| GPT-5.x (`gpt-5.4` / `gpt-5.5`) models   | N/A                                                 | Served via AWS bedrock-mantle (`responses_backend = "mantle"`), **Responses API only** — `/chat/completions` returns 400. Byte-level raw SSE passthrough; no Converse translation. Listed in `GET /models` by bare alias name (`gpt-5.4` / `gpt-5.5`), surfaced from config since the control plane omits mantle models. Region-gated: `gpt-5.5` = `us-east-2` only; `gpt-5.4` = `us-east-2` + `us-west-2`. Clients use bare alias names (`gpt-5.4` / `gpt-5.5`); the `[[alias]]` table in `config/models.toml` rewrites them to `openai.gpt-5.4` / `openai.gpt-5.5` before dispatch. |
+| GPT-5.x (`gpt-5.4` / `gpt-5.5` / `gpt-5.6-*`) models | N/A | Served via AWS bedrock-mantle Responses (`responses_backend = "mantle"`). `/responses` is raw passthrough; `/chat/completions` uses the stateless adapter (`chat_backend = "responses"`) with summary rendering, reasoning-token mapping, and authenticated `rsc_v1` tool replay. `/completions` remains unsupported. Aliases and region gates live in `config/models.toml`. |
 | Legacy text completions (`POST /completions`) | N/A (surface did not exist)                    | Added for Zed edit-prediction. Reuses the Chat/Converse path (prompt wrapped as one user message), wire shape `text_completion`. `suffix` → 400 (no Bedrock mapping); token-array `prompt` → 400 (send a string); `logprobs` / `best_of` / `logit_bias` accepted and ignored. |
 | gpt-oss chat via mantle (`gpt-oss-120b` / `gpt-oss-20b`) | N/A                                    | Served via AWS bedrock-mantle on the CHAT surface (`chat_backend = "mantle"`, an independent field from `responses_backend`), **`/chat/completions` only** — `/completions` returns 400. Byte-level raw SSE passthrough; no Converse translation, no usage re-normalization. The gateway APPENDS `data: [DONE]` at the stream tail (the ONE difference from the responses raw lane, which does not). Non-standard `delta.reasoning` + per-chunk `obfuscation` are preserved verbatim (never mapped to `<think>`, never dropped). Chat base template `MANTLE_CHAT_BASE_URL_TEMPLATE` = `https://bedrock-mantle.{region}.api.aws/v1` (no `/openai` prefix). Listed in `GET /models` by bare alias name (`gpt-oss-120b` / `gpt-oss-20b`). Region-gated: `us-east-1` / `us-east-2` / `us-west-2`. |
  
@@ -547,6 +553,8 @@ src/
 │   ├── responses_provider.rs   # BedrockResponsesProvider 实现 ResponsesProvider，组合
 │   │                           #   responses_translate + reasoning + cache → converse/converse_stream
 │   │                           #   → responses_response/responses_stream 映射
+│   ├── responses_chat_provider.rs # ResponsesChatProvider 将 ResponsesProvider 适配为 ChatProvider；
+│   │                              #   Chat↔Responses 映射、增量 SSE 解码、rsc_v1 续轮
 │   ├── mantle_client.rs        # MantleClient：bedrock-mantle OpenAI 兼容上游的原始 HTTP 客户端
 │   │                           #   （bedrock-mantle.{region}.api.aws）；字节级 SSE 透传，通过
 │   │                           #   responses_nonstream / responses_stream；流前错误映射为 AppError；
@@ -569,8 +577,8 @@ src/
     │                    #   resolve_mantle_enabled：若缺少 bedrock_api_key 则禁用 mantle；
     │                    #   区域不匹配时启动 WARN（不硬失败）
     ├── composite_chat.rs # CompositeChatProvider：单个 Arc<dyn ChatProvider>，通过
-    │                    #   caps.chat_backend(model) 分发至 Converse（BedrockChatProvider）或
-    │                    #   Mantle（MantleChatProvider）；覆盖两条 raw chat 通道；
+    │                    #   caps.chat_backend(model) 分发至 Converse、原生 Mantle Chat
+    │                    #   或 ResponsesChatProvider；覆盖两条 raw chat 通道；
     │                    #   resolve_mantle_chat_enabled 与 resolve_mantle_enabled 对应
     ├── mod.rs           # serve(AppSettings) 入口，apply_layers（TraceLayer + CorsLayer）
     └── routers/
@@ -720,15 +728,16 @@ from = "short-name"      # 客户端发送的名称
 to   = "provider.full-id"  # 网关解析为的规范 ID
 ```
 
-别名解析先于运行时 inference-profile 映射，因此即使没有实时 Bedrock 目录也能生效。当前别名：`gpt-5.4` → `openai.gpt-5.4`，`gpt-5.5` → `openai.gpt-5.5`。
+别名解析先于运行时 inference-profile 映射，因此即使没有实时 Bedrock 目录也能生效。当前 GPT 别名包括 `gpt-5.4`、`gpt-5.5` 和 `gpt-5.6-sol/terra/luna`，分别映射到对应的 `openai.*` 规范 ID。
 
 #### GPT-5.x 通过 bedrock-mantle（`responses_backend = "mantle"`）
 
-通过 AWS Bedrock 的 mantle OpenAI 兼容上游提供服务的模型使用与标准 Converse 路径不同的后端。两个额外的 `[model.params]` 字段控制此行为：
+通过 AWS Bedrock 的 mantle OpenAI 兼容上游提供服务的模型使用与标准 Converse 路径不同的后端。三个 `[model.params]` 字段控制此行为：
 
 | 字段                | 类型              | 含义                                                                                           |
 | ------------------- | ----------------- | ---------------------------------------------------------------------------------------------- |
 | `responses_backend` | `"mantle"`        | 将该模型路由到 `MantleResponsesProvider` 而非 `BedrockResponsesProvider`                       |
+| `chat_backend`      | `"responses"`     | 通过无状态 `ResponsesChatProvider` 协议适配器提供 Chat Completions                            |
 | `available_regions` | 字符串数组        | 区域允许列表；缺失 = 全区域可用；非空 = 请求区域不在列表时返回 400                            |
 
 示例（来自 `config/models.toml`）：
@@ -739,6 +748,7 @@ match = "openai.gpt-5.5"
 capabilities = []
 [model.params]
 responses_backend = "mantle"
+chat_backend = "responses"
 available_regions = ["us-east-2"]
 ```
 
@@ -747,9 +757,11 @@ available_regions = ["us-east-2"]
 **Mantle 端点模板：** 上游 URL 由 `MANTLE_BASE_URL_TEMPLATE` 控制（默认 `https://bedrock-mantle.{region}.api.aws/openai/v1`）。字面占位符 `{region}` 在调用时替换为网关的 `AWS_REGION`。修改此环境变量可指向私有或测试 mantle 端点，无需重新编译。
 
 **mantle 模型的限制：**
-- 仅支持 `/responses` — `/chat/completions` 返回 400。
-- 字节级原始 SSE 透传 — 网关原样转发 mantle 流；不追加 `[DONE]` 哨兵；流以 mantle 自身的 `response.completed` 事件结束。
-- 在 `GET /models` 中以裸别名（`gpt-5.4` / `gpt-5.5`）列出，由 `[[alias]]` 配置注入（Bedrock 控制面本身不返回 mantle 模型，网关从配置补充）；`GET /models/{id}` 可解析这些名称。
+- `/responses` 保持字节级原始 SSE 透传，不追加 `[DONE]`，以 mantle 的 `response.completed` 结束。
+- `/chat/completions` 通过 `chat_backend = "responses"` 支持；适配器不会调用 mantle 不支持的原生 Chat 路由。
+- reasoning summary 映射为内联 `<think>`，不暴露原始思考链；reasoning 与工具续轮需要共享 `CHAT_REASONING_CAPSULE_*` keyring，并使用带认证的 `rsc_v1` 工具 ID。
+- `/completions` 仍不支持。
+- 在 `GET /models` 中以 `gpt-5.4`、`gpt-5.5`、`gpt-5.6-sol/terra/luna` 等裸别名列出，由配置注入。
 - 鉴权复用网关用于 Converse 调用的同一 `bedrock_api_key` bearer（`AWS_BEARER_TOKEN_BEDROCK`）。
 
 #### gpt-oss chat 通过 bedrock-mantle（`chat_backend = "mantle"`）
@@ -881,7 +893,7 @@ BEDROCK_INTEGRATION=1 AWS_PROFILE=us cargo test -- --ignored
 | Responses `function_call_arguments.delta`  | N/A                                          | 发送有序 `delta` / `done` 事件；`.done` 含函数名，并先于 `response.output_item.done` |
 | Responses `namespace` / `custom` / 客户端工具 | N/A                                       | 支持 —— 可逆的 `custom` 字符串输入；namespace 名称仅在 Bedrock 侧扁平化，响应恢复 `namespace` + 裸 `name`；`local_shell` / `shell` / `apply_patch` 保留 Responses 项类型 |
 | Responses 内置服务端工具                   | N/A                                          | 静默丢弃（`web_search` / `file_search` / `code_interpreter` / `tool_search` / `mcp` / `computer` / `image_generation` 及任何未知类型）—— 绝不返回 400，捆绑内置工具的 codex 会话得以存活；`ResponsesTool` 带 `#[serde(other)] Unknown` 兜底 |
-| GPT-5.x（`gpt-5.4` / `gpt-5.5`）模型      | N/A                                          | 通过 AWS bedrock-mantle 提供（`responses_backend = "mantle"`），**仅支持 Responses API** — `/chat/completions` 返回 400。字节级原始 SSE 透传，无 Converse 翻译。在 `GET /models` 中以裸别名（`gpt-5.4` / `gpt-5.5`）列出，因控制面不含 mantle 模型，由配置补充。区域门控：`gpt-5.5` = `us-east-2`；`gpt-5.4` = `us-east-2` + `us-west-2`。客户端使用裸别名（`gpt-5.4` / `gpt-5.5`），`config/models.toml` 的 `[[alias]]` 表在分发前将其改写为 `openai.gpt-5.4` / `openai.gpt-5.5`。 |
+| GPT-5.x（`gpt-5.4` / `gpt-5.5` / `gpt-5.6-*`）模型 | N/A | 通过 AWS bedrock-mantle Responses 提供（`responses_backend = "mantle"`）。`/responses` 原始透传；`/chat/completions` 使用无状态适配器（`chat_backend = "responses"`），支持摘要渲染、reasoning token 映射和带认证的 `rsc_v1` 工具续轮。`/completions` 仍不支持。别名和区域门控均在 `config/models.toml`。 |
 | 传统文本补全（`POST /completions`）        | N/A（接口不存在）                            | 为 Zed edit-prediction 新增。复用 Chat/Converse 路径（prompt 包装为单条 user 消息），协议形状 `text_completion`。`suffix` → 400（无 Bedrock 映射）；token 数组形式的 `prompt` → 400（需发送字符串）；`logprobs` / `best_of` / `logit_bias` 接受但忽略。 |
 | gpt-oss chat 通过 mantle（`gpt-oss-120b` / `gpt-oss-20b`） | N/A                          | 通过 AWS bedrock-mantle 在 CHAT 接口提供（`chat_backend = "mantle"`，与 `responses_backend` 独立的字段），**仅支持 `/chat/completions`** —— `/completions` 返回 400。字节级原始 SSE 透传；无 Converse 翻译、不重算 usage。网关在流尾**追加** `data: [DONE]`（与 responses raw 通道的唯一差异，后者不追加）。非标准 `delta.reasoning` + 每 chunk `obfuscation` 原样保留（不映射 `<think>`、不丢弃）。chat 基础模板 `MANTLE_CHAT_BASE_URL_TEMPLATE` = `https://bedrock-mantle.{region}.api.aws/v1`（无 `/openai` 前缀）。在 `GET /models` 中以裸别名（`gpt-oss-120b` / `gpt-oss-20b`）列出。区域门控：`us-east-1` / `us-east-2` / `us-west-2`。 |
  

@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use super::{
-    decode_capsule, encode_capsule, is_capsule, resolve_capsule_runtime, CapsuleKeyring,
-    MAX_CAPSULE_WIRE_BYTES,
+    decode_capsule, decode_responses_capsule, encode_capsule, encode_responses_capsule, is_capsule,
+    is_responses_capsule, resolve_capsule_runtime, CapsuleKeyring, MAX_CAPSULE_WIRE_BYTES,
 };
 use crate::config::AppSettings;
 use crate::error::AppError;
@@ -266,4 +266,34 @@ fn invalid_reasoning_block_is_rejected() {
         decode_capsule(&capsule, &keyring()).expect_err("invalid reasoning block must fail");
 
     assert!(matches!(error, AppError::BadRequest(_)));
+}
+
+#[test]
+fn responses_capsule_round_trip_and_namespace_are_independent() {
+    let items = vec![json!({
+        "type": "reasoning",
+        "id": "rs_1",
+        "summary": [],
+        "encrypted_content": "opaque"
+    })];
+    let capsule = encode_responses_capsule("call-1", &items, &keyring()).expect("capsule encodes");
+
+    assert!(is_responses_capsule(&capsule));
+    assert!(!is_capsule(&capsule));
+    let decoded =
+        decode_responses_capsule(&capsule, &keyring()).expect("responses capsule decodes");
+    assert_eq!(decoded.call_id, "call-1");
+    assert_eq!(decoded.reasoning_items, items);
+    assert!(decode_capsule(&capsule, &keyring()).is_err());
+}
+
+#[test]
+fn responses_capsule_rejects_missing_encrypted_content() {
+    let error = encode_responses_capsule(
+        "call-1",
+        &[json!({"type": "reasoning", "id": "rs_1"})],
+        &keyring(),
+    )
+    .expect_err("unsigned Responses reasoning must fail");
+    assert!(matches!(error, AppError::Internal(_)));
 }

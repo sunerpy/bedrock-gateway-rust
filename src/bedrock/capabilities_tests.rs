@@ -487,6 +487,18 @@ fn chat_backend_mantle_for_configured_model() {
 }
 
 #[test]
+fn chat_backend_responses_for_configured_model_and_alias() {
+    use crate::domain::ChatBackend;
+    let c = caps();
+    assert_eq!(c.chat_backend("gpt-5.4"), ChatBackend::Responses);
+    assert_eq!(c.chat_backend("openai.gpt-5.4"), ChatBackend::Responses);
+    assert_eq!(c.chat_backend("gpt-5.5"), ChatBackend::Responses);
+    assert_eq!(c.chat_backend("gpt-5.6-sol"), ChatBackend::Responses);
+    assert_eq!(c.chat_backend("gpt-5.6-terra"), ChatBackend::Responses);
+    assert_eq!(c.chat_backend("gpt-5.6-luna"), ChatBackend::Responses);
+}
+
+#[test]
 fn chat_backend_converse_default() {
     use crate::domain::ChatBackend;
     let c = caps();

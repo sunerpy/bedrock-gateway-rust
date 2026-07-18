@@ -58,6 +58,7 @@ use crate::bedrock::mantle_client::MantleClient;
 use crate::bedrock::mantle_provider::MantleResponsesProvider;
 use crate::bedrock::models::ModelCatalog;
 use crate::bedrock::provider::BedrockChatProvider;
+use crate::bedrock::responses_chat_provider::ResponsesChatProvider;
 use crate::bedrock::responses_provider::BedrockResponsesProvider;
 use crate::bedrock::translate::ReqwestImageResolver;
 use crate::config::{AppSettings, EmbeddingRegistry, ModelCapabilityConfig, RegionRoutingConfig};
@@ -161,7 +162,7 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
         image_resolver.clone(),
         settings.clone(),
         cache_support.clone(),
-        capsule,
+        capsule.clone(),
     ));
     let converse_responses: Arc<dyn ResponsesProvider> = Arc::new(BedrockResponsesProvider::new(
         clients.clone(),
@@ -196,9 +197,12 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
         caps.clone(),
         settings.clone(),
     ));
+    let responses_chat: Arc<dyn ChatProvider> =
+        Arc::new(ResponsesChatProvider::new(responses.clone(), capsule));
     let chat: Arc<dyn ChatProvider> = Arc::new(CompositeChatProvider::new(
         converse_chat,
         mantle_chat,
+        responses_chat,
         caps.clone(),
         mantle_chat_enabled,
     ));

@@ -114,12 +114,16 @@ impl ResponsesSseTerminator {
             if let Some(value) = line.strip_prefix(b"event:") {
                 let event_type = trim_ascii(value);
                 self.terminal_event = is_terminal_responses_event(event_type);
-                self.terminal = self.terminal_event.then(|| {
-                    ResponsesStreamTerminal::from_event(
-                        std::str::from_utf8(event_type).unwrap_or("response.completed"),
-                        None,
-                    )
-                });
+                if self.terminal_event {
+                    self.terminal.get_or_insert_with(|| {
+                        ResponsesStreamTerminal::from_event(
+                            std::str::from_utf8(event_type).unwrap_or("response.completed"),
+                            None,
+                        )
+                    });
+                } else {
+                    self.terminal = None;
+                }
             } else if let Some(value) = line.strip_prefix(b"data:") {
                 let value = trim_ascii(value);
                 if let Ok(value) = serde_json::from_slice::<serde_json::Value>(value) {

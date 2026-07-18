@@ -141,11 +141,10 @@ pub struct ModelParams {
     /// DATA flag — the resolution layer reads it; no model-name branching in code.
     pub responses_backend: Option<String>,
     /// Which backend serves this model's `/chat/completions` requests. `None`
-    /// means the default Bedrock Converse path; a value such as `"mantle"` routes
-    /// the model to the bedrock-mantle OpenAI-compatible upstream instead. An
-    /// INDEPENDENT flag from [`Self::responses_backend`] — a model can be mantle
-    /// on one surface and Converse on the other. CONFIG DATA flag — the resolution
-    /// layer reads it; no model-name branching in code.
+    /// means the default Bedrock Converse path; `"mantle"` routes to the native
+    /// mantle Chat endpoint and `"responses"` adapts the model's configured
+    /// Responses provider to Chat Completions. This remains independent from
+    /// [`Self::responses_backend`] and contains configuration data only.
     pub chat_backend: Option<String>,
     /// Regions where this model is available. `None` means "no region gate"
     /// (available everywhere); a non-empty list restricts the model to those

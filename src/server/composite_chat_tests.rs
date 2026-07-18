@@ -136,6 +136,8 @@ impl ModelCapabilities for RoutingCaps {
     fn chat_backend(&self, model: &str) -> ChatBackend {
         if model.contains("gpt-oss") {
             ChatBackend::Mantle
+        } else if model.contains("gpt-responses") {
+            ChatBackend::Responses
         } else {
             ChatBackend::Converse
         }
@@ -234,22 +236,25 @@ fn build_with_mantle_enabled(
     CompositeChatProvider,
     Arc<RecordingChatProvider>,
     Arc<RecordingChatProvider>,
+    Arc<RecordingChatProvider>,
 ) {
     let converse = RecordingChatProvider::new("converse");
     let mantle = RecordingChatProvider::new("mantle");
+    let responses = RecordingChatProvider::new("responses");
     let caps: Arc<dyn ModelCapabilities> = Arc::new(RoutingCaps);
     let composite = CompositeChatProvider::new(
         converse.clone() as Arc<dyn ChatProvider>,
         mantle.clone() as Arc<dyn ChatProvider>,
+        responses.clone() as Arc<dyn ChatProvider>,
         caps,
         mantle_enabled,
     );
-    (composite, converse, mantle)
+    (composite, converse, mantle, responses)
 }
 
 #[tokio::test]
 async fn routes_mantle_backend_to_mantle_provider() {
-    let (composite, converse, mantle) = build_with_mantle_enabled(true);
+    let (composite, converse, mantle, responses) = build_with_mantle_enabled(true);
     let req = normalized("gpt-oss-120b");
 
     let resp = composite.chat(&req).await.expect("chat ok");
@@ -278,11 +283,12 @@ async fn routes_mantle_backend_to_mantle_provider() {
     assert!(mantle.chat_raw_nonstream_hit.load(Ordering::SeqCst));
     assert!(!converse.chat_hit.load(Ordering::SeqCst));
     assert!(!converse.chat_raw_stream_hit.load(Ordering::SeqCst));
+    assert!(!responses.chat_hit.load(Ordering::SeqCst));
 }
 
 #[tokio::test]
 async fn routes_converse_backend_to_converse_provider() {
-    let (composite, converse, mantle) = build_with_mantle_enabled(true);
+    let (composite, converse, mantle, responses) = build_with_mantle_enabled(true);
     let req = normalized("anthropic.claude-sonnet-4-5");
 
     let resp = composite.chat(&req).await.expect("chat ok");
@@ -293,11 +299,27 @@ async fn routes_converse_backend_to_converse_provider() {
     assert!(converse.chat_raw_stream_hit.load(Ordering::SeqCst));
     assert!(!mantle.chat_hit.load(Ordering::SeqCst));
     assert!(!mantle.chat_raw_stream_hit.load(Ordering::SeqCst));
+    assert!(!responses.chat_hit.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn routes_responses_backend_to_adapter_provider() {
+    let (composite, converse, mantle, responses) = build_with_mantle_enabled(true);
+    let req = normalized("gpt-responses");
+
+    let response = composite.chat(&req).await.expect("chat ok");
+    assert_eq!(response.model, "responses");
+    let _ = composite.chat_stream(&req).await.expect("stream ok");
+
+    assert!(responses.chat_hit.load(Ordering::SeqCst));
+    assert!(responses.chat_stream_hit.load(Ordering::SeqCst));
+    assert!(!converse.chat_hit.load(Ordering::SeqCst));
+    assert!(!mantle.chat_hit.load(Ordering::SeqCst));
 }
 
 #[tokio::test]
 async fn mantle_disabled_returns_bad_request() {
-    let (composite, converse, mantle) = build_with_mantle_enabled(false);
+    let (composite, converse, mantle, responses) = build_with_mantle_enabled(false);
     let req = normalized("gpt-oss-120b");
 
     match composite.chat(&req).await {
@@ -317,6 +339,7 @@ async fn mantle_disabled_returns_bad_request() {
 
     assert!(!mantle.chat_hit.load(Ordering::SeqCst));
     assert!(!converse.chat_hit.load(Ordering::SeqCst));
+    assert!(!responses.chat_hit.load(Ordering::SeqCst));
 }
 
 #[test]

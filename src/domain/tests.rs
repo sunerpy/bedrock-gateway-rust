@@ -293,6 +293,8 @@ async fn chat_raw_nonstream_defaults_to_none() {
 #[test]
 fn chat_backend_enum_variants_exist() {
     assert_ne!(ChatBackend::Converse, ChatBackend::Mantle);
+    assert_ne!(ChatBackend::Converse, ChatBackend::Responses);
+    assert_ne!(ChatBackend::Mantle, ChatBackend::Responses);
     let a = ChatBackend::Mantle;
     let b = a;
     assert_eq!(a, b);

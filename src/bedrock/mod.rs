@@ -26,6 +26,8 @@ pub mod reasoning;
 
 pub mod responses_provider;
 
+pub mod responses_chat_provider;
+
 pub mod responses_response;
 
 pub mod responses_stream;
