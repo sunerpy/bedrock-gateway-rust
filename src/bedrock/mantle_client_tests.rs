@@ -307,6 +307,68 @@ async fn stream_401_maps_to_unauthorized_without_body_leak() {
     );
 }
 
+/// A pre-stream Mantle 400 that uses the standard OpenAI envelope is returned
+/// to the caller, while the error's Display remains safe for structured logs.
+#[tokio::test]
+async fn stream_400_preserves_openai_envelope_without_display_leak() {
+    let server = MockServer::start().await;
+    let marker = "prompt tokens (280007) exceed customer model maximum (278528)";
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {
+                "code": "validation_error",
+                "message": marker,
+                "param": null,
+                "type": "invalid_request_error"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri(), "test-bearer");
+    let err = client
+        .responses_stream("us-east-2", Bytes::from_static(b"{}"))
+        .await
+        .err()
+        .expect("400 should be a pre-stream error");
+
+    assert!(matches!(err, AppError::UpstreamOpenAi { .. }));
+    assert!(
+        !err.to_string().contains(marker),
+        "error Display must not leak the upstream body"
+    );
+    let envelope = err.envelope();
+    assert_eq!(envelope.error.message, marker);
+    assert_eq!(envelope.error.code.as_deref(), Some("validation_error"));
+}
+
+/// Error envelopes over the hard cap fall back to the generic status mapping.
+#[tokio::test]
+async fn oversized_400_error_body_is_not_preserved() {
+    let server = MockServer::start().await;
+    let oversized = "x".repeat(MAX_UPSTREAM_ERROR_BODY_BYTES + 1);
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {
+                "code": "validation_error",
+                "message": oversized,
+                "type": "invalid_request_error"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri(), "test-bearer");
+    let err = client
+        .responses_nonstream("us-east-2", Bytes::from_static(b"{}"))
+        .await
+        .expect_err("400 should be an error");
+
+    assert!(matches!(err, AppError::BadRequest(_)));
+}
+
 /// The `{region}` placeholder is substituted and `/responses` appended.
 #[test]
 fn responses_url_substitutes_region_and_appends_path() {

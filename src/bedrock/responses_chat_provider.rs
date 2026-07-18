@@ -201,6 +201,7 @@ fn chat_request_to_responses(
     for message in &req.messages {
         append_message_items(message, capsule, &mut input)?;
     }
+    dedupe_replayed_reasoning_items(&mut input)?;
 
     let tools = req
         .tools
@@ -274,6 +275,29 @@ fn chat_request_to_responses(
         previous_response_id: None,
         extra,
     })
+}
+
+fn dedupe_replayed_reasoning_items(input: &mut Vec<ResponseInputItem>) -> Result<(), AppError> {
+    let mut seen = HashMap::<String, usize>::new();
+    let mut deduplicated: Vec<ResponseInputItem> = Vec::with_capacity(input.len());
+    for item in input.drain(..) {
+        let ResponseInputItem::Reasoning { id, .. } = &item else {
+            deduplicated.push(item);
+            continue;
+        };
+        if let Some(previous_index) = seen.get(id) {
+            if deduplicated[*previous_index] != item {
+                return Err(AppError::BadRequest(
+                    "duplicate Responses reasoning item id has conflicting payloads".to_string(),
+                ));
+            }
+            continue;
+        }
+        seen.insert(id.clone(), deduplicated.len());
+        deduplicated.push(item);
+    }
+    *input = deduplicated;
+    Ok(())
 }
 
 fn append_message_items(

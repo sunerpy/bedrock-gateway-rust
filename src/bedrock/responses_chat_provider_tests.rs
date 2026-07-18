@@ -246,6 +246,109 @@ fn continuation_replays_reasoning_and_restores_original_call_id() {
 }
 
 #[test]
+fn continuation_deduplicates_reasoning_ids_across_tool_turns() {
+    let runtime = capsule_runtime(true);
+    let reasoning = reasoning_item();
+    let first =
+        encode_responses_capsule("call_1", std::slice::from_ref(&reasoning), &runtime.keyring)
+            .expect("first capsule encodes");
+    let second =
+        encode_responses_capsule("call_2", std::slice::from_ref(&reasoning), &runtime.keyring)
+            .expect("second capsule encodes");
+    let assistant = |id: String| Message::Assistant {
+        name: None,
+        content: None,
+        tool_calls: Some(vec![ToolCall {
+            index: Some(0),
+            id: Some(id),
+            r#type: "function".to_string(),
+            function: ResponseFunction {
+                name: Some("get_weather".to_string()),
+                arguments: "{\"city\":\"Paris\"}".to_string(),
+            },
+        }]),
+    };
+    let tool = |id: String| Message::Tool {
+        content: ToolContentInput::Text("sunny".to_string()),
+        tool_call_id: id,
+    };
+    let req = request(vec![
+        assistant(first.clone()),
+        tool(first),
+        assistant(second.clone()),
+        tool(second),
+    ]);
+
+    let mapped = chat_request_to_responses(&req, &runtime, false).expect("continuation maps");
+    let ResponsesInput::Items(items) = mapped.input else {
+        panic!("expected item input");
+    };
+    assert_eq!(
+        items
+            .iter()
+            .filter(|item| matches!(item, ResponseInputItem::Reasoning { .. }))
+            .count(),
+        1
+    );
+    assert!(matches!(
+        &items[1],
+        ResponseInputItem::FunctionCall { call_id, .. } if call_id == "call_1"
+    ));
+    assert!(matches!(
+        &items[2],
+        ResponseInputItem::FunctionCallOutput { call_id, .. } if call_id == "call_1"
+    ));
+    assert!(matches!(
+        &items[3],
+        ResponseInputItem::FunctionCall { call_id, .. } if call_id == "call_2"
+    ));
+    assert!(matches!(
+        &items[4],
+        ResponseInputItem::FunctionCallOutput { call_id, .. } if call_id == "call_2"
+    ));
+}
+
+#[test]
+fn continuation_rejects_conflicting_duplicate_reasoning_ids() {
+    let runtime = capsule_runtime(true);
+    let first_reasoning = reasoning_item();
+    let mut conflicting_reasoning = first_reasoning.clone();
+    conflicting_reasoning["encrypted_content"] = json!("different-ciphertext");
+    let first = encode_responses_capsule(
+        "call_1",
+        std::slice::from_ref(&first_reasoning),
+        &runtime.keyring,
+    )
+    .expect("first capsule encodes");
+    let second = encode_responses_capsule(
+        "call_2",
+        std::slice::from_ref(&conflicting_reasoning),
+        &runtime.keyring,
+    )
+    .expect("second capsule encodes");
+    let assistant = |id: String| Message::Assistant {
+        name: None,
+        content: None,
+        tool_calls: Some(vec![ToolCall {
+            index: Some(0),
+            id: Some(id),
+            r#type: "function".to_string(),
+            function: ResponseFunction {
+                name: Some("get_weather".to_string()),
+                arguments: "{}".to_string(),
+            },
+        }]),
+    };
+    let req = request(vec![assistant(first), assistant(second)]);
+
+    let err = chat_request_to_responses(&req, &runtime, false)
+        .expect_err("conflicting duplicate must fail closed");
+    assert!(err
+        .to_string()
+        .contains("duplicate Responses reasoning item id has conflicting payloads"));
+}
+
+#[test]
 fn sse_decoder_accepts_arbitrary_byte_boundaries_and_multiline_data() {
     let wire = b"event: ignored\r\ndata: {\"type\":\"one\",\r\ndata: \"value\":1}\r\n\r\ndata: {\"type\":\"two\"}\n\n";
     let mut decoder = SseDecoder::default();
