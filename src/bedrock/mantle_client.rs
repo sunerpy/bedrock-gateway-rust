@@ -20,23 +20,26 @@
 //! [`AppError`]:
 //!
 //! - `401` → [`AppError::Unauthorized`]
-//! - `429` → [`AppError::Throttled`]
-//! - other `4xx` → [`AppError::BadRequest`]
+//! - a valid OpenAI error envelope on `4xx` → [`AppError::UpstreamOpenAi`]
+//! - an unparseable `429` → [`AppError::Throttled`]
+//! - another unparseable `4xx` → [`AppError::BadRequest`]
 //! - `5xx` → [`AppError::UpstreamBedrock`]
 //!
-//! The raw upstream response body is **never** placed into the error message or
-//! logged — only the status code and structured metadata.
+//! The raw upstream response body is **never** placed into `Display` or logs.
+//! A size-bounded, valid OpenAI error envelope is returned only to the client
+//! that made the rejected request.
 
 use async_stream::stream;
 use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
 use reqwest::StatusCode;
 
-use crate::error::AppError;
+use crate::{error::AppError, openai::schema::OpenAiError};
 
 // Terminal Responses events contain the complete response object. Keep enough
 // of that single SSE data line to parse usage while retaining a hard memory cap.
 const MAX_SSE_LINE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_UPSTREAM_ERROR_BODY_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResponsesStreamTerminal {
@@ -298,11 +301,10 @@ impl MantleClient {
     ///
     /// The request `body` is forwarded verbatim with `content-type:
     /// application/json` and a Bearer auth header. A pre-read non-2xx status is
-    /// mapped to an [`AppError`] (see the module docs); the raw body is never
-    /// surfaced in the error.
+    /// mapped to an [`AppError`] (see the module docs).
     pub async fn responses_nonstream(&self, region: &str, body: Bytes) -> Result<Bytes, AppError> {
         let resp = self.send(region, body).await?;
-        let resp = error_for_status(resp)?;
+        let resp = error_for_status(resp).await?;
         resp.bytes()
             .await
             .map_err(|e| AppError::UpstreamBedrock(format!("failed to read mantle response: {e}")))
@@ -339,7 +341,7 @@ impl MantleClient {
         observer: Option<ResponsesTerminalObserver>,
     ) -> Result<BoxStream<'static, Result<Bytes, AppError>>, AppError> {
         let resp = self.send(region, body).await?;
-        let resp = error_for_status(resp)?;
+        let resp = error_for_status(resp).await?;
         let stream = resp.bytes_stream().map(|chunk| {
             chunk.map_err(|e| {
                 AppError::UpstreamBedrock(format!("mantle stream transport error: {e}"))
@@ -360,7 +362,7 @@ impl MantleClient {
     pub async fn chat_nonstream(&self, region: &str, body: Bytes) -> Result<Bytes, AppError> {
         let url = self.chat_url(region);
         let resp = self.send_to(&url, body).await?;
-        let resp = error_for_status(resp)?;
+        let resp = error_for_status(resp).await?;
         resp.bytes()
             .await
             .map_err(|e| AppError::UpstreamBedrock(format!("failed to read mantle response: {e}")))
@@ -380,7 +382,7 @@ impl MantleClient {
     ) -> Result<BoxStream<'static, Result<Bytes, AppError>>, AppError> {
         let url = self.chat_url(region);
         let resp = self.send_to(&url, body).await?;
-        let resp = error_for_status(resp)?;
+        let resp = error_for_status(resp).await?;
         let stream = resp.bytes_stream().map(|chunk| {
             chunk.map_err(|e| {
                 AppError::UpstreamBedrock(format!("mantle stream transport error: {e}"))
@@ -413,28 +415,52 @@ impl MantleClient {
 
 /// Classify a pre-stream non-2xx HTTP status into an [`AppError`].
 ///
-/// The raw response body is intentionally discarded — it is never read into the
-/// error message (no upstream body leakage into client errors or logs). Only
-/// the status code informs the variant and message.
-fn error_for_status(resp: reqwest::Response) -> Result<reqwest::Response, AppError> {
+/// A valid, size-bounded OpenAI error envelope is preserved for the requesting
+/// client. Its content is deliberately excluded from [`AppError`]'s `Display`,
+/// so structured request-failure logs still contain only the upstream status.
+async fn error_for_status(resp: reqwest::Response) -> Result<reqwest::Response, AppError> {
     let status = resp.status();
     if status.is_success() {
         return Ok(resp);
     }
-    match status {
-        StatusCode::UNAUTHORIZED => Err(AppError::Unauthorized),
-        StatusCode::TOO_MANY_REQUESTS => {
-            Err(AppError::Throttled("mantle upstream throttled".to_string()))
-        }
-        s if s.is_client_error() => Err(AppError::BadRequest(format!(
-            "mantle upstream rejected request (status {})",
-            s.as_u16()
-        ))),
-        s => Err(AppError::UpstreamBedrock(format!(
-            "mantle upstream error (status {})",
-            s.as_u16()
-        ))),
+    if status == StatusCode::UNAUTHORIZED {
+        return Err(AppError::Unauthorized);
     }
+    if status.is_client_error() {
+        let fallback = if status == StatusCode::TOO_MANY_REQUESTS {
+            AppError::Throttled("mantle upstream throttled".to_string())
+        } else {
+            AppError::BadRequest(format!(
+                "mantle upstream rejected request (status {})",
+                status.as_u16()
+            ))
+        };
+        return match read_openai_error_envelope(resp).await {
+            Some(envelope) => Err(AppError::UpstreamOpenAi { status, envelope }),
+            None => Err(fallback),
+        };
+    }
+    Err(AppError::UpstreamBedrock(format!(
+        "mantle upstream error (status {})",
+        status.as_u16()
+    )))
+}
+
+async fn read_openai_error_envelope(resp: reqwest::Response) -> Option<OpenAiError> {
+    let mut body = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.ok()?;
+        if body.len().saturating_add(chunk.len()) > MAX_UPSTREAM_ERROR_BODY_BYTES {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let envelope: OpenAiError = serde_json::from_slice(&body).ok()?;
+    if envelope.error.message.trim().is_empty() {
+        return None;
+    }
+    Some(envelope)
 }
 
 #[cfg(test)]

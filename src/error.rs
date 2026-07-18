@@ -56,6 +56,17 @@ pub enum AppError {
     #[error("upstream bedrock error: {0}")]
     UpstreamBedrock(String),
 
+    /// A structured OpenAI-compatible upstream rejection.
+    ///
+    /// `Display` intentionally excludes the envelope so request-failure logs do
+    /// not contain upstream response bodies. [`AppError::envelope`] returns the
+    /// parsed envelope only to the requesting client.
+    #[error("upstream OpenAI-compatible request rejected (status {status})")]
+    UpstreamOpenAi {
+        status: StatusCode,
+        envelope: OpenAiError,
+    },
+
     /// Rate limited / quota exceeded → 429.
     #[error("throttled: {0}")]
     Throttled(String),
@@ -80,6 +91,7 @@ impl AppError {
             AppError::Unsupported(_) => StatusCode::BAD_REQUEST, // 400
             AppError::Throttled(_) => StatusCode::TOO_MANY_REQUESTS, // 429
             AppError::UpstreamBedrock(_) => StatusCode::BAD_GATEWAY, // 502
+            AppError::UpstreamOpenAi { status, .. } => *status,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR, // 500
         }
     }
@@ -92,6 +104,7 @@ impl AppError {
             AppError::Unsupported(_) => "invalid_request_error",
             AppError::Throttled(_) => "rate_limit_error",
             AppError::UpstreamBedrock(_) => "api_error",
+            AppError::UpstreamOpenAi { .. } => "invalid_request_error",
             AppError::Internal(_) => "api_error",
         }
     }
@@ -104,6 +117,7 @@ impl AppError {
             AppError::Unsupported(_) => "unsupported",
             AppError::Throttled(_) => "rate_limit_exceeded",
             AppError::UpstreamBedrock(_) => "upstream_error",
+            AppError::UpstreamOpenAi { .. } => "upstream_error",
             AppError::Internal(_) => "internal_error",
         }
     }
@@ -113,6 +127,9 @@ impl AppError {
         match self {
             AppError::Unauthorized => {
                 "Incorrect API key provided or missing Authorization header.".to_string()
+            }
+            AppError::UpstreamOpenAi { .. } => {
+                "upstream OpenAI-compatible request rejected".to_string()
             }
             AppError::BadRequest(m)
             | AppError::Unsupported(m)
@@ -128,6 +145,9 @@ impl AppError {
     /// as a `data:` event (rather than a reduced shape), keeping the streaming
     /// and non-streaming error wire shapes consistent.
     pub fn envelope(&self) -> OpenAiError {
+        if let AppError::UpstreamOpenAi { envelope, .. } = self {
+            return envelope.clone();
+        }
         OpenAiError {
             error: ErrorBody {
                 message: self.message(),
@@ -171,6 +191,7 @@ impl IntoResponse for AppError {
 ///   `server_is_overloaded`
 /// - [`AppError::BadRequest`] (Bedrock `ValidationException`, which Bedrock
 ///   raises for context/length violations) → `context_length_exceeded`
+/// - [`AppError::UpstreamOpenAi`] → classification by preserved HTTP status
 /// - everything else ([`AppError::Internal`], [`AppError::Unsupported`],
 ///   [`AppError::Unauthorized`]) → `server_error`
 ///
@@ -183,6 +204,13 @@ pub fn responses_error(err: &AppError) -> (&'static str, String) {
         AppError::Throttled(_) => "rate_limit_exceeded",
         AppError::UpstreamBedrock(_) => "server_is_overloaded",
         AppError::BadRequest(_) => "context_length_exceeded",
+        AppError::UpstreamOpenAi { status, .. } if *status == StatusCode::TOO_MANY_REQUESTS => {
+            "rate_limit_exceeded"
+        }
+        AppError::UpstreamOpenAi { status, .. } if status.is_client_error() => {
+            "context_length_exceeded"
+        }
+        AppError::UpstreamOpenAi { .. } => "server_is_overloaded",
         AppError::Unsupported(_) | AppError::Unauthorized | AppError::Internal(_) => "server_error",
     };
     (code, err.message())
@@ -298,6 +326,28 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_GATEWAY);
         assert_eq!(value["error"]["type"], "api_error");
         assert_eq!(value["error"]["message"], "bedrock down");
+    }
+
+    #[tokio::test]
+    async fn upstream_openai_preserves_envelope_without_display_leak() {
+        let marker = "prompt tokens exceed model maximum";
+        let error = AppError::UpstreamOpenAi {
+            status: StatusCode::BAD_REQUEST,
+            envelope: OpenAiError {
+                error: ErrorBody {
+                    message: marker.to_string(),
+                    r#type: Some("invalid_request_error".to_string()),
+                    param: None,
+                    code: Some("validation_error".to_string()),
+                },
+            },
+        };
+
+        assert!(!error.to_string().contains(marker));
+        let (status, value) = body_json(error.into_response()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(value["error"]["message"], marker);
+        assert_eq!(value["error"]["code"], "validation_error");
     }
 
     #[tokio::test]
