@@ -498,15 +498,16 @@ fn tool_call_start_then_input_fragments() {
     assert_eq!(calls[0].function.name.as_deref(), Some("get_weather"));
     assert_eq!(calls[0].function.arguments, "");
 
-    // input fragment → arguments delta, reuses id/name from the block.
+    // Input fragments carry arguments only. Repeating id/name would make
+    // OpenAI-compatible SDKs concatenate them into invalid values.
     let frag = st
         .map_event(&ev_tool_input(1, "{\"city\":"), MODEL, MID, true, RID, t0())
         .expect("event maps")
         .expect("frag1");
     let calls = frag.choices[0].delta.tool_calls.as_ref().expect("tc");
     assert_eq!(calls[0].index, Some(0));
-    assert_eq!(calls[0].id.as_deref(), Some("tool-xyz"));
-    assert_eq!(calls[0].function.name.as_deref(), Some("get_weather"));
+    assert!(calls[0].id.is_none());
+    assert!(calls[0].function.name.is_none());
     assert_eq!(calls[0].function.arguments, "{\"city\":");
 
     let frag2 = st
@@ -1161,14 +1162,8 @@ fn capsule_mode_tool_without_reasoning_keeps_raw_id() {
         )
         .expect("tool input maps")
         .expect("tool input emits");
-    assert_eq!(
-        tool_call(&arguments).id.as_deref(),
-        Some("ordinary-tool-id")
-    );
-    assert_eq!(
-        tool_call(&arguments).function.name.as_deref(),
-        Some("get_weather")
-    );
+    assert_eq!(tool_call(&arguments).id.as_deref(), None);
+    assert_eq!(tool_call(&arguments).function.name.as_deref(), None);
 }
 
 #[test]

@@ -81,14 +81,11 @@ use crate::openai::schema::{
 /// Per-block tool-call bookkeeping (ports `stream_tool_call_meta` entries).
 ///
 /// Maps a Bedrock `contentBlockIndex` to the synthesized contiguous OpenAI tool
-/// `index` plus the `id`/`name` captured at `contentBlockStart`, so later input
-/// fragments (which only carry `input`) can be attributed to the right call.
+/// `index` captured at `contentBlockStart`, so later input fragments (which only
+/// carry `input`) can be attributed to the right call.
 #[derive(Debug, Clone, Default)]
 struct ToolMeta {
     index: i32,
-    id: String,
-    name: String,
-    capsule_id_emitted: bool,
 }
 
 #[derive(Default)]
@@ -155,13 +152,9 @@ impl StreamState {
         }
         let index = self.next_tool_index;
         self.next_tool_index += 1;
-        // Seed a meta entry so a subsequent ContentBlockStart can fill id/name.
-        self.tool_meta.entry(block_index).or_insert(ToolMeta {
-            index,
-            id: String::new(),
-            name: String::new(),
-            capsule_id_emitted: false,
-        });
+        self.tool_meta
+            .entry(block_index)
+            .or_insert(ToolMeta { index });
         index
     }
 
@@ -246,19 +239,8 @@ impl StreamState {
                     self.ensure_reasoning_complete()?;
                     self.tool_use_seen = true;
                 }
-                let (wire_id, capsule_id_emitted) = self.tool_id_for_wire(&id)?;
-                // Preserve the legacy repeated id/name deltas unless this tool
-                // emitted a capsule. Re-emitting the original id after a capsule
-                // would corrupt client-side stream assembly.
-                self.tool_meta.insert(
-                    block_index,
-                    ToolMeta {
-                        index,
-                        id,
-                        name: name.clone(),
-                        capsule_id_emitted,
-                    },
-                );
+                let wire_id = self.tool_id_for_wire(&id)?;
+                self.tool_meta.insert(block_index, ToolMeta { index });
                 let delta = ChatResponseMessage {
                     tool_calls: Some(vec![ToolCall {
                         index: Some(index),
@@ -460,29 +442,15 @@ impl StreamState {
                 // {} is applied downstream when nothing is sent).
                 let arguments = tool_delta.input().to_string();
 
-                // Reuse stored id/name for this block (bedrock.py:1485-1491).
-                let meta = self
-                    .tool_meta
-                    .get(&block_index)
-                    .cloned()
-                    .unwrap_or_default();
-                let name = if meta.capsule_id_emitted || meta.name.is_empty() {
-                    None
-                } else {
-                    Some(meta.name.clone())
-                };
-                let id = if meta.capsule_id_emitted || meta.id.is_empty() {
-                    None
-                } else {
-                    Some(meta.id.clone())
-                };
-
                 let msg = ChatResponseMessage {
                     tool_calls: Some(vec![ToolCall {
                         index: Some(index),
-                        id,
+                        id: None,
                         r#type: "function".to_string(),
-                        function: ResponseFunction { name, arguments },
+                        function: ResponseFunction {
+                            name: None,
+                            arguments,
+                        },
                     }]),
                     ..Default::default()
                 };
@@ -557,16 +525,15 @@ impl StreamState {
         Ok(())
     }
 
-    fn tool_id_for_wire(&self, tool_use_id: &str) -> Result<(String, bool), AppError> {
+    fn tool_id_for_wire(&self, tool_use_id: &str) -> Result<String, AppError> {
         let Some(runtime) = self.capsule.as_deref() else {
-            return Ok((tool_use_id.to_string(), false));
+            return Ok(tool_use_id.to_string());
         };
         if self.reasoning_blocks.is_empty() {
-            return Ok((tool_use_id.to_string(), false));
+            return Ok(tool_use_id.to_string());
         }
         let reasoning_blocks = self.reasoning_blocks.values().cloned().collect::<Vec<_>>();
-        let wire_id = encode_capsule(tool_use_id, &reasoning_blocks, &runtime.keyring)?;
-        Ok((wire_id, true))
+        encode_capsule(tool_use_id, &reasoning_blocks, &runtime.keyring)
     }
 }
 
