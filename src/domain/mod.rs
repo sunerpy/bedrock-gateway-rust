@@ -146,13 +146,18 @@ pub trait ChatProvider: Send + Sync {
 
     /// Offer a raw-bytes SSE passthrough lane for a streaming request.
     ///
-    /// Returns `Some` only for a provider whose upstream already emits the
-    /// OpenAI chat SSE wire format verbatim (Mantle): the handler then forwards
-    /// those bytes unparsed. The default returns `None`, so every Converse-based
-    /// provider keeps using the typed [`Self::chat_stream`] path with no change.
-    async fn chat_raw_stream(&self, req: &NormalizedChatRequest) -> Option<RawChatStream> {
+    /// Returns `Ok(Some(_))` only for a provider whose upstream already emits
+    /// the OpenAI chat SSE wire format verbatim (Mantle): the handler then
+    /// forwards those bytes unparsed. `Ok(None)` means the provider does not
+    /// offer this lane; `Err(_)` preserves a pre-stream failure before headers
+    /// are committed. The default keeps Converse providers on the typed
+    /// [`Self::chat_stream`] path.
+    async fn chat_raw_stream(
+        &self,
+        req: &NormalizedChatRequest,
+    ) -> Result<Option<RawChatStream>, AppError> {
         let _ = req;
-        None
+        Ok(None)
     }
 
     /// Offer a raw-bytes passthrough lane for a non-streaming request.
@@ -238,17 +243,18 @@ pub trait ResponsesProvider: Send + Sync {
 
     /// Offer a raw-bytes SSE passthrough lane for this request.
     ///
-    /// Returns `Some` only for a provider whose upstream already emits the
-    /// OpenAI Responses SSE wire format verbatim (Mantle): the handler then
-    /// forwards those bytes unparsed. The default returns `None`, so every
-    /// Converse-based provider keeps using the typed [`Self::respond_stream`]
-    /// path with no change.
+    /// Returns `Ok(Some(_))` only for a provider whose upstream already emits
+    /// the OpenAI Responses SSE wire format verbatim (Mantle): the handler then
+    /// forwards those bytes unparsed. `Ok(None)` means the provider does not
+    /// offer this lane; `Err(_)` preserves a pre-stream failure before headers
+    /// are committed. The default keeps Converse providers on the typed
+    /// [`Self::respond_stream`] path.
     async fn respond_raw_stream(
         &self,
         req: &NormalizedResponsesRequest,
-    ) -> Option<RawResponsesStream> {
+    ) -> Result<Option<RawResponsesStream>, AppError> {
         let _ = req;
-        None
+        Ok(None)
     }
 }
 

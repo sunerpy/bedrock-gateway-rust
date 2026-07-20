@@ -26,9 +26,9 @@
 //! 4. **Stream** ([`Self::respond_raw_stream`], the raw lane T5 added): open the
 //!    upstream SSE via [`MantleClient::responses_stream`] and forward the bytes
 //!    verbatim. The handler (T5) consults this BEFORE the typed
-//!    [`Self::respond_stream`], so the raw lane is the happy path; the typed
-//!    method is only a pre-stream-failure fallback that surfaces the error
-//!    envelope.
+//!    [`Self::respond_stream`], so the raw lane is the happy path. Pre-stream
+//!    failures are returned directly from the raw lane before headers are sent;
+//!    the typed method remains only an invariant guard.
 //!
 //! ## Logging discipline (AGENTS.md §4)
 //!
@@ -176,31 +176,19 @@ impl ResponsesProvider for MantleResponsesProvider {
         &self,
         req: &NormalizedResponsesRequest,
     ) -> Result<ResponsesStream, AppError> {
-        // The raw lane ([`Self::respond_raw_stream`]) is the happy path for
-        // streaming — the handler consults it FIRST (T5). This typed method is
-        // only reached as a fallback when the raw lane returned `None`, i.e. a
-        // pre-stream failure. Re-run the pre-flight + connect to surface that
-        // failure as a proper error envelope. A successful connect here is
-        // unexpected (the raw lane would have claimed it); treat it as an
-        // internal routing error rather than silently dropping the SSE.
-        let (region, body) = self.preflight(req)?;
-        match self.client.responses_stream(&region, body).await {
-            Ok(_stream) => Err(AppError::Internal(
-                "mantle streaming must use the raw passthrough lane".to_string(),
-            )),
-            Err(e) => Err(e),
-        }
+        let _ = req;
+        Err(AppError::Internal(
+            "mantle streaming must use the raw passthrough lane".to_string(),
+        ))
     }
 
     async fn respond_raw_stream(
         &self,
         req: &NormalizedResponsesRequest,
-    ) -> Option<RawResponsesStream> {
-        // Pre-flight (region gate + model rewrite). A pre-stream failure returns
-        // `None` so the typed `respond_stream` path produces the error envelope
-        // (T5's recommended contract: `Some` only once the upstream SSE is
-        // established).
-        let (region, body) = self.preflight(req).ok()?;
+    ) -> Result<Option<RawResponsesStream>, AppError> {
+        // Preserve pre-flight/connect errors so callers can return the original
+        // envelope without issuing a second upstream request.
+        let (region, body) = self.preflight(req)?;
 
         tracing::debug!(region = %region, "invoking mantle responses (raw stream)");
 
@@ -230,9 +218,8 @@ impl ResponsesProvider for MantleResponsesProvider {
         let stream = self
             .client
             .responses_stream_with_observer(&region, body, observer)
-            .await
-            .ok()?;
-        Some(stream.boxed())
+            .await?;
+        Ok(Some(stream.boxed()))
     }
 }
 

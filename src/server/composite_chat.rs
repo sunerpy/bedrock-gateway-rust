@@ -112,12 +112,15 @@ impl ChatProvider for CompositeChatProvider {
         self.select(backend).chat_stream(req).await
     }
 
-    async fn chat_raw_stream(&self, req: &NormalizedChatRequest) -> Option<RawChatStream> {
-        // MUST delegate: the trait default returns `None`, so without this
+    async fn chat_raw_stream(
+        &self,
+        req: &NormalizedChatRequest,
+    ) -> Result<Option<RawChatStream>, AppError> {
+        // MUST delegate: the trait default returns `Ok(None)`, so without this
         // override the mantle raw passthrough lane would never fire.
         let backend = self.backend(req);
         if backend == ChatBackend::Mantle && !self.mantle_enabled {
-            return None;
+            return Err(Self::mantle_unavailable_err(req));
         }
         self.select(backend).chat_raw_stream(req).await
     }

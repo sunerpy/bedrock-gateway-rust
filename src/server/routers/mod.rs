@@ -161,14 +161,29 @@ pub async fn chat_completions(
         // raw SSE stream, forward its bytes verbatim, appending `data: [DONE]`
         // at the tail (mantle chat does not emit it; OpenAI chat clients expect
         // it — the one behavioral difference from the responses raw lane).
-        if let Some(raw) = state.chat.chat_raw_stream(&normalized).await {
+        if let Some(raw) = state
+            .chat
+            .chat_raw_stream(&normalized)
+            .await
+            .inspect_err(|e| {
+                if e.is_server_error() {
+                    tracing::error!(request_id = %request_id, model = %client_model, error = %e, "chat request failed");
+                } else {
+                    tracing::warn!(request_id = %request_id, model = %client_model, error = %e, "chat request failed");
+                }
+            })?
+        {
             tracing::info!(
                 request_id = %request_id,
                 model = %client_model,
                 ttfb_ms = received_at.elapsed().as_millis(),
                 "chat raw streaming started"
             );
-            return Ok(chat_raw_sse_response(raw));
+            return Ok(chat_raw_sse_response(
+                raw,
+                Arc::clone(&request_id),
+                client_model.clone(),
+            ));
         }
         match state.chat.chat_stream(&normalized).await {
             Ok(chat_stream) => {
@@ -178,7 +193,11 @@ pub async fn chat_completions(
                     ttfb_ms = received_at.elapsed().as_millis(),
                     "chat streaming started"
                 );
-                Ok(sse_response(chat_stream))
+                Ok(sse_response(
+                    chat_stream,
+                    Arc::clone(&request_id),
+                    client_model.clone(),
+                ))
             }
             Err(e) => {
                 if e.is_server_error() {
@@ -481,33 +500,79 @@ fn completions_sse_response(chat_stream: crate::domain::ChatStream) -> Response 
 /// Each [`crate::openai::schema::ChatStreamResponse`] chunk is serialized as the
 /// `data:` payload of an SSE event; a terminal `data: [DONE]` event is appended
 /// after the provider stream is exhausted (base.py:60-63). A provider error is
-/// rendered as a final `data:` event carrying the OpenAI error envelope so the
-/// client sees a structured error rather than a silently truncated stream.
-fn sse_response(chat_stream: crate::domain::ChatStream) -> Response {
-    let event_stream = chat_stream
-        .map(|item| -> Result<Event, Infallible> {
+/// rendered as a `data:` event carrying the OpenAI error envelope before the
+/// compatibility-required `[DONE]` sentinel.
+fn sse_response(
+    chat_stream: crate::domain::ChatStream,
+    request_id: Arc<str>,
+    model: String,
+) -> Response {
+    let event_stream = async_stream::stream! {
+        let mut chat_stream = chat_stream;
+        let mut failed = false;
+        while let Some(item) = chat_stream.next().await {
             match item {
-                Ok(chunk) => {
-                    let data = serde_json::to_string(&chunk).unwrap_or_else(|e| {
-                        // Serialization of our own owned types should never fail;
-                        // if it somehow does, surface a structured error payload.
-                        error_envelope_json(&AppError::Internal(format!(
-                            "failed to serialize stream chunk: {e}"
-                        )))
-                    });
-                    Ok(Event::default().data(data))
-                }
-                Err(err) => {
-                    // Render the OpenAI error envelope inline as an SSE data event.
-                    let envelope = error_envelope_json(&err);
-                    Ok(Event::default().data(envelope))
+                Ok(chunk) => match serde_json::to_string(&chunk) {
+                    Ok(data) => yield Ok::<Event, Infallible>(Event::default().data(data)),
+                    Err(error) => {
+                        let error = AppError::Internal(format!(
+                            "failed to serialize stream chunk: {error}"
+                        ));
+                        tracing::error!(
+                            request_id = %request_id,
+                            model = %model,
+                            error = %error,
+                            done_sent = false,
+                            "chat SSE stream failed"
+                        );
+                        yield Ok(Event::default().data(error_envelope_json(&error)));
+                        failed = true;
+                        break;
+                    }
+                },
+                Err(error) => {
+                    if error.is_server_error() {
+                        tracing::error!(
+                            request_id = %request_id,
+                            model = %model,
+                            error = %error,
+                            done_sent = false,
+                            "chat SSE stream failed"
+                        );
+                    } else {
+                        tracing::warn!(
+                            request_id = %request_id,
+                            model = %model,
+                            error = %error,
+                            done_sent = false,
+                            "chat SSE stream failed"
+                        );
+                    }
+                    yield Ok(Event::default().data(error_envelope_json(&error)));
+                    failed = true;
+                    break;
                 }
             }
-        })
-        // Append the terminal [DONE] sentinel once the stream ends.
-        .chain(futures::stream::once(async {
-            Ok(Event::default().data("[DONE]"))
-        }));
+        }
+        if failed {
+            tracing::warn!(
+                request_id = %request_id,
+                model = %model,
+                stream_failed = true,
+                done_sent = true,
+                "chat SSE [DONE] emitted after stream error"
+            );
+        } else {
+            tracing::info!(
+                request_id = %request_id,
+                model = %model,
+                stream_failed = false,
+                done_sent = true,
+                "chat SSE [DONE] emitted"
+            );
+        }
+        yield Ok(Event::default().data("[DONE]"));
+    };
 
     with_sse_headers(
         Sse::new(event_stream)
@@ -524,10 +589,43 @@ fn sse_response(chat_stream: crate::domain::ChatStream) -> Response {
 /// tail: mantle chat does not emit it, but OpenAI chat clients expect it. A
 /// mid-stream error item cannot be envelope-mapped after the `200`/headers are
 /// flushed; it simply truncates the stream.
-fn chat_raw_sse_response(raw: RawChatStream) -> Response {
-    let with_done = raw.chain(futures::stream::once(async {
-        Ok::<bytes::Bytes, AppError>(bytes::Bytes::from_static(b"data: [DONE]\n\n"))
-    }));
+fn chat_raw_sse_response(raw: RawChatStream, request_id: Arc<str>, model: String) -> Response {
+    let with_done = async_stream::stream! {
+        let mut raw = raw;
+        while let Some(item) = raw.next().await {
+            match item {
+                Ok(bytes) => yield Ok::<bytes::Bytes, AppError>(bytes),
+                Err(error) => {
+                    if error.is_server_error() {
+                        tracing::error!(
+                            request_id = %request_id,
+                            model = %model,
+                            error = %error,
+                            done_sent = false,
+                            "chat raw SSE stream failed"
+                        );
+                    } else {
+                        tracing::warn!(
+                            request_id = %request_id,
+                            model = %model,
+                            error = %error,
+                            done_sent = false,
+                            "chat raw SSE stream failed"
+                        );
+                    }
+                    yield Err(error);
+                    return;
+                }
+            }
+        }
+        tracing::info!(
+            request_id = %request_id,
+            model = %model,
+            done_sent = true,
+            "chat raw SSE [DONE] emitted"
+        );
+        yield Ok(bytes::Bytes::from_static(b"data: [DONE]\n\n"));
+    };
     let body = axum::body::Body::from_stream(with_done);
     let mut response = body.into_response();
     response.headers_mut().insert(
@@ -608,7 +706,18 @@ pub async fn responses(
         // Raw-bytes passthrough lane (Mantle): when the provider offers a raw
         // SSE stream, forward its bytes verbatim — no typed-event framing, no
         // [DONE], no synthetic response.completed.
-        if let Some(raw) = state.responses.respond_raw_stream(&normalized).await {
+        if let Some(raw) = state
+            .responses
+            .respond_raw_stream(&normalized)
+            .await
+            .inspect_err(|e| {
+                if e.is_server_error() {
+                    tracing::error!(request_id = %request_id, model = %client_model, error = %e, "responses request failed");
+                } else {
+                    tracing::warn!(request_id = %request_id, model = %client_model, error = %e, "responses request failed");
+                }
+            })?
+        {
             tracing::info!(
                 request_id = %request_id,
                 model = %client_model,
@@ -1086,10 +1195,10 @@ mod tests {
         async fn respond_raw_stream(
             &self,
             _req: &NormalizedResponsesRequest,
-        ) -> Option<crate::domain::RawResponsesStream> {
+        ) -> Result<Option<crate::domain::RawResponsesStream>, AppError> {
             let chunk: Result<bytes::Bytes, AppError> =
                 Ok(bytes::Bytes::from_static(RAW_SSE_BYTES));
-            Some(Box::pin(futures::stream::iter(vec![chunk])))
+            Ok(Some(Box::pin(futures::stream::iter(vec![chunk]))))
         }
     }
 
@@ -1224,9 +1333,9 @@ mod tests {
         async fn chat_raw_stream(
             &self,
             _req: &NormalizedChatRequest,
-        ) -> Option<crate::domain::RawChatStream> {
+        ) -> Result<Option<crate::domain::RawChatStream>, AppError> {
             let chunk: Result<bytes::Bytes, AppError> = Ok(bytes::Bytes::from_static(RAW_CHAT_SSE));
-            Some(Box::pin(futures::stream::iter(vec![chunk])))
+            Ok(Some(Box::pin(futures::stream::iter(vec![chunk]))))
         }
 
         async fn chat_raw_nonstream(
@@ -1369,6 +1478,34 @@ mod tests {
         assert!(text.contains("chat.completion.chunk"));
         assert!(text.contains("data: [DONE]"));
         assert!(text.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn chat_stream_error_emits_envelope_before_done() {
+        let chat_stream: ChatStream = futures::stream::once(async {
+            Err::<ChatStreamResponse, AppError>(AppError::UpstreamBedrock(
+                "unsupported upstream call item".to_string(),
+            ))
+        })
+        .boxed();
+        let response = sse_response(
+            chat_stream,
+            Arc::from("req-stream-error"),
+            "gpt-test".to_string(),
+        );
+
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("SSE body");
+        let text = String::from_utf8(bytes.to_vec()).expect("UTF-8 SSE");
+
+        assert!(text.contains("\"error\""));
+        assert!(text.contains("unsupported upstream call item"));
+        assert!(text.contains("data: [DONE]"));
+        assert!(
+            text.find("\"error\"").expect("error event")
+                < text.find("data: [DONE]").expect("DONE event")
+        );
     }
 
     /// Both SSE surfaces (chat + responses) MUST carry the anti-buffering

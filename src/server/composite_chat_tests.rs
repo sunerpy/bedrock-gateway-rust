@@ -55,10 +55,13 @@ impl ChatProvider for RecordingChatProvider {
         Ok(Box::pin(futures::stream::iter(vec![Ok(chunk)])))
     }
 
-    async fn chat_raw_stream(&self, _req: &NormalizedChatRequest) -> Option<RawChatStream> {
+    async fn chat_raw_stream(
+        &self,
+        _req: &NormalizedChatRequest,
+    ) -> Result<Option<RawChatStream>, AppError> {
         self.chat_raw_stream_hit.store(true, Ordering::SeqCst);
         let chunk: Result<Bytes, AppError> = Ok(Bytes::from(self.tag.as_bytes()));
-        Some(Box::pin(futures::stream::iter(vec![chunk])))
+        Ok(Some(Box::pin(futures::stream::iter(vec![chunk]))))
     }
 
     async fn chat_raw_nonstream(
@@ -266,6 +269,7 @@ async fn routes_mantle_backend_to_mantle_provider() {
     let raw = composite
         .chat_raw_stream(&req)
         .await
+        .expect("raw lane succeeds")
         .expect("raw stream Some");
     let bytes: Vec<Bytes> = raw.map(|r| r.expect("ok")).collect().await;
     assert_eq!(bytes[0], Bytes::from(&b"mantle"[..]));
@@ -293,7 +297,10 @@ async fn routes_converse_backend_to_converse_provider() {
 
     let resp = composite.chat(&req).await.expect("chat ok");
     assert_eq!(resp.model, "converse");
-    let _ = composite.chat_raw_stream(&req).await;
+    let _ = composite
+        .chat_raw_stream(&req)
+        .await
+        .expect("raw lane succeeds");
 
     assert!(converse.chat_hit.load(Ordering::SeqCst));
     assert!(converse.chat_raw_stream_hit.load(Ordering::SeqCst));
@@ -334,7 +341,11 @@ async fn mantle_disabled_returns_bad_request() {
         Err(other) => panic!("expected BadRequest, got {other:?}"),
         Ok(_) => panic!("expected BadRequest, got Ok(stream)"),
     }
-    assert!(composite.chat_raw_stream(&req).await.is_none());
+    match composite.chat_raw_stream(&req).await {
+        Err(AppError::BadRequest(_)) => {}
+        Err(other) => panic!("expected BadRequest, got {other:?}"),
+        Ok(_) => panic!("raw stream should fail when mantle is disabled"),
+    }
     assert!(composite.chat_raw_nonstream(&req).await.is_none());
 
     assert!(!mantle.chat_hit.load(Ordering::SeqCst));

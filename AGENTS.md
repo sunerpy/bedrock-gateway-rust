@@ -96,12 +96,12 @@ src/
 │   │                           #   to AppError; mid-stream errors truncate (no envelope after 200+headers)
 │   ├── mantle_provider.rs      # MantleResponsesProvider implements ResponsesProvider for GPT-5.x models;
 │   │                            #   region gate → model rewrite (only "model" field patched) →
-│   │                            #   responds_raw_stream override (Some(raw)) for streaming verbatim
-│   │                            #   passthrough; respond for non-stream; respond_stream as typed fallback
+│   │                            #   respond_raw_stream override (Ok(Some(raw))) for streaming verbatim
+│   │                            #   passthrough; pre-stream errors stay Err; typed stream is an invariant guard
 │   └── mantle_chat_provider.rs  # MantleChatProvider implements ChatProvider for gpt-oss chat models;
 │                                #   chat surface analogue of mantle_provider; raw Bytes end to end
-│                                #   (chat_raw_stream / chat_raw_nonstream); typed chat/chat_stream are
-│                                #   unreachable fallbacks (AppError::Internal); no [DONE] appended here
+│                                #   (chat_raw_stream / chat_raw_nonstream); raw pre-stream errors stay Err;
+│                                #   typed chat/chat_stream are invariant guards; no [DONE] appended here
 │
 └── server/
     ├── auth.rs          # Bearer-token middleware
@@ -153,7 +153,7 @@ This service is IO-bound (Bedrock proxy); actix-web offers no measurable through
 
 The surface is **stateless**: `store` and `previous_response_id` are accepted and silently ignored (codex sends `store: false`). It reuses the same Converse call layer and the shared `compute_token_usage` helper from `src/bedrock/tokens.rs`. codex requires this surface (`wire_api = "responses"` only).
 
-**Composite dispatcher:** `AppState.responses` holds a single `Arc<dyn ResponsesProvider>` — in practice a `CompositeResponsesProvider` (`src/server/composite.rs`) that picks the right backend at request time by calling `caps.responses_backend(model)`. Models with `responses_backend = "mantle"` in `config/models.toml` go to `MantleResponsesProvider` (raw byte passthrough); all others go to `BedrockResponsesProvider` (Converse path). The composite overrides `respond_raw_stream` so the mantle streaming lane fires correctly; the Converse provider inherits the default (`None`), keeping its existing typed-stream path unchanged.
+**Composite dispatcher:** `AppState.responses` holds a single `Arc<dyn ResponsesProvider>` — in practice a `CompositeResponsesProvider` (`src/server/composite.rs`) that picks the right backend at request time by calling `caps.responses_backend(model)`. Models with `responses_backend = "mantle"` in `config/models.toml` go to `MantleResponsesProvider` (raw byte passthrough); all others go to `BedrockResponsesProvider` (Converse path). The composite overrides `respond_raw_stream` so the mantle streaming lane fires correctly; the Converse provider inherits the default (`Ok(None)`), keeping its existing typed-stream path unchanged. Raw lanes use `Result<Option<...>, AppError>`: `Ok(Some(stream))` selects passthrough, `Ok(None)` means unsupported, and `Err(error)` preserves the first pre-stream failure without issuing a second typed request.
 
 **Tool support / rejection matrix:**
 
@@ -561,12 +561,12 @@ src/
 │   │                           #   流中错误截断（200+headers 已发送后无法封装错误信封）
 │   ├── mantle_provider.rs      # MantleResponsesProvider 实现 ResponsesProvider，处理 GPT-5.x 模型；
 │   │                            #   区域门控 → 模型名称改写（仅改写 "model" 字段）→
-│   │                            #   respond_raw_stream 覆盖（返回 Some(raw)）用于流式字节透传；
-│   │                            #   respond 用于非流式；respond_stream 为有类型兜底路径
+│   │                            #   respond_raw_stream 覆盖（返回 Ok(Some(raw))）用于流式字节透传；
+│   │                            #   流前错误保留为 Err；有类型 stream 仅作不变量守卫
 │   └── mantle_chat_provider.rs  # MantleChatProvider 实现 ChatProvider，处理 gpt-oss chat 模型；
 │                                #   mantle_provider 的 chat 对应物；stream 与 non-stream 全程 raw Bytes
-│                                #   （chat_raw_stream / chat_raw_nonstream）；有类型 chat/chat_stream 为
-│                                #   不可达兜底（AppError::Internal）；此处不追加 [DONE]
+│                                #   （chat_raw_stream / chat_raw_nonstream）；raw 流前错误保留为 Err；
+│                                #   有类型 chat/chat_stream 仅作不变量守卫；此处不追加 [DONE]
 │
 └── server/
     ├── auth.rs          # Bearer token 中间件
@@ -618,7 +618,7 @@ HTTP 框架选用 **axum**（tokio + tower + tower-http）。曾评估替换为 
 
 该接口**无状态**：`store` 和 `previous_response_id` 接受但静默忽略（codex 发送 `store: false`）。它复用同一 Converse 调用层以及 `src/bedrock/tokens.rs` 中的共享 `compute_token_usage` helper。codex 仅支持此接口（`wire_api = "responses"`）。
 
-**复合调度器：** `AppState.responses` 持有一个 `Arc<dyn ResponsesProvider>` — 实际上是 `CompositeResponsesProvider`（`src/server/composite.rs`），它在请求时通过 `caps.responses_backend(model)` 选择后端。`config/models.toml` 中设置了 `responses_backend = "mantle"` 的模型走 `MantleResponsesProvider`（字节级透传）；其余模型走 `BedrockResponsesProvider`（Converse 路径）。Composite 覆盖了 `respond_raw_stream` 以确保 mantle 流式通道正确触发；Converse provider 继承默认实现（`None`），保持原有有类型流路径不变。
+**复合调度器：** `AppState.responses` 持有一个 `Arc<dyn ResponsesProvider>` — 实际上是 `CompositeResponsesProvider`（`src/server/composite.rs`），它在请求时通过 `caps.responses_backend(model)` 选择后端。`config/models.toml` 中设置了 `responses_backend = "mantle"` 的模型走 `MantleResponsesProvider`（字节级透传）；其余模型走 `BedrockResponsesProvider`（Converse 路径）。Composite 覆盖了 `respond_raw_stream` 以确保 mantle 流式通道正确触发；Converse provider 继承默认实现（`Ok(None)`），保持原有有类型流路径不变。Raw 通道统一使用 `Result<Option<...>, AppError>`：`Ok(Some(stream))` 选择透传，`Ok(None)` 表示不支持，`Err(error)` 保留第一次流前失败，禁止再发起有类型请求来重现错误。
 
 **工具支持 / 拒绝矩阵：**
 

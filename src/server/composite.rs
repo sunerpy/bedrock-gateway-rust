@@ -19,8 +19,8 @@
 //!
 //! The raw-bytes streaming lane ([`ResponsesProvider::respond_raw_stream`]) is
 //! overridden here and delegated to the selected inner provider — otherwise the
-//! trait default (`None`) would win and the mantle raw passthrough would never
-//! fire.
+//! trait default (`Ok(None)`) would win and the mantle raw passthrough would
+//! never fire.
 //!
 //! ## Startup resolution
 //!
@@ -130,12 +130,12 @@ impl ResponsesProvider for CompositeResponsesProvider {
     async fn respond_raw_stream(
         &self,
         req: &NormalizedResponsesRequest,
-    ) -> Option<RawResponsesStream> {
-        // MUST delegate: the trait default returns `None`, so without this
+    ) -> Result<Option<RawResponsesStream>, AppError> {
+        // MUST delegate: the trait default returns `Ok(None)`, so without this
         // override the mantle raw passthrough lane would never fire.
         let backend = self.backend(req);
         if backend == ResponsesBackend::Mantle && !self.mantle_enabled {
-            return None;
+            return Err(Self::mantle_unavailable_err(req));
         }
         self.select(backend).respond_raw_stream(req).await
     }

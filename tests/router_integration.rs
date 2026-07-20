@@ -349,9 +349,9 @@ impl ResponsesProvider for RawResponses {
     async fn respond_raw_stream(
         &self,
         _req: &NormalizedResponsesRequest,
-    ) -> Option<RawResponsesStream> {
+    ) -> Result<Option<RawResponsesStream>, AppError> {
         let chunk: Result<bytes::Bytes, AppError> = Ok(bytes::Bytes::from_static(RAW_SSE_BYTES));
-        Some(Box::pin(futures::stream::iter(vec![chunk])))
+        Ok(Some(Box::pin(futures::stream::iter(vec![chunk]))))
     }
 }
 

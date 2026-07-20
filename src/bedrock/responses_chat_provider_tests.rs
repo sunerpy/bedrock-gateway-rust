@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -141,6 +142,16 @@ fn chat_request_maps_reasoning_tools_and_stateless_controls() {
 }
 
 #[test]
+fn generated_chat_completion_ids_are_unique() {
+    let first = new_chat_completion_id();
+    let second = new_chat_completion_id();
+
+    assert!(first.starts_with("chatcmpl-"));
+    assert!(second.starts_with("chatcmpl-"));
+    assert_ne!(first, second);
+}
+
+#[test]
 fn assistant_text_parts_are_flattened_while_user_parts_remain_typed() {
     let assistant: Message = serde_json::from_value(json!({
         "role": "assistant",
@@ -201,6 +212,21 @@ fn nonstream_tool_response_uses_replayable_capsule_and_reasoning_usage() {
     let decoded = decode_responses_capsule(id, &runtime.keyring).expect("capsule decodes");
     assert_eq!(decoded.call_id, "call_1");
     assert_eq!(decoded.reasoning_items, vec![reasoning_item()]);
+}
+
+#[test]
+fn nonstream_unknown_call_output_fails_instead_of_returning_stop() {
+    let mut response = responses_response_with_tool();
+    response.output = vec![ResponseOutputItem::Other {
+        item_type: "web_search_call".to_string(),
+        fields: HashMap::new(),
+    }];
+
+    let error = responses_to_chat(response, &capsule_runtime(true))
+        .expect_err("an unsupported call item must fail closed");
+
+    assert!(matches!(error, AppError::UpstreamBedrock(_)));
+    assert!(error.to_string().contains("web_search_call"));
 }
 
 #[test]
@@ -363,6 +389,91 @@ fn sse_decoder_accepts_arbitrary_byte_boundaries_and_multiline_data() {
     assert_eq!(events[1]["type"], "two");
 }
 
+#[test]
+fn stream_unknown_call_output_fails_before_a_stop_chunk() {
+    let events = [
+        json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {"type": "web_search_call", "id": "ws_1"}
+        }),
+        json!({
+            "type": "response.completed",
+            "response": {
+                "output": [{"type": "web_search_call", "id": "ws_1"}]
+            }
+        }),
+    ];
+
+    for event in events {
+        let mut state = ResponsesChatStreamState::new(
+            Arc::from("req-test"),
+            "chatcmpl-test".to_string(),
+            "gpt-test".to_string(),
+            false,
+            capsule_runtime(true),
+        );
+        let error = state
+            .map_event(&event)
+            .expect_err("an unsupported call item must fail closed");
+
+        assert!(matches!(error, AppError::UpstreamBedrock(_)));
+        assert!(error.to_string().contains("web_search_call"));
+        assert!(!state.terminal_seen);
+        assert_eq!(state.finish_reason, None);
+        assert!(state.unknown_output_item_types.contains("web_search_call"));
+    }
+}
+
+#[test]
+fn stream_diagnostics_track_item_types_terminal_event_and_visible_bytes() {
+    let mut state = ResponsesChatStreamState::new(
+        Arc::from("req-test"),
+        "chatcmpl-test".to_string(),
+        "gpt-test".to_string(),
+        false,
+        capsule_runtime(true),
+    );
+
+    state
+        .map_event(&json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {"type": "message"}
+        }))
+        .expect("message item accepted");
+    state
+        .map_event(&json!({
+            "type": "response.output_text.delta",
+            "delta": "hello"
+        }))
+        .expect("text delta accepted");
+    let terminal = state
+        .map_event(&json!({
+            "type": "response.completed",
+            "response": {
+                "output": [{"type": "message"}]
+            }
+        }))
+        .expect("terminal event accepted");
+
+    assert_eq!(state.visible_text_bytes, 5);
+    assert_eq!(state.terminal_event, Some("response.completed"));
+    assert_eq!(
+        state.output_item_types,
+        BTreeSet::from(["message".to_string()])
+    );
+    assert!(state.unknown_output_item_types.is_empty());
+    assert!(terminal.iter().any(|chunk| {
+        chunk
+            .choices
+            .first()
+            .and_then(|choice| choice.finish_reason.as_deref())
+            == Some("stop")
+    }));
+    state.adapter_finished = true;
+}
+
 struct MockResponsesProvider {
     response: ResponsesResponse,
     raw: Mutex<Option<Vec<Bytes>>>,
@@ -387,10 +498,80 @@ impl ResponsesProvider for MockResponsesProvider {
     async fn respond_raw_stream(
         &self,
         _req: &NormalizedResponsesRequest,
-    ) -> Option<RawResponsesStream> {
-        let chunks = self.raw.lock().expect("raw lock").take()?;
-        Some(stream::iter(chunks.into_iter().map(Ok)).boxed())
+    ) -> Result<Option<RawResponsesStream>, AppError> {
+        Ok(self
+            .raw
+            .lock()
+            .expect("raw lock")
+            .take()
+            .map(|chunks| stream::iter(chunks.into_iter().map(Ok)).boxed()))
     }
+}
+
+struct FailingRawResponsesProvider {
+    typed_stream_called: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl ResponsesProvider for FailingRawResponsesProvider {
+    async fn respond(
+        &self,
+        _req: &NormalizedResponsesRequest,
+    ) -> Result<ResponsesResponse, AppError> {
+        Err(AppError::Internal(
+            "non-stream path not expected".to_string(),
+        ))
+    }
+
+    async fn respond_stream(
+        &self,
+        _req: &NormalizedResponsesRequest,
+    ) -> Result<ResponsesStream, AppError> {
+        self.typed_stream_called.store(true, Ordering::SeqCst);
+        Err(AppError::Internal(
+            "typed stream must not be retried".to_string(),
+        ))
+    }
+
+    async fn respond_raw_stream(
+        &self,
+        _req: &NormalizedResponsesRequest,
+    ) -> Result<Option<RawResponsesStream>, AppError> {
+        Err(AppError::UpstreamBedrock(
+            "original raw stream open failure".to_string(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn raw_open_error_is_preserved_without_typed_retry() {
+    let backend = Arc::new(FailingRawResponsesProvider {
+        typed_stream_called: AtomicBool::new(false),
+    });
+    let provider = ResponsesChatProvider::new(backend.clone(), capsule_runtime(true));
+    let mut req = request(vec![Message::User {
+        name: None,
+        content: ContentInput::Text("continue".to_string()),
+    }]);
+    req.stream = Some(true);
+    let normalized = NormalizedChatRequest {
+        request: req,
+        resolved_model: "openai.gpt-test".to_string(),
+        request_id: Arc::from("req-raw-open-failure"),
+        received_at: Instant::now(),
+        raw_body: Bytes::new(),
+    };
+
+    let error = match provider.chat_stream(&normalized).await {
+        Err(error) => error,
+        Ok(_) => panic!("raw open failure must be returned"),
+    };
+
+    assert!(matches!(error, AppError::UpstreamBedrock(_)));
+    assert!(error
+        .to_string()
+        .contains("original raw stream open failure"));
+    assert!(!backend.typed_stream_called.load(Ordering::SeqCst));
 }
 
 fn sse_event(value: Value) -> String {
@@ -498,6 +679,21 @@ async fn stream_closes_reasoning_before_tool_id_and_emits_metadata_once() {
         .into_iter()
         .collect::<Result<Vec<_>, _>>()
         .expect("stream succeeds");
+
+    let completion_ids = chunks
+        .iter()
+        .map(|chunk| chunk.id.as_str())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        completion_ids.len(),
+        1,
+        "all chunks in one completion must share one id"
+    );
+    assert_ne!(
+        completion_ids.into_iter().next(),
+        Some("chatcmpl-req-test"),
+        "the client correlation id must not become the completion id"
+    );
 
     let mut content = String::new();
     let mut metadata_ids = Vec::new();

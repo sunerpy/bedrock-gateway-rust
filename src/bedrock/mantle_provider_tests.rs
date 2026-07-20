@@ -265,6 +265,7 @@ async fn raw_stream_happy_path_forwards_bytes() {
     let stream = provider
         .respond_raw_stream(&req)
         .await
+        .expect("raw lane should succeed")
         .expect("raw stream should open on 200");
     let chunks: Vec<Bytes> = stream.map(|r| r.expect("ok chunk")).collect().await;
     let mut joined = Vec::new();
@@ -274,10 +275,33 @@ async fn raw_stream_happy_path_forwards_bytes() {
     assert_eq!(joined, SSE.as_bytes());
 }
 
-/// `respond_raw_stream` returns `None` on a region-gate failure (pre-stream),
-/// so the typed path produces the error envelope. No HTTP call is made.
 #[tokio::test]
-async fn raw_stream_returns_none_when_region_gated() {
+async fn raw_stream_preserves_upstream_open_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = provider_for(
+        &server.uri(),
+        "us-east-2",
+        Some(vec!["us-east-2".to_string()]),
+    );
+    let req = normalized(r#"{"model":"gpt-5.5","input":"hi","stream":true}"#);
+
+    assert!(matches!(
+        provider.respond_raw_stream(&req).await,
+        Err(AppError::UpstreamBedrock(_))
+    ));
+}
+
+/// `respond_raw_stream` preserves a region-gate failure directly. No HTTP call
+/// is made and no typed retry is needed.
+#[tokio::test]
+async fn raw_stream_preserves_region_gate_error() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/responses"))
@@ -292,7 +316,10 @@ async fn raw_stream_returns_none_when_region_gated() {
         Some(vec!["us-east-2".to_string()]),
     );
     let req = normalized(r#"{"model":"gpt-5.5","input":"hi","stream":true}"#);
-    assert!(provider.respond_raw_stream(&req).await.is_none());
+    assert!(matches!(
+        provider.respond_raw_stream(&req).await,
+        Err(AppError::BadRequest(_))
+    ));
 }
 
 /// A model with NO region allow-list (`None`) is served everywhere — the gate
