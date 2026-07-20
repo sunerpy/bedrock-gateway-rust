@@ -6,7 +6,7 @@
 //! a tool continuation are carried in an HMAC-authenticated `rsc_v1` tool-call
 //! id and replayed when the client returns that id.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,7 +20,8 @@ use crate::bedrock::capsule::{
     responses_reasoning_item_is_valid, CapsuleRuntime,
 };
 use crate::domain::{
-    ChatProvider, ChatStream, NormalizedChatRequest, NormalizedResponsesRequest, ResponsesProvider,
+    gen_request_id, ChatProvider, ChatStream, NormalizedChatRequest, NormalizedResponsesRequest,
+    ResponsesProvider,
 };
 use crate::error::AppError;
 use crate::openai::responses_schema::{
@@ -82,7 +83,7 @@ impl ChatProvider for ResponsesChatProvider {
 
     async fn chat_stream(&self, req: &NormalizedChatRequest) -> Result<ChatStream, AppError> {
         let normalized = self.normalize(req, true)?;
-        let Some(raw) = self.responses.respond_raw_stream(&normalized).await else {
+        let Some(raw) = self.responses.respond_raw_stream(&normalized).await? else {
             return match self.responses.respond_stream(&normalized).await {
                 Err(error) => Err(error),
                 Ok(_) => Err(AppError::Internal(
@@ -92,7 +93,8 @@ impl ChatProvider for ResponsesChatProvider {
         };
 
         let model = req.request.model.clone();
-        let message_id = format!("chatcmpl-{}", req.request_id);
+        let message_id = new_chat_completion_id();
+        let request_id = Arc::clone(&req.request_id);
         let include_usage = req
             .request
             .stream_options
@@ -103,6 +105,7 @@ impl ChatProvider for ResponsesChatProvider {
             let mut raw = raw;
             let mut decoder = SseDecoder::default();
             let mut state = ResponsesChatStreamState::new(
+                request_id,
                 message_id,
                 model,
                 include_usage,
@@ -115,6 +118,7 @@ impl ChatProvider for ResponsesChatProvider {
                 let bytes = match item {
                     Ok(bytes) => bytes,
                     Err(error) => {
+                        state.adapter_failed = true;
                         yield Err(error);
                         failed = true;
                         break;
@@ -123,6 +127,7 @@ impl ChatProvider for ResponsesChatProvider {
                 let events = match decoder.push(&bytes) {
                     Ok(events) => events,
                     Err(error) => {
+                        state.adapter_failed = true;
                         yield Err(error);
                         failed = true;
                         break;
@@ -136,6 +141,7 @@ impl ChatProvider for ResponsesChatProvider {
                             }
                         }
                         Err(error) => {
+                            state.adapter_failed = true;
                             yield Err(error);
                             failed = true;
                             break;
@@ -158,6 +164,7 @@ impl ChatProvider for ResponsesChatProvider {
                                     }
                                 }
                                 Err(error) => {
+                                    state.adapter_failed = true;
                                     yield Err(error);
                                     failed = true;
                                     break;
@@ -166,15 +173,32 @@ impl ChatProvider for ResponsesChatProvider {
                         }
                     }
                     Err(error) => {
+                        state.adapter_failed = true;
                         yield Err(error);
                         failed = true;
                     }
                 }
             }
             if !failed && !state.terminal_seen {
+                state.adapter_failed = true;
                 yield Err(AppError::UpstreamBedrock(
                     "Responses stream ended without a terminal event".to_string(),
                 ));
+            }
+            if !failed && state.terminal_seen {
+                state.adapter_finished = true;
+                tracing::info!(
+                    request_id = %state.request_id,
+                    completion_id = %state.message_id,
+                    model = %state.model,
+                    finish_reason = state.finish_reason.unwrap_or("unknown"),
+                    tool_calls = state.tool_indices.len(),
+                    terminal_event = state.terminal_event.unwrap_or("unknown"),
+                    output_item_types = %type_set_label(&state.output_item_types),
+                    unknown_output_item_types = %type_set_label(&state.unknown_output_item_types),
+                    visible_text_bytes = state.visible_text_bytes,
+                    "responses chat streaming completed"
+                );
             }
         };
         Ok(output.boxed())
@@ -590,9 +614,12 @@ fn responses_to_chat(
     let mut text = String::new();
     let mut calls = Vec::new();
     let mut function_call_seen = false;
+    let mut output_item_types = BTreeSet::new();
+    let mut unknown_output_item_types = BTreeSet::new();
     for item in &response.output {
         match item {
             ResponseOutputItem::Reasoning { .. } => {
+                output_item_types.insert("reasoning".to_string());
                 if function_call_seen {
                     return Err(AppError::Internal(
                         "interleaved Responses reasoning after a function call is not replayable"
@@ -608,6 +635,7 @@ fn responses_to_chat(
                 all_reasoning_items.push(value);
             }
             ResponseOutputItem::Message { content, .. } => {
+                output_item_types.insert("message".to_string());
                 for part in content {
                     match part {
                         crate::openai::responses_schema::OutputContentPart::OutputText {
@@ -626,10 +654,25 @@ fn responses_to_chat(
                 arguments,
                 ..
             } => {
+                output_item_types.insert("function_call".to_string());
                 function_call_seen = true;
                 calls.push((call_id.clone(), name.clone(), arguments.clone()));
             }
-            ResponseOutputItem::Other { .. } => {}
+            ResponseOutputItem::Other { item_type, .. } => {
+                output_item_types.insert(item_type.clone());
+                unknown_output_item_types.insert(item_type.clone());
+                let call_like = is_call_like_output_item_type(item_type);
+                tracing::warn!(
+                    response_id = %response.id,
+                    model = %response.model,
+                    output_item_type = %item_type,
+                    call_like,
+                    "responses chat adapter observed an unsupported output item type"
+                );
+                if call_like {
+                    return Err(unsupported_call_item_error(item_type));
+                }
+            }
         }
     }
 
@@ -677,6 +720,23 @@ fn responses_to_chat(
     } else {
         Some(rendered)
     };
+    let finish_reason = if has_tools {
+        "tool_calls"
+    } else if response.status == "incomplete" {
+        "length"
+    } else {
+        "stop"
+    };
+    tracing::info!(
+        response_id = %response.id,
+        model = %response.model,
+        finish_reason,
+        tool_calls = tool_calls.len(),
+        output_item_types = %type_set_label(&output_item_types),
+        unknown_output_item_types = %type_set_label(&unknown_output_item_types),
+        visible_text_bytes = content.as_deref().map_or(0, str::len),
+        "responses chat non-stream adaptation completed"
+    );
 
     Ok(ChatResponse {
         id: response.id.replacen("resp_", "chatcmpl-", 1),
@@ -685,13 +745,7 @@ fn responses_to_chat(
         system_fingerprint: "fp".to_string(),
         choices: vec![Choice {
             index: 0,
-            finish_reason: Some(if has_tools {
-                "tool_calls".to_string()
-            } else if response.status == "incomplete" {
-                "length".to_string()
-            } else {
-                "stop".to_string()
-            }),
+            finish_reason: Some(finish_reason.to_string()),
             logprobs: None,
             message: ChatResponseMessage {
                 role: Some("assistant".to_string()),
@@ -703,6 +757,24 @@ fn responses_to_chat(
         object: "chat.completion".to_string(),
         usage: responses_usage_to_chat(&response.usage),
     })
+}
+
+fn is_call_like_output_item_type(item_type: &str) -> bool {
+    item_type.ends_with("_call")
+}
+
+fn unsupported_call_item_error(item_type: &str) -> AppError {
+    AppError::UpstreamBedrock(format!(
+        "Responses-backed chat cannot represent upstream output item type `{item_type}`"
+    ))
+}
+
+fn type_set_label(types: &BTreeSet<String>) -> String {
+    if types.is_empty() {
+        "none".to_string()
+    } else {
+        types.iter().cloned().collect::<Vec<_>>().join(",")
+    }
 }
 
 fn responses_usage_to_chat(usage: &crate::openai::responses_schema::ResponsesUsage) -> Usage {
@@ -814,6 +886,7 @@ fn parse_sse_frame(frame: &[u8]) -> Result<Option<Value>, AppError> {
 }
 
 struct ResponsesChatStreamState {
+    request_id: Arc<str>,
     message_id: String,
     model: String,
     created: i64,
@@ -827,16 +900,25 @@ struct ResponsesChatStreamState {
     tool_arguments: HashMap<u32, String>,
     tool_calls_seen: bool,
     terminal_seen: bool,
+    finish_reason: Option<&'static str>,
+    terminal_event: Option<&'static str>,
+    output_item_types: BTreeSet<String>,
+    unknown_output_item_types: BTreeSet<String>,
+    visible_text_bytes: usize,
+    adapter_failed: bool,
+    adapter_finished: bool,
 }
 
 impl ResponsesChatStreamState {
     fn new(
+        request_id: Arc<str>,
         message_id: String,
         model: String,
         include_usage: bool,
         capsule: Arc<CapsuleRuntime>,
     ) -> Self {
         Self {
+            request_id,
             message_id,
             model,
             created: now_unix_secs(),
@@ -850,6 +932,13 @@ impl ResponsesChatStreamState {
             tool_arguments: HashMap::new(),
             tool_calls_seen: false,
             terminal_seen: false,
+            finish_reason: None,
+            terminal_event: None,
+            output_item_types: BTreeSet::new(),
+            unknown_output_item_types: BTreeSet::new(),
+            visible_text_bytes: 0,
+            adapter_failed: false,
+            adapter_finished: false,
         }
     }
 
@@ -885,7 +974,8 @@ impl ResponsesChatStreamState {
         }
     }
 
-    fn content_chunk(&self, content: String) -> ChatStreamResponse {
+    fn content_chunk(&mut self, content: String) -> ChatStreamResponse {
+        self.visible_text_bytes += content.len();
         self.message_chunk(
             ChatResponseMessage {
                 content: Some(content),
@@ -900,6 +990,54 @@ impl ResponsesChatStreamState {
             self.think_open = false;
             output.push(self.content_chunk("</think>".to_string()));
         }
+    }
+
+    fn observe_output_item_type<'a>(
+        &mut self,
+        item: &'a Value,
+        event_type: &str,
+    ) -> Result<&'a str, AppError> {
+        let item_type = item.get("type").and_then(Value::as_str).ok_or_else(|| {
+            AppError::UpstreamBedrock("Responses output item has no type".to_string())
+        })?;
+        self.output_item_types.insert(item_type.to_string());
+
+        if !matches!(item_type, "reasoning" | "message" | "function_call") {
+            let first_observation = self.unknown_output_item_types.insert(item_type.to_string());
+            let call_like = is_call_like_output_item_type(item_type);
+            if first_observation {
+                tracing::warn!(
+                    request_id = %self.request_id,
+                    completion_id = %self.message_id,
+                    model = %self.model,
+                    sse_event_type = %event_type,
+                    output_item_type = %item_type,
+                    call_like,
+                    "responses chat adapter observed an unsupported output item type"
+                );
+            }
+            if call_like {
+                return Err(unsupported_call_item_error(item_type));
+            }
+        }
+
+        Ok(item_type)
+    }
+
+    fn observe_terminal_output(&mut self, event: &Value, event_type: &str) -> Result<(), AppError> {
+        let Some(output) = event
+            .get("response")
+            .and_then(|response| response.get("output"))
+        else {
+            return Ok(());
+        };
+        let output = output.as_array().ok_or_else(|| {
+            AppError::UpstreamBedrock("Responses terminal output is not an array".to_string())
+        })?;
+        for item in output {
+            self.observe_output_item_type(item, event_type)?;
+        }
+        Ok(())
     }
 
     fn store_reasoning_item(&mut self, output_index: u32, mut item: Value) {
@@ -1082,8 +1220,8 @@ impl ResponsesChatStreamState {
                 let item = event.get("item").ok_or_else(|| {
                     AppError::UpstreamBedrock("Responses output item event has no item".to_string())
                 })?;
-                match item.get("type").and_then(Value::as_str) {
-                    Some("reasoning") => {
+                match self.observe_output_item_type(item, event_type)? {
+                    "reasoning" => {
                         if self.tool_calls_seen {
                             return Err(AppError::Internal(
                                 "interleaved Responses reasoning after a function call is not replayable"
@@ -1100,7 +1238,7 @@ impl ResponsesChatStreamState {
                             }
                         }
                     }
-                    Some("function_call") => {
+                    "function_call" => {
                         self.close_think(&mut output);
                         let call_id =
                             item.get("call_id").and_then(Value::as_str).ok_or_else(|| {
@@ -1128,6 +1266,7 @@ impl ResponsesChatStreamState {
                             }
                         }
                     }
+                    "message" => {}
                     _ => {}
                 }
             }
@@ -1158,8 +1297,14 @@ impl ResponsesChatStreamState {
                 }
             }
             "response.completed" | "response.incomplete" => {
+                self.observe_terminal_output(event, event_type)?;
                 self.close_think(&mut output);
                 self.terminal_seen = true;
+                self.terminal_event = Some(if event_type == "response.incomplete" {
+                    "response.incomplete"
+                } else {
+                    "response.completed"
+                });
                 let finish_reason = if event_type == "response.incomplete" {
                     "length"
                 } else if self.tool_calls_seen {
@@ -1167,6 +1312,7 @@ impl ResponsesChatStreamState {
                 } else {
                     "stop"
                 };
+                self.finish_reason = Some(finish_reason);
                 output.push(self.message_chunk(
                     ChatResponseMessage::default(),
                     Some(finish_reason.to_string()),
@@ -1180,6 +1326,11 @@ impl ResponsesChatStreamState {
             }
             "response.failed" | "error" => {
                 self.terminal_seen = true;
+                self.terminal_event = Some(if event_type == "error" {
+                    "error"
+                } else {
+                    "response.failed"
+                });
                 return Err(AppError::UpstreamBedrock(
                     "Responses upstream reported a failed stream".to_string(),
                 ));
@@ -1235,6 +1386,55 @@ impl ResponsesChatStreamState {
             }),
         }
     }
+}
+
+impl Drop for ResponsesChatStreamState {
+    fn drop(&mut self) {
+        if self.adapter_failed {
+            tracing::warn!(
+                request_id = %self.request_id,
+                completion_id = %self.message_id,
+                model = %self.model,
+                finish_reason = self.finish_reason.unwrap_or("none"),
+                terminal_event = self.terminal_event.unwrap_or("none"),
+                tool_calls = self.tool_indices.len(),
+                output_item_types = %type_set_label(&self.output_item_types),
+                unknown_output_item_types = %type_set_label(&self.unknown_output_item_types),
+                visible_text_bytes = self.visible_text_bytes,
+                "responses chat stream adapter failed"
+            );
+        } else if !self.terminal_seen {
+            tracing::warn!(
+                request_id = %self.request_id,
+                completion_id = %self.message_id,
+                model = %self.model,
+                tool_calls = self.tool_indices.len(),
+                output_item_types = %type_set_label(&self.output_item_types),
+                unknown_output_item_types = %type_set_label(&self.unknown_output_item_types),
+                visible_text_bytes = self.visible_text_bytes,
+                "responses chat stream dropped before terminal event"
+            );
+        } else if !self.adapter_finished && self.finish_reason.is_some() {
+            tracing::warn!(
+                request_id = %self.request_id,
+                completion_id = %self.message_id,
+                model = %self.model,
+                finish_reason = self.finish_reason.unwrap_or("unknown"),
+                terminal_event = self.terminal_event.unwrap_or("unknown"),
+                tool_calls = self.tool_indices.len(),
+                output_item_types = %type_set_label(&self.output_item_types),
+                unknown_output_item_types = %type_set_label(&self.unknown_output_item_types),
+                visible_text_bytes = self.visible_text_bytes,
+                "responses chat stream dropped after terminal event before adapter EOF"
+            );
+        }
+    }
+}
+
+fn new_chat_completion_id() -> String {
+    let request_id = gen_request_id();
+    let suffix = request_id.strip_prefix("req-").unwrap_or(&request_id);
+    format!("chatcmpl-{suffix}")
 }
 
 fn now_unix_secs() -> i64 {

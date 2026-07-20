@@ -128,14 +128,8 @@ impl ChatProvider for MantleChatProvider {
     }
 
     async fn chat_stream(&self, req: &NormalizedChatRequest) -> Result<ChatStream, AppError> {
-        // Typed fallback — the raw lane is the happy path. Re-run pre-flight +
-        // connect to surface a pre-stream failure; a successful connect is a
-        // routing error (the raw lane would have claimed it).
-        let (region, body) = self.preflight(req)?;
-        match self.client.chat_stream(&region, body).await {
-            Ok(_stream) => Err(Self::typed_fallback_err()),
-            Err(e) => Err(e),
-        }
+        let _ = req;
+        Err(Self::typed_fallback_err())
     }
 
     async fn chat_raw_nonstream(
@@ -152,13 +146,16 @@ impl ChatProvider for MantleChatProvider {
         Some(self.client.chat_nonstream(&region, body).await)
     }
 
-    async fn chat_raw_stream(&self, req: &NormalizedChatRequest) -> Option<RawChatStream> {
-        // A pre-stream failure returns `None` so the typed `chat_stream` path
-        // produces the error envelope (`Some` only once the SSE is established).
-        let (region, body) = self.preflight(req).ok()?;
+    async fn chat_raw_stream(
+        &self,
+        req: &NormalizedChatRequest,
+    ) -> Result<Option<RawChatStream>, AppError> {
+        // Preserve pre-flight/connect errors so the handler can return the
+        // original envelope without issuing a second upstream request.
+        let (region, body) = self.preflight(req)?;
         tracing::debug!(region = %region, "invoking mantle chat (raw stream)");
-        let stream = self.client.chat_stream(&region, body).await.ok()?;
-        Some(stream.boxed())
+        let stream = self.client.chat_stream(&region, body).await?;
+        Ok(Some(stream.boxed()))
     }
 }
 

@@ -159,13 +159,11 @@ async fn region_gate_rejects_out_of_region() {
     );
     let req = normalized(r#"{"model":"gpt-oss-120b","messages":[]}"#);
 
-    // Raw stream lane returns None on a pre-stream (region-gate) failure.
-    assert!(provider.chat_raw_stream(&req).await.is_none());
-    // The typed chat_stream fallback surfaces the 400 envelope.
-    match provider.chat_stream(&req).await {
+    // The raw lane preserves the pre-stream region-gate error directly.
+    match provider.chat_raw_stream(&req).await {
         Err(AppError::BadRequest(_)) => {}
         Err(other) => panic!("expected BadRequest, got {other:?}"),
-        Ok(_) => panic!("expected BadRequest, got Ok(stream)"),
+        Ok(_) => panic!("expected BadRequest, got Ok(raw lane)"),
     }
     // The non-stream raw lane returns Some(Err(BadRequest)).
     match provider.chat_raw_nonstream(&req).await {
@@ -218,6 +216,7 @@ async fn chat_raw_stream_forwards_bytes_verbatim() {
     let stream = provider
         .chat_raw_stream(&req)
         .await
+        .expect("raw lane succeeds")
         .expect("raw stream Some");
     let chunks: Vec<Bytes> = stream.map(|r| r.expect("ok chunk")).collect().await;
     let mut joined = Vec::new();
@@ -229,6 +228,29 @@ async fn chat_raw_stream_forwards_bytes_verbatim() {
     assert!(!joined_str.contains("[DONE]"));
     assert!(joined_str.contains("reasoning"));
     assert!(joined_str.contains("obfuscation"));
+}
+
+#[tokio::test]
+async fn chat_raw_stream_preserves_upstream_open_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = provider_for(
+        &server.uri(),
+        "us-east-2",
+        Some(vec!["us-east-2".to_string()]),
+    );
+    let req = normalized(r#"{"model":"gpt-oss-120b","messages":[],"stream":true}"#);
+
+    assert!(matches!(
+        provider.chat_raw_stream(&req).await,
+        Err(AppError::UpstreamBedrock(_))
+    ));
 }
 
 #[tokio::test]
@@ -265,7 +287,7 @@ async fn chat_raw_nonstream_returns_upstream_bytes() {
 }
 
 #[tokio::test]
-async fn chat_stream_typed_fallback_errors_after_connect() {
+async fn chat_stream_typed_fallback_does_not_reconnect() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -274,6 +296,7 @@ async fn chat_stream_typed_fallback_errors_after_connect() {
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(CHAT_SSE),
         )
+        .expect(0)
         .mount(&server)
         .await;
 

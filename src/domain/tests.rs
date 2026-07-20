@@ -273,14 +273,22 @@ async fn mock_responses_provider_via_dyn() {
 async fn default_respond_raw_stream_returns_none() {
     let provider: Arc<dyn ResponsesProvider> = Arc::new(MockResponsesProvider);
     let req = normalized_responses();
-    assert!(provider.respond_raw_stream(&req).await.is_none());
+    assert!(provider
+        .respond_raw_stream(&req)
+        .await
+        .expect("default raw lane succeeds")
+        .is_none());
 }
 
 #[tokio::test]
 async fn chat_raw_stream_defaults_to_none() {
     let provider: Box<dyn ChatProvider> = Box::new(MockChatProvider);
     let req = normalized();
-    assert!(provider.chat_raw_stream(&req).await.is_none());
+    assert!(provider
+        .chat_raw_stream(&req)
+        .await
+        .expect("default raw lane succeeds")
+        .is_none());
 }
 
 #[tokio::test]

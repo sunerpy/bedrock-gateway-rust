@@ -67,10 +67,10 @@ impl ResponsesProvider for RecordingProvider {
     async fn respond_raw_stream(
         &self,
         _req: &NormalizedResponsesRequest,
-    ) -> Option<RawResponsesStream> {
+    ) -> Result<Option<RawResponsesStream>, AppError> {
         self.respond_raw_hit.store(true, Ordering::SeqCst);
         let chunk: Result<Bytes, AppError> = Ok(Bytes::from(self.tag.as_bytes()));
-        Some(Box::pin(futures::stream::iter(vec![chunk])))
+        Ok(Some(Box::pin(futures::stream::iter(vec![chunk]))))
     }
 }
 
@@ -292,6 +292,7 @@ async fn routes_gpt_model_to_mantle_inner() {
     let raw = composite
         .respond_raw_stream(&req)
         .await
+        .expect("raw lane succeeds")
         .expect("raw stream Some");
     let bytes: Vec<Bytes> = raw.map(|r| r.expect("ok")).collect().await;
     assert_eq!(bytes[0], Bytes::from(&b"mantle"[..]));
@@ -322,7 +323,10 @@ async fn mantle_model_returns_bad_request_when_mantle_disabled() {
         Ok(_) => panic!("respond_stream should fail when mantle is disabled"),
     }
 
-    assert!(composite.respond_raw_stream(&req).await.is_none());
+    match composite.respond_raw_stream(&req).await {
+        Err(err) => assert_mantle_disabled_err(err),
+        Ok(_) => panic!("raw stream should fail when mantle is disabled"),
+    }
     assert!(!mantle.respond_hit.load(Ordering::SeqCst));
     assert!(!mantle.respond_stream_hit.load(Ordering::SeqCst));
     assert!(!mantle.respond_raw_hit.load(Ordering::SeqCst));
@@ -334,7 +338,7 @@ async fn mantle_model_returns_bad_request_when_mantle_disabled() {
 /// Given a claude model (Converse backend),
 /// When each composite method is called,
 /// Then the CONVERSE inner provider is hit and the mantle one is not. The
-/// raw-stream lane delegates to converse's default (`None`).
+/// raw-stream lane delegates to converse's default (`Ok(None)`).
 #[tokio::test]
 async fn routes_claude_model_to_converse_inner() {
     let (composite, converse, mantle) = build();
@@ -348,7 +352,10 @@ async fn routes_claude_model_to_converse_inner() {
 
     // converse RecordingProvider DOES return Some for raw — the point of this
     // assertion is that it routed to converse, not mantle.
-    let _ = composite.respond_raw_stream(&req).await;
+    let _ = composite
+        .respond_raw_stream(&req)
+        .await
+        .expect("raw lane succeeds");
 
     assert!(converse.respond_hit.load(Ordering::SeqCst));
     assert!(converse.respond_stream_hit.load(Ordering::SeqCst));
