@@ -1,10 +1,12 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use futures::stream::{self, StreamExt};
 use serde_json::json;
+use tracing_subscriber::fmt::MakeWriter;
 
 use super::*;
 use crate::bedrock::capsule::{decode_responses_capsule, is_responses_capsule, CapsuleKeyring};
@@ -472,6 +474,144 @@ fn stream_diagnostics_track_item_types_terminal_event_and_visible_bytes() {
             == Some("stop")
     }));
     state.adapter_finished = true;
+}
+
+#[test]
+fn failed_event_preserves_client_envelope_and_safe_log_diagnostics() {
+    let marker = "upstream detail must not enter logs";
+    let logs = CapturedLogs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .flatten_event(true)
+        .with_target(false)
+        .with_writer(logs.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let mut state = ResponsesChatStreamState::new(
+        Arc::from("req-failed"),
+        "chatcmpl-failed".to_string(),
+        "gpt-test".to_string(),
+        false,
+        capsule_runtime(true),
+    );
+
+    let error = state
+        .map_event(&json!({
+            "type": "response.failed",
+            "response": {
+                "status": "failed",
+                "error": {
+                    "code": "server_error",
+                    "message": marker
+                }
+            }
+        }))
+        .expect_err("failed event must terminate the adapter");
+
+    assert!(matches!(
+        &error,
+        AppError::UpstreamOpenAi {
+            status: axum::http::StatusCode::BAD_GATEWAY,
+            ..
+        }
+    ));
+    assert_eq!(error.envelope().error.message, marker);
+    assert_eq!(error.envelope().error.code.as_deref(), Some("server_error"));
+    assert!(!error.to_string().contains(marker));
+    state.adapter_failed = true;
+    drop(state);
+
+    let output = logs.rendered();
+    assert!(output.contains(r#""upstream_error_code":"server_error""#));
+    assert!(output.contains(r#""upstream_error_type":"api_error""#));
+    assert!(!output.contains(marker));
+}
+
+#[test]
+fn top_level_error_event_maps_rate_limit_to_429() {
+    let mut state = ResponsesChatStreamState::new(
+        Arc::from("req-rate-limit"),
+        "chatcmpl-rate-limit".to_string(),
+        "gpt-test".to_string(),
+        false,
+        capsule_runtime(true),
+    );
+
+    let error = state
+        .map_event(&json!({
+            "type": "error",
+            "code": "rate_limit_exceeded",
+            "message": "retry later",
+            "param": "requests"
+        }))
+        .expect_err("error event must terminate the adapter");
+
+    assert!(matches!(
+        &error,
+        AppError::UpstreamOpenAi {
+            status: axum::http::StatusCode::TOO_MANY_REQUESTS,
+            ..
+        }
+    ));
+    let envelope = error.envelope();
+    assert_eq!(envelope.error.r#type.as_deref(), Some("rate_limit_error"));
+    assert_eq!(envelope.error.param.as_deref(), Some("requests"));
+    assert_eq!(
+        state.upstream_error_code.as_deref(),
+        Some("rate_limit_exceeded")
+    );
+}
+
+#[test]
+fn nonstream_failed_response_preserves_structured_error() {
+    let marker = "nonstream upstream detail";
+    let mut response = responses_response_with_tool();
+    response.status = "failed".to_string();
+    response.output.clear();
+    response.error = Some(json!({
+        "code": "server_error",
+        "message": marker
+    }));
+
+    let error = responses_to_chat(response, &capsule_runtime(true))
+        .expect_err("failed non-stream response must stay an error");
+
+    assert_eq!(error.upstream_error_code(), Some("server_error"));
+    assert_eq!(error.envelope().error.message, marker);
+    assert!(!error.to_string().contains(marker));
+}
+
+#[derive(Clone, Default)]
+struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+struct CapturedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+impl CapturedLogs {
+    fn rendered(&self) -> String {
+        String::from_utf8(self.0.lock().expect("log lock").clone()).expect("UTF-8 logs")
+    }
+}
+
+impl<'a> MakeWriter<'a> for CapturedLogs {
+    type Writer = CapturedLogWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        CapturedLogWriter(Arc::clone(&self.0))
+    }
+}
+
+impl Write for CapturedLogWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .map_err(|_| io::Error::other("log lock poisoned"))?
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 struct MockResponsesProvider {

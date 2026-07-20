@@ -522,6 +522,8 @@ fn sse_response(
                             request_id = %request_id,
                             model = %model,
                             error = %error,
+                            upstream_error_code = error.upstream_error_code().unwrap_or("none"),
+                            upstream_error_type = error.upstream_error_type().unwrap_or("none"),
                             done_sent = false,
                             "chat SSE stream failed"
                         );
@@ -544,6 +546,8 @@ fn sse_response(
                             request_id = %request_id,
                             model = %model,
                             error = %error,
+                            upstream_error_code = error.upstream_error_code().unwrap_or("none"),
+                            upstream_error_type = error.upstream_error_type().unwrap_or("none"),
                             done_sent = false,
                             "chat SSE stream failed"
                         );
@@ -1482,9 +1486,13 @@ mod tests {
 
     #[tokio::test]
     async fn chat_stream_error_emits_envelope_before_done() {
+        let marker = "upstream stream detail";
         let chat_stream: ChatStream = futures::stream::once(async {
-            Err::<ChatStreamResponse, AppError>(AppError::UpstreamBedrock(
-                "unsupported upstream call item".to_string(),
+            Err::<ChatStreamResponse, AppError>(AppError::from_openai_stream_error(
+                Some("server_error"),
+                Some(marker),
+                None,
+                None,
             ))
         })
         .boxed();
@@ -1500,7 +1508,8 @@ mod tests {
         let text = String::from_utf8(bytes.to_vec()).expect("UTF-8 SSE");
 
         assert!(text.contains("\"error\""));
-        assert!(text.contains("unsupported upstream call item"));
+        assert!(text.contains(marker));
+        assert!(text.contains(r#""code":"server_error""#));
         assert!(text.contains("data: [DONE]"));
         assert!(
             text.find("\"error\"").expect("error event")
