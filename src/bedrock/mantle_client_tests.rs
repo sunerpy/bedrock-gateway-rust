@@ -95,6 +95,40 @@ fn terminal_observer_preserves_data_before_event_metadata() {
     assert_eq!(terminal.reasoning_tokens, Some(2));
 }
 
+#[test]
+fn terminal_observer_extracts_failed_error_diagnostics_without_message() {
+    let marker = "sensitive upstream detail";
+    let frame = format!(
+        "event: response.failed\ndata: {{\"response\":{{\"status\":\"failed\",\"error\":{{\"code\":\"server_error\",\"message\":\"{marker}\",\"type\":\"api_error\"}}}},\"type\":\"response.failed\"}}\n\n"
+    );
+    let mut terminator = ResponsesSseTerminator::default();
+
+    let terminal = terminator
+        .observe(frame.as_bytes())
+        .expect("failed terminal event metadata");
+
+    assert_eq!(terminal.event_type, "response.failed");
+    assert_eq!(terminal.status.as_deref(), Some("failed"));
+    assert_eq!(terminal.error_code.as_deref(), Some("server_error"));
+    assert_eq!(terminal.error_type.as_deref(), Some("api_error"));
+    assert!(!format!("{terminal:?}").contains(marker));
+}
+
+#[test]
+fn top_level_error_event_is_terminal_and_reports_code() {
+    let mut terminator = ResponsesSseTerminator::default();
+    let frame =
+        b"event: error\ndata: {\"type\":\"error\",\"code\":\"rate_limit_exceeded\",\"message\":\"retry later\"}\n\n";
+
+    let terminal = terminator
+        .observe(frame)
+        .expect("top-level error terminal metadata");
+
+    assert_eq!(terminal.event_type, "error");
+    assert_eq!(terminal.error_code.as_deref(), Some("rate_limit_exceeded"));
+    assert_eq!(terminal.error_type, None);
+}
+
 #[tokio::test]
 async fn terminal_observer_preserves_bytes_and_reports_reasoning_usage() {
     let chunks = [

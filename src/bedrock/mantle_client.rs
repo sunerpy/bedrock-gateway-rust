@@ -45,6 +45,8 @@ const MAX_UPSTREAM_ERROR_BODY_BYTES: usize = 64 * 1024;
 pub(crate) struct ResponsesStreamTerminal {
     pub(crate) event_type: String,
     pub(crate) status: Option<String>,
+    pub(crate) error_code: Option<String>,
+    pub(crate) error_type: Option<String>,
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,
@@ -55,11 +57,29 @@ impl ResponsesStreamTerminal {
     fn from_event(event_type: &str, event: Option<&serde_json::Value>) -> Self {
         let response = event.and_then(|value| value.get("response")).or(event);
         let usage = response.and_then(|value| value.get("usage"));
+        let nested_error = response.and_then(|value| value.get("error"));
+        let error = nested_error.or_else(|| if event_type == "error" { event } else { None });
 
         Self {
             event_type: event_type.to_string(),
             status: response
                 .and_then(|value| value.get("status"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            error_code: error
+                .and_then(|value| value.get("code"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            error_type: error
+                .and_then(|value| {
+                    value.get("error_type").or_else(|| {
+                        if nested_error.is_some() {
+                            value.get("type")
+                        } else {
+                            None
+                        }
+                    })
+                })
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
             input_tokens: usage
@@ -173,14 +193,14 @@ fn trim_ascii(mut value: &[u8]) -> &[u8] {
 fn is_terminal_responses_event(value: &[u8]) -> bool {
     matches!(
         value,
-        b"response.completed" | b"response.incomplete" | b"response.failed"
+        b"response.completed" | b"response.incomplete" | b"response.failed" | b"error"
     )
 }
 
 fn is_terminal_responses_event_str(value: &str) -> bool {
     matches!(
         value,
-        "response.completed" | "response.incomplete" | "response.failed"
+        "response.completed" | "response.incomplete" | "response.failed" | "error"
     )
 }
 

@@ -605,9 +605,7 @@ fn responses_to_chat(
     capsule: &CapsuleRuntime,
 ) -> Result<ChatResponse, AppError> {
     if response.status == "failed" || response.error.is_some() {
-        return Err(AppError::UpstreamBedrock(
-            "Responses upstream returned a failed response".to_string(),
-        ));
+        return Err(openai_stream_error(response.error.as_ref()));
     }
     let mut reasoning_items = Vec::new();
     let mut all_reasoning_items = Vec::new();
@@ -777,6 +775,31 @@ fn type_set_label(types: &BTreeSet<String>) -> String {
     }
 }
 
+fn response_stream_error_value<'a>(event: &'a Value, event_type: &str) -> Option<&'a Value> {
+    if event_type == "response.failed" {
+        event
+            .get("response")
+            .and_then(|response| response.get("error"))
+            .or_else(|| event.get("error"))
+    } else {
+        event.get("error").or(Some(event))
+    }
+}
+
+fn openai_stream_error(value: Option<&Value>) -> AppError {
+    let string_field = |name| {
+        value
+            .and_then(|value| value.get(name))
+            .and_then(Value::as_str)
+    };
+    AppError::from_openai_stream_error(
+        string_field("code"),
+        string_field("message"),
+        string_field("param"),
+        string_field("type").filter(|value| *value != "error"),
+    )
+}
+
 fn responses_usage_to_chat(usage: &crate::openai::responses_schema::ResponsesUsage) -> Usage {
     Usage {
         prompt_tokens: usage.input_tokens,
@@ -905,6 +928,8 @@ struct ResponsesChatStreamState {
     output_item_types: BTreeSet<String>,
     unknown_output_item_types: BTreeSet<String>,
     visible_text_bytes: usize,
+    upstream_error_code: Option<String>,
+    upstream_error_type: Option<String>,
     adapter_failed: bool,
     adapter_finished: bool,
 }
@@ -937,6 +962,8 @@ impl ResponsesChatStreamState {
             output_item_types: BTreeSet::new(),
             unknown_output_item_types: BTreeSet::new(),
             visible_text_bytes: 0,
+            upstream_error_code: None,
+            upstream_error_type: None,
             adapter_failed: false,
             adapter_finished: false,
         }
@@ -1331,9 +1358,10 @@ impl ResponsesChatStreamState {
                 } else {
                     "response.failed"
                 });
-                return Err(AppError::UpstreamBedrock(
-                    "Responses upstream reported a failed stream".to_string(),
-                ));
+                let error = openai_stream_error(response_stream_error_value(event, event_type));
+                self.upstream_error_code = error.upstream_error_code().map(str::to_string);
+                self.upstream_error_type = error.upstream_error_type().map(str::to_string);
+                return Err(error);
             }
             _ => {}
         }
@@ -1401,6 +1429,8 @@ impl Drop for ResponsesChatStreamState {
                 output_item_types = %type_set_label(&self.output_item_types),
                 unknown_output_item_types = %type_set_label(&self.unknown_output_item_types),
                 visible_text_bytes = self.visible_text_bytes,
+                upstream_error_code = self.upstream_error_code.as_deref().unwrap_or("none"),
+                upstream_error_type = self.upstream_error_type.as_deref().unwrap_or("none"),
                 "responses chat stream adapter failed"
             );
         } else if !self.terminal_seen {

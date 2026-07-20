@@ -83,6 +83,64 @@ impl AppError {
         self.status().is_server_error()
     }
 
+    /// Build a structured error from a terminal OpenAI-compatible stream event.
+    ///
+    /// Streaming errors arrive after an HTTP 200, so there is no upstream HTTP
+    /// status left to preserve. Known rate-limit codes map to 429; every other
+    /// terminal provider failure maps to 502. The original envelope is retained
+    /// for the requesting client while [`Self`]'s `Display` remains body-free.
+    pub fn from_openai_stream_error(
+        code: Option<&str>,
+        message: Option<&str>,
+        param: Option<&str>,
+        error_type: Option<&str>,
+    ) -> Self {
+        let code = non_empty(code).unwrap_or("upstream_error");
+        let rate_limited =
+            is_rate_limit_marker(code) || non_empty(error_type).is_some_and(is_rate_limit_marker);
+        let status = if rate_limited {
+            StatusCode::TOO_MANY_REQUESTS
+        } else {
+            StatusCode::BAD_GATEWAY
+        };
+        let error_type = non_empty(error_type).unwrap_or(if rate_limited {
+            "rate_limit_error"
+        } else {
+            "api_error"
+        });
+        let message = non_empty(message).unwrap_or("Responses upstream reported a failed stream");
+
+        AppError::UpstreamOpenAi {
+            status,
+            envelope: OpenAiError {
+                error: ErrorBody {
+                    message: message.to_string(),
+                    r#type: Some(error_type.to_string()),
+                    param: non_empty(param).map(str::to_string),
+                    code: Some(code.to_string()),
+                },
+            },
+        }
+    }
+
+    /// Machine-readable upstream code safe to include in structured logs.
+    #[must_use]
+    pub fn upstream_error_code(&self) -> Option<&str> {
+        match self {
+            AppError::UpstreamOpenAi { envelope, .. } => envelope.error.code.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Machine-readable upstream type safe to include in structured logs.
+    #[must_use]
+    pub fn upstream_error_type(&self) -> Option<&str> {
+        match self {
+            AppError::UpstreamOpenAi { envelope, .. } => envelope.error.r#type.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Returns the HTTP status code for this error.
     fn status(&self) -> StatusCode {
         match self {
@@ -161,6 +219,17 @@ impl AppError {
             },
         }
     }
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn is_rate_limit_marker(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "rate_limit_exceeded" | "rate_limit_error" | "insufficient_quota" | "too_many_requests"
+    )
 }
 
 impl IntoResponse for AppError {
@@ -348,6 +417,42 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(value["error"]["message"], marker);
         assert_eq!(value["error"]["code"], "validation_error");
+    }
+
+    #[tokio::test]
+    async fn openai_stream_error_preserves_envelope_and_maps_server_failure_to_502() {
+        let marker = "provider detail visible only to the requesting client";
+        let error =
+            AppError::from_openai_stream_error(Some("server_error"), Some(marker), None, None);
+
+        assert!(error.is_server_error());
+        assert_eq!(error.upstream_error_code(), Some("server_error"));
+        assert_eq!(error.upstream_error_type(), Some("api_error"));
+        assert!(!error.to_string().contains(marker));
+
+        let (status, value) = body_json(error.into_response()).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(value["error"]["message"], marker);
+        assert_eq!(value["error"]["type"], "api_error");
+        assert_eq!(value["error"]["code"], "server_error");
+    }
+
+    #[tokio::test]
+    async fn openai_stream_rate_limit_maps_to_429() {
+        let error = AppError::from_openai_stream_error(
+            Some("rate_limit_exceeded"),
+            Some("retry later"),
+            Some("requests"),
+            None,
+        );
+
+        assert!(!error.is_server_error());
+        assert_eq!(error.upstream_error_type(), Some("rate_limit_error"));
+
+        let (status, value) = body_json(error.into_response()).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(value["error"]["param"], "requests");
+        assert_eq!(value["error"]["code"], "rate_limit_exceeded");
     }
 
     #[tokio::test]

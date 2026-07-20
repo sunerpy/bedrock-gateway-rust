@@ -199,21 +199,42 @@ impl ResponsesProvider for MantleResponsesProvider {
         let observer = Box::new(move |terminal: ResponsesStreamTerminal| {
             let reasoning_tokens = terminal.reasoning_tokens.unwrap_or(0);
             let reasoning_used = reasoning_tokens > 0;
-            tracing::info!(
-                request_id = %request_id,
-                model = %model,
-                status = terminal.status.as_deref().unwrap_or("unknown"),
-                terminal_event = %terminal.event_type,
-                reasoning_effort = %reasoning_effort,
-                reasoning_used,
-                reasoning_tokens,
-                reasoning_usage_available = terminal.reasoning_tokens.is_some(),
-                input_tokens = ?terminal.input_tokens,
-                output_tokens = ?terminal.output_tokens,
-                total_tokens = ?terminal.total_tokens,
-                duration_ms = started_at.elapsed().as_millis(),
-                "responses raw streaming completed"
-            );
+            let failed = matches!(terminal.event_type.as_str(), "response.failed" | "error");
+            if failed {
+                tracing::warn!(
+                    request_id = %request_id,
+                    model = %model,
+                    status = terminal.status.as_deref().unwrap_or("unknown"),
+                    terminal_event = %terminal.event_type,
+                    upstream_error_code = terminal.error_code.as_deref().unwrap_or("unknown"),
+                    upstream_error_type = terminal.error_type.as_deref().unwrap_or("unknown"),
+                    reasoning_effort = %reasoning_effort,
+                    reasoning_used,
+                    reasoning_tokens,
+                    reasoning_usage_available = terminal.reasoning_tokens.is_some(),
+                    input_tokens = ?terminal.input_tokens,
+                    output_tokens = ?terminal.output_tokens,
+                    total_tokens = ?terminal.total_tokens,
+                    duration_ms = started_at.elapsed().as_millis(),
+                    "responses raw streaming failed"
+                );
+            } else {
+                tracing::info!(
+                    request_id = %request_id,
+                    model = %model,
+                    status = terminal.status.as_deref().unwrap_or("unknown"),
+                    terminal_event = %terminal.event_type,
+                    reasoning_effort = %reasoning_effort,
+                    reasoning_used,
+                    reasoning_tokens,
+                    reasoning_usage_available = terminal.reasoning_tokens.is_some(),
+                    input_tokens = ?terminal.input_tokens,
+                    output_tokens = ?terminal.output_tokens,
+                    total_tokens = ?terminal.total_tokens,
+                    duration_ms = started_at.elapsed().as_millis(),
+                    "responses raw streaming completed"
+                );
+            }
         });
         let stream = self
             .client
