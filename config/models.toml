@@ -188,6 +188,13 @@ cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4
 reasoning_path = "adaptive_thinking"
 
 [[model]]
+match = "claude-opus-5"
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "structured_output"]
+[model.params]
+cache_min_tokens = 4096 # verified: cachePoint accepted, cacheWriteInputTokens returned, 5m TTL
+reasoning_path = "adaptive_thinking"
+
+[[model]]
 match = "claude-sonnet-5"
 capabilities = ["adaptive_thinking", "drop_sampling_params", "structured_output", "cache_ttl_1h"]
 [model.params]

@@ -19,6 +19,7 @@ fn caps() -> ConfigModelCapabilities {
 // substring is the only thing the algorithm keys on; the surrounding id is
 // arbitrary test input, not model knowledge encoded in production code.
 const FULL_OPUS_4_8: &str = "global.anthropic.claude-opus-4-8-20251101-v1:0";
+const FULL_OPUS_5: &str = "us.anthropic.claude-opus-5";
 const FULL_SONNET_4_5: &str = "us.anthropic.claude-sonnet-4-5-20250101-v1:0";
 const FULL_NOVA: &str = "us.amazon.nova-pro-v1:0";
 const FULL_DEEPSEEK_V3: &str = "us.deepseek.v3-v1:0";
@@ -32,6 +33,17 @@ fn opus_4_8_has_adaptive_thinking() {
     assert!(c.has(FULL_OPUS_4_8, Capability::NoAssistantPrefill));
     // opus-4-8 does NOT have temperature_topp_conflict.
     assert!(!c.has(FULL_OPUS_4_8, Capability::TemperatureToppConflict));
+}
+
+#[test]
+fn opus_5_has_adaptive_thinking_and_required_capabilities() {
+    let c = caps();
+    assert_eq!(
+        c.reasoning_path(FULL_OPUS_5),
+        ReasoningPath::AdaptiveThinking
+    );
+    assert!(c.has(FULL_OPUS_5, Capability::DropSamplingParams));
+    assert!(c.has(FULL_OPUS_5, Capability::NoAssistantPrefill));
 }
 
 #[test]
@@ -79,6 +91,10 @@ fn full_capability_table_parity() {
         ),
         (
             "claude-opus-4-8",
+            &[NoAssistantPrefill, AdaptiveThinking, DropSamplingParams],
+        ),
+        (
+            "claude-opus-5",
             &[NoAssistantPrefill, AdaptiveThinking, DropSamplingParams],
         ),
         ("claude-mythos-5", &[AdaptiveThinking, DropSamplingParams]),
@@ -358,6 +374,32 @@ fn matching_entry_identical_across_all_cross_region_forms() {
             .match_pattern
             .clone();
         assert_eq!(got, baseline, "form {prefixed} matched a different entry");
+    }
+}
+
+#[test]
+fn opus_5_matching_entry_identical_across_cross_region_forms() {
+    let c = caps();
+    let bare = "anthropic.claude-opus-5";
+    let baseline = c
+        .matching_entry(bare)
+        .expect("bare claude-opus-5 must match an entry")
+        .match_pattern
+        .clone();
+    assert_eq!(baseline, "claude-opus-5");
+    for prefix in ["us.", "global."] {
+        let prefixed = format!("{prefix}{bare}");
+        let got = c
+            .matching_entry(&prefixed)
+            .expect("cross-region form must match the same entry")
+            .match_pattern
+            .clone();
+        assert_eq!(got, baseline, "form {prefixed} matched a different entry");
+        assert_ne!(
+            c.reasoning_path(&prefixed),
+            ReasoningPath::None,
+            "form {prefixed} must not fall through to the Claude family catch-all"
+        );
     }
 }
 

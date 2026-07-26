@@ -45,7 +45,7 @@ use crate::bedrock::responses_translate::{
 };
 use crate::bedrock::translate::ImageResolver;
 use crate::bedrock::{cache, provider, tools};
-use crate::config::{AppSettings, RegionRoutingConfig};
+use crate::config::{AppSettings, Capability, RegionRoutingConfig};
 use crate::domain::{
     ModelCapabilities, NormalizedResponsesRequest, ResponsesProvider, ResponsesStream,
     RouteOverride,
@@ -125,17 +125,19 @@ impl BedrockResponsesProvider {
         let reasoning = reasoning_outcome(req, resolved, caps);
 
         // inferenceConfig: maxTokens (reasoning side-signal wins) + temperature /
-        // topP (topP dropped when reasoning requests it).
+        // topP. Models declaring DropSamplingParams reject both fields; reasoning
+        // independently drops topP when its selected path requires that.
         let mut inference = Map::new();
         let effective_max = reasoning.max_tokens.or(req.max_output_tokens);
         if let Some(max_tokens) = effective_max {
             inference.insert("maxTokens".to_string(), Value::from(max_tokens));
         }
-        if let Some(temp) = req.temperature {
-            inference.insert("temperature".to_string(), Value::from(temp));
-        }
-        if let Some(top_p) = req.top_p {
-            if !reasoning.drop_top_p {
+        let drop_sampling_params = caps.has(resolved, Capability::DropSamplingParams);
+        if !drop_sampling_params {
+            if let Some(temp) = req.temperature {
+                inference.insert("temperature".to_string(), Value::from(temp));
+            }
+            if let Some(top_p) = req.top_p.filter(|_| !reasoning.drop_top_p) {
                 inference.insert("topP".to_string(), Value::from(top_p));
             }
         }

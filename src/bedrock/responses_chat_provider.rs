@@ -305,7 +305,7 @@ fn dedupe_replayed_reasoning_items(input: &mut Vec<ResponseInputItem>) -> Result
     let mut seen = HashMap::<String, usize>::new();
     let mut deduplicated: Vec<ResponseInputItem> = Vec::with_capacity(input.len());
     for item in input.drain(..) {
-        let ResponseInputItem::Reasoning { id, .. } = &item else {
+        let ResponseInputItem::Reasoning { id: Some(id), .. } = &item else {
             deduplicated.push(item);
             continue;
         };
