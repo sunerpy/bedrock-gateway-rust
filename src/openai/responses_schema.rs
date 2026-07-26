@@ -303,7 +303,7 @@ pub enum ResponseInputItem {
         fields: HashMap<String, Value>,
     },
     Reasoning {
-        id: String,
+        id: Option<String>,
         content: Option<Value>,
         summary: Option<Value>,
         encrypted_content: Option<String>,
@@ -436,7 +436,8 @@ enum InputItemRepr {
     ItemReference { id: String },
     #[serde(rename = "reasoning")]
     Reasoning {
-        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         content: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

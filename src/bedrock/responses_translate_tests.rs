@@ -458,6 +458,45 @@ async fn reasoning_input_item_reconstructs_signed_bedrock_block() {
 }
 
 #[tokio::test]
+async fn reasoning_input_without_id_replays_identically_to_id_bearing_item() {
+    let envelope = encode_reasoning_envelope(&[json!({
+        "reasoningContent": { "reasoningText": { "text": "secret", "signature": "sig" } }
+    })])
+    .expect("envelope");
+    let with_id = req_from(json!({
+        "model": "m",
+        "input": [{ "type": "reasoning", "id": "r1", "encrypted_content": envelope }]
+    }));
+    let without_id = req_from(json!({
+        "model": "m",
+        "input": [{ "type": "reasoning", "encrypted_content": envelope }]
+    }));
+
+    let with_id_output = parse(&with_id).await.expect("id-bearing replay parses");
+    let without_id_output = parse(&without_id).await.expect("id-less replay parses");
+    assert_eq!(without_id_output, with_id_output);
+}
+
+#[tokio::test]
+async fn reasoning_input_without_id_or_encrypted_content_reports_replay_error() {
+    let req = req_from(json!({
+        "model": "m",
+        "input": [{ "type": "reasoning" }]
+    }));
+
+    let err = parse(&req)
+        .await
+        .expect_err("reasoning replay without encrypted content must reject");
+    match err {
+        AppError::BadRequest(message) => assert_eq!(
+            message,
+            "reasoning continuation requires reasoning.encrypted_content when store is false"
+        ),
+        other => panic!("expected BadRequest, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn malformed_reasoning_envelope_is_rejected_locally() {
     let req = req_from(json!({
         "model": "m",
@@ -785,7 +824,7 @@ async fn unsupported_input_item_type_is_bad_request() {
     let req = req_from(json!({
         "model": "m",
         "input": [
-            { "type": "totally_unknown_item", "foo": "bar" }
+            { "type": "some_future_thing", "foo": "bar" }
         ]
     }));
     let err = parse(&req)
@@ -793,8 +832,10 @@ async fn unsupported_input_item_type_is_bad_request() {
         .expect_err("unknown input item type must 400");
     match err {
         AppError::BadRequest(message) => {
-            assert!(message.contains("totally_unknown_item"));
-            assert!(message.contains("is not supported"));
+            assert_eq!(
+                message,
+                "Responses input item type 'some_future_thing' is not supported"
+            );
         }
         other => panic!("expected BadRequest, got {other:?}"),
     }

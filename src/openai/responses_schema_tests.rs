@@ -1437,7 +1437,7 @@ fn reasoning_input_item_round_trips_with_encrypted_content() {
             content,
             encrypted_content,
         } => {
-            assert_eq!(id, "rs_1");
+            assert_eq!(id.as_deref(), Some("rs_1"));
             assert!(summary.is_some());
             assert!(content.is_some());
             assert_eq!(encrypted_content.as_deref(), Some("OPAQUE"));
@@ -1447,6 +1447,62 @@ fn reasoning_input_item_round_trips_with_encrypted_content() {
     let back = serde_json::to_value(&item).unwrap();
     assert_eq!(back["type"], "reasoning");
     assert_eq!(back["encrypted_content"], "OPAQUE");
+}
+
+/// A reasoning continuation may omit its response-item id. It must still route
+/// to the first-class reasoning variant, and serialization must not invent one.
+#[test]
+fn reasoning_input_item_without_id_routes_to_reasoning_and_omits_id() {
+    let item: ResponseInputItem = serde_json::from_value(json!({
+        "type": "reasoning",
+        "encrypted_content": "OPAQUE"
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        item,
+        ResponseInputItem::Reasoning {
+            id: None,
+            encrypted_content: Some(ref encrypted_content),
+            ..
+        } if encrypted_content == "OPAQUE"
+    ));
+
+    let back = serde_json::to_value(&item).unwrap();
+    assert_eq!(back["type"], "reasoning");
+    assert_eq!(back["encrypted_content"], "OPAQUE");
+    assert!(back.get("id").is_none());
+}
+
+/// An explicit null reasoning id has the same semantics as an omitted id and
+/// normalizes to an absent field when serialized.
+#[test]
+fn reasoning_input_item_with_null_id_routes_to_reasoning_and_omits_id() {
+    let item: ResponseInputItem = serde_json::from_value(json!({
+        "type": "reasoning",
+        "id": null,
+        "encrypted_content": "OPAQUE"
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        item,
+        ResponseInputItem::Reasoning { id: None, .. }
+    ));
+    let back = serde_json::to_value(&item).unwrap();
+    assert!(back.get("id").is_none());
+}
+
+/// Making reasoning ids optional must not weaken the forward-compatible
+/// catch-all for genuinely unknown input item types.
+#[test]
+fn unknown_input_item_type_still_routes_to_other() {
+    let item: ResponseInputItem =
+        serde_json::from_value(json!({"type":"some_future_thing"})).unwrap();
+    assert!(matches!(
+        item,
+        ResponseInputItem::Other { ref item_type, .. } if item_type == "some_future_thing"
+    ));
 }
 
 /// `item_reference` is accepted (and is dropped at the stateless translation
@@ -2211,7 +2267,7 @@ mod prop_tests {
             )
                 .prop_map(|(id, content, summary, encrypted_content)| {
                     ResponseInputItem::Reasoning {
-                        id,
+                        id: Some(id),
                         content,
                         summary,
                         encrypted_content,

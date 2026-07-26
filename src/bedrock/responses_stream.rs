@@ -479,8 +479,13 @@ impl ResponsesStreamState {
             }
 
             // Reasoning content → reasoning item, BEFORE the message item.
-            // (signature / redactedContent / unknown reasoning deltas: inert.)
             ContentBlockDelta::ReasoningContent(ReasoningContentBlockDelta::Text(text)) => {
+                // Bedrock may emit an empty text fragment before the signature.
+                // It carries no wire content; the signature arm below opens the
+                // replayable item when one exists.
+                if text.is_empty() {
+                    return;
+                }
                 self.ensure_reasoning_item(out);
                 self.reasoning_text.push_str(text);
                 let seq = self.next_seq();
@@ -503,6 +508,10 @@ impl ResponsesStreamState {
             ContentBlockDelta::ReasoningContent(ReasoningContentBlockDelta::Signature(
                 signature,
             )) => {
+                // A signature with no text is still a complete, replayable
+                // reasoningText block. Open the item so its encrypted_content
+                // survives in output_item.done and response.completed.
+                self.ensure_reasoning_item(out);
                 self.reasoning_signature = Some(signature.clone());
             }
             ContentBlockDelta::ReasoningContent(ReasoningContentBlockDelta::RedactedContent(
@@ -579,7 +588,10 @@ impl ResponsesStreamState {
 
     fn reasoning_blocks(&self) -> Vec<Value> {
         let mut blocks = Vec::new();
-        if !self.reasoning_text.is_empty() {
+        // Converse may omit the text delta for a signed empty reasoning block.
+        // Preserve that block with an empty text string so the shared envelope
+        // decoder can reconstruct the exact text/signature pair.
+        if !self.reasoning_text.is_empty() || self.reasoning_signature.is_some() {
             blocks.push(json!({
                 "reasoningContent": { "reasoningText": {
                     "text": self.reasoning_text,
@@ -599,29 +611,32 @@ impl ResponsesStreamState {
         encode_reasoning_envelope(&self.reasoning_blocks())
     }
 
-    /// Close the reasoning item if open: `reasoning_text.done` →
-    /// `output_item.done` carrying the accumulated summary text.
+    /// Close the reasoning item if open. Text-bearing done events are emitted
+    /// only when text was streamed; signature-only and redacted-only items still
+    /// close their summary part and output item without zero-length text events.
     fn close_reasoning_item(&mut self, out: &mut Vec<ResponseStreamEvent>) {
         if !self.reasoning_open {
             return;
         }
         self.reasoning_open = false;
-        let seq = self.next_seq();
-        out.push(ResponseStreamEvent::ReasoningTextDone {
-            item_id: self.reasoning_item_id(),
-            output_index: self.reasoning_output_index,
-            content_index: 0,
-            text: self.reasoning_text.clone(),
-            sequence_number: seq,
-        });
-        let seq = self.next_seq();
-        out.push(ResponseStreamEvent::ReasoningSummaryTextDone {
-            item_id: self.reasoning_item_id(),
-            output_index: self.reasoning_output_index,
-            summary_index: REASONING_SUMMARY_INDEX,
-            text: self.reasoning_text.clone(),
-            sequence_number: seq,
-        });
+        if !self.reasoning_text.is_empty() {
+            let seq = self.next_seq();
+            out.push(ResponseStreamEvent::ReasoningTextDone {
+                item_id: self.reasoning_item_id(),
+                output_index: self.reasoning_output_index,
+                content_index: 0,
+                text: self.reasoning_text.clone(),
+                sequence_number: seq,
+            });
+            let seq = self.next_seq();
+            out.push(ResponseStreamEvent::ReasoningSummaryTextDone {
+                item_id: self.reasoning_item_id(),
+                output_index: self.reasoning_output_index,
+                summary_index: REASONING_SUMMARY_INDEX,
+                text: self.reasoning_text.clone(),
+                sequence_number: seq,
+            });
+        }
         let seq = self.next_seq();
         out.push(ResponseStreamEvent::ReasoningSummaryPartDone {
             item_id: self.reasoning_item_id(),

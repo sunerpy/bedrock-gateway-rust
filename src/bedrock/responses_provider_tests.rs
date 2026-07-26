@@ -4,6 +4,7 @@
 //! `use super::*;` resolves to the implementation module.
 
 use super::*;
+use crate::config::ModelCapabilityConfig;
 use crate::openai::responses_schema::{
     FunctionCallOutputValue, ResponseInputItem, ResponsesInput, ResponsesTool,
 };
@@ -82,15 +83,21 @@ fn test_settings(enable_prompt_caching: bool) -> Arc<AppSettings> {
 }
 
 async fn test_provider(enable_prompt_caching: bool) -> BedrockResponsesProvider {
+    test_provider_with_config(enable_prompt_caching, ModelCapabilityConfig::default()).await
+}
+
+async fn test_provider_with_config(
+    enable_prompt_caching: bool,
+    capability_config: ModelCapabilityConfig,
+) -> BedrockResponsesProvider {
     use crate::bedrock::client::{build_aws_config, BedrockClients};
     use crate::bedrock::translate::ReqwestImageResolver;
-    use crate::config::ModelCapabilityConfig;
 
     let settings = test_settings(enable_prompt_caching);
     let aws_config = build_aws_config(&settings).await;
     let clients = BedrockClients::new(&aws_config);
     let caps: Arc<dyn ModelCapabilities> = Arc::new(
-        crate::bedrock::capabilities::ConfigModelCapabilities::new(ModelCapabilityConfig::default()),
+        crate::bedrock::capabilities::ConfigModelCapabilities::new(capability_config),
     );
     let regions = Arc::new(RegionRoutingConfig::default());
     let image_resolver = Arc::new(ReqwestImageResolver::new(|_: &str| false));
@@ -103,6 +110,23 @@ async fn test_provider(enable_prompt_caching: bool) -> BedrockResponsesProvider 
         settings,
         Arc::new(crate::bedrock::cache_support::CacheSupportRegistry::new()),
     )
+}
+
+fn sampling_capability_config() -> ModelCapabilityConfig {
+    ModelCapabilityConfig::from_toml_str(
+        r#"
+[[model]]
+match = "drop-sampling-model"
+capabilities = ["drop_sampling_params"]
+
+[[model]]
+match = "reasoning-model"
+capabilities = []
+[model.params]
+reasoning_path = "adaptive_thinking"
+"#,
+    )
+    .expect("sampling capability config")
 }
 
 #[test]
@@ -226,6 +250,63 @@ async fn responses_assemble_real_tools_unchanged() {
     assert_eq!(specs.len(), 1);
     assert_eq!(specs[0]["toolSpec"]["name"], "declared_tool");
     assert_eq!(specs[0]["toolSpec"]["description"], "Declared tool");
+}
+
+#[tokio::test]
+async fn responses_assemble_drops_sampling_params_for_capability_model() {
+    let provider = test_provider_with_config(false, sampling_capability_config()).await;
+    let mut req = base_request();
+    req.temperature = Some(0.7);
+    req.top_p = Some(0.9);
+
+    let assembled = provider
+        .assemble(&req, "us.vendor.drop-sampling-model-v1", false)
+        .await
+        .expect("assemble capability model request");
+
+    assert!(assembled.inference_config.get("temperature").is_none());
+    assert!(assembled.inference_config.get("topP").is_none());
+}
+
+#[tokio::test]
+async fn responses_assemble_preserves_sampling_params_without_capability() {
+    let provider = test_provider_with_config(false, sampling_capability_config()).await;
+    let mut req = base_request();
+    req.temperature = Some(0.7);
+    req.top_p = Some(0.9);
+
+    let assembled = provider
+        .assemble(&req, "us.vendor.regular-model-v1", false)
+        .await
+        .expect("assemble regular model request");
+
+    let temperature = assembled.inference_config["temperature"]
+        .as_f64()
+        .expect("temperature");
+    let top_p = assembled.inference_config["topP"].as_f64().expect("topP");
+    assert!((temperature - 0.7).abs() < 1e-6);
+    assert!((top_p - 0.9).abs() < 1e-6);
+}
+
+#[tokio::test]
+async fn responses_assemble_reasoning_still_drops_top_p_independently() {
+    let provider = test_provider_with_config(false, sampling_capability_config()).await;
+    let mut req = base_request();
+    req.temperature = Some(0.7);
+    req.top_p = Some(0.9);
+    req.reasoning =
+        Some(serde_json::from_value(json!({ "effort": "high" })).expect("reasoning request"));
+
+    let assembled = provider
+        .assemble(&req, "us.vendor.reasoning-model-v1", false)
+        .await
+        .expect("assemble reasoning request");
+
+    let temperature = assembled.inference_config["temperature"]
+        .as_f64()
+        .expect("temperature");
+    assert!((temperature - 0.7).abs() < 1e-6);
+    assert!(assembled.inference_config.get("topP").is_none());
 }
 
 /// Regression for the cross-region-prefix 400: when the incoming model carries

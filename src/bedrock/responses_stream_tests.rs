@@ -5,6 +5,10 @@
 //! unchanged; `use super::*;` still resolves to the implementation module.
 
 use super::*;
+use crate::bedrock::capabilities::ConfigModelCapabilities;
+use crate::bedrock::responses_translate::to_responses_converse_input;
+use crate::bedrock::translate::ImageResolver;
+use crate::config::ModelCapabilityConfig;
 use crate::openai::responses_schema::ResponsesInput;
 use aws_sdk_bedrockruntime::types::{
     ContentBlockDeltaEvent, ContentBlockStartEvent, ContentBlockStopEvent, ConversationRole,
@@ -74,6 +78,30 @@ fn ev_reasoning_text(text: &str, block: i32) -> ConverseStreamOutput {
         ContentBlockDeltaEvent::builder()
             .delta(ContentBlockDelta::ReasoningContent(
                 ReasoningContentBlockDelta::Text(text.to_string()),
+            ))
+            .content_block_index(block)
+            .build()
+            .unwrap(),
+    )
+}
+
+fn ev_reasoning_signature(signature: &str, block: i32) -> ConverseStreamOutput {
+    ConverseStreamOutput::ContentBlockDelta(
+        ContentBlockDeltaEvent::builder()
+            .delta(ContentBlockDelta::ReasoningContent(
+                ReasoningContentBlockDelta::Signature(signature.to_string()),
+            ))
+            .content_block_index(block)
+            .build()
+            .unwrap(),
+    )
+}
+
+fn ev_reasoning_redacted(bytes: &[u8], block: i32) -> ConverseStreamOutput {
+    ConverseStreamOutput::ContentBlockDelta(
+        ContentBlockDeltaEvent::builder()
+            .delta(ContentBlockDelta::ReasoningContent(
+                ReasoningContentBlockDelta::RedactedContent(aws_smithy_types::Blob::new(bytes)),
             ))
             .content_block_index(block)
             .build()
@@ -197,6 +225,29 @@ fn assert_no_done_no_argdelta(events: &[ResponseStreamEvent]) {
     for ev in events {
         let s = serde_json::to_string(ev).unwrap();
         assert!(!s.contains("[DONE]"), "[DONE] sentinel leaked: {s}");
+    }
+}
+
+fn signature_only_events() -> Vec<ResponseStreamEvent> {
+    drive(&[
+        ev_message_start(),
+        ev_reasoning_signature("provider-signature", 0),
+        ev_block_stop(0),
+        ev_message_stop(StopReason::EndTurn),
+        ev_metadata(4, 1, 5),
+    ])
+}
+
+struct TestResolver;
+
+#[async_trait::async_trait]
+impl ImageResolver for TestResolver {
+    fn supports_image(&self, _model_id: &str) -> bool {
+        true
+    }
+
+    async fn fetch(&self, _url: &str) -> Result<(Vec<u8>, String), AppError> {
+        unreachable!("reasoning continuation does not fetch images")
     }
 }
 
@@ -607,6 +658,167 @@ fn reasoning_stream_emits_reasoning_item_before_message() {
         }
         other => panic!("expected completed, got {other:?}"),
     }
+}
+
+#[test]
+fn signature_only_reasoning_emits_capsule_without_text_events() {
+    let events = signature_only_events();
+    let types: Vec<String> = events.iter().map(type_of).collect();
+    assert_eq!(
+        types,
+        vec![
+            "response.created",
+            "response.in_progress",
+            "response.output_item.added",
+            "response.reasoning_summary_part.added",
+            "response.reasoning_summary_part.done",
+            "response.output_item.done",
+            "response.completed",
+        ]
+    );
+    assert_monotonic_from_zero(&events);
+    assert_no_done_no_argdelta(&events);
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        ResponseStreamEvent::ReasoningTextDelta { .. }
+            | ResponseStreamEvent::ReasoningTextDone { .. }
+            | ResponseStreamEvent::ReasoningSummaryTextDelta { .. }
+            | ResponseStreamEvent::ReasoningSummaryTextDone { .. }
+    )));
+
+    let done = events
+        .iter()
+        .find(|event| matches!(event, ResponseStreamEvent::OutputItemDone { .. }))
+        .expect("reasoning output_item.done");
+    let done = serde_json::to_value(done).unwrap();
+    assert_eq!(done["item"]["type"], "reasoning");
+    assert_eq!(done["item"]["summary"][0]["text"], "");
+    let encrypted = done["item"]["encrypted_content"]
+        .as_str()
+        .expect("signature-only item keeps encrypted_content");
+    assert!(encrypted.starts_with("bedrock-reasoning-v1:"));
+
+    let completed = serde_json::to_value(events.last().expect("response.completed")).unwrap();
+    assert_eq!(completed["response"]["output"][0]["type"], "reasoning");
+    assert_eq!(
+        completed["response"]["output"][0]["encrypted_content"],
+        encrypted
+    );
+}
+
+#[test]
+fn text_and_signature_reasoning_preserves_existing_event_stream() {
+    let events = drive(&[
+        ev_message_start(),
+        ev_reasoning_text("thinking", 0),
+        ev_reasoning_signature("provider-signature", 0),
+        ev_text("answer", 1),
+        ev_message_stop(StopReason::EndTurn),
+        ev_metadata(6, 3, 9),
+    ]);
+    let types: Vec<String> = events.iter().map(type_of).collect();
+    assert_eq!(
+        types,
+        vec![
+            "response.created",
+            "response.in_progress",
+            "response.output_item.added",
+            "response.reasoning_summary_part.added",
+            "response.reasoning_text.delta",
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_text.done",
+            "response.reasoning_summary_text.done",
+            "response.reasoning_summary_part.done",
+            "response.output_item.done",
+            "response.output_item.added",
+            "response.content_part.added",
+            "response.output_text.delta",
+            "response.output_text.done",
+            "response.content_part.done",
+            "response.output_item.done",
+            "response.completed",
+        ]
+    );
+    assert_monotonic_from_zero(&events);
+
+    let expected_encrypted = encode_reasoning_envelope(&[json!({
+        "reasoningContent": {
+            "reasoningText": { "text": "thinking", "signature": "provider-signature" }
+        }
+    })])
+    .expect("signed reasoning envelope");
+    let serialized: Vec<Value> = events
+        .iter()
+        .map(|event| serde_json::to_value(event).unwrap())
+        .collect();
+    let reasoning_done = serialized
+        .iter()
+        .find(|event| {
+            event["type"] == "response.output_item.done" && event["item"]["type"] == "reasoning"
+        })
+        .expect("reasoning output_item.done");
+    assert_eq!(reasoning_done["item"]["summary"][0]["text"], "thinking");
+    assert_eq!(
+        reasoning_done["item"]["encrypted_content"],
+        expected_encrypted
+    );
+}
+
+#[tokio::test]
+async fn streaming_reasoning_capsule_round_trips_through_continuation_decoder() {
+    let events = signature_only_events();
+    let completed = serde_json::to_value(events.last().expect("response.completed")).unwrap();
+    let encrypted = completed["response"]["output"][0]["encrypted_content"]
+        .as_str()
+        .expect("streaming encrypted_content");
+    let continuation: ResponsesRequest = serde_json::from_value(json!({
+        "model": MODEL,
+        "input": [
+            { "type": "message", "role": "user", "content": "continue" },
+            {
+                "type": "reasoning",
+                "id": "rs_test",
+                "summary": [{ "type": "summary_text", "text": "" }],
+                "encrypted_content": encrypted
+            }
+        ]
+    }))
+    .expect("continuation request");
+    let caps = ConfigModelCapabilities::new(
+        ModelCapabilityConfig::load("config/models.toml").expect("load model capabilities"),
+    );
+    let decoded = to_responses_converse_input(&continuation, MODEL, &TestResolver, &caps)
+        .await
+        .expect("streaming capsule accepted by continuation decoder");
+    let messages = decoded.messages.as_array().expect("messages array");
+    assert_eq!(
+        messages[1]["content"][0]["reasoningContent"]["reasoningText"],
+        json!({ "text": "", "signature": "provider-signature" })
+    );
+}
+
+#[test]
+fn redacted_only_reasoning_suppresses_empty_text_events() {
+    let events = drive(&[
+        ev_message_start(),
+        ev_reasoning_redacted(b"opaque", 0),
+        ev_block_stop(0),
+        ev_message_stop(StopReason::EndTurn),
+        ev_metadata(4, 1, 5),
+    ]);
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        ResponseStreamEvent::ReasoningTextDelta { .. }
+            | ResponseStreamEvent::ReasoningTextDone { .. }
+            | ResponseStreamEvent::ReasoningSummaryTextDelta { .. }
+            | ResponseStreamEvent::ReasoningSummaryTextDone { .. }
+    )));
+    assert_monotonic_from_zero(&events);
+
+    let completed = serde_json::to_value(events.last().expect("response.completed")).unwrap();
+    assert!(completed["response"]["output"][0]["encrypted_content"]
+        .as_str()
+        .is_some_and(|value| value.starts_with("bedrock-reasoning-v1:")));
 }
 
 // -- dual reasoning emission: text family + ai-sdk summary family --------

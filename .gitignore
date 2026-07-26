@@ -188,3 +188,4 @@ Dockerfile.local
 
 # Kiro IDE local directory
 .kiro
+Dockerfile.ecrmirror
