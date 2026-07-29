@@ -31,8 +31,9 @@
 #                               so the conversation ends on a user message.
 #   adaptive_thinking         – this model only accepts the adaptive thinking
 #                               form; when set, reasoning is configured as
-#                               thinking.type=adaptive + output_config.effort
-#                               (it rejects the budget_tokens form with HTTP 400).
+#                               thinking.type=adaptive + display=summarized +
+#                               output_config.effort (it rejects the
+#                               budget_tokens form with HTTP 400).
 #   drop_sampling_params      – this model deprecates ALL sampling parameters and
 #                               returns HTTP 400 on any non-default temperature or
 #                               top_p; when set, the gateway strips both from the
@@ -57,8 +58,9 @@
 #                               (1h) cache retention on Bedrock.
 #
 # reasoning_path — selects the shape of the reasoning config the gateway emits:
-#   adaptive_thinking – additionalModelRequestFields.thinking={type:"adaptive"}
-#                       plus output_config.effort derived from reasoning_effort.
+#   adaptive_thinking – additionalModelRequestFields.thinking=
+#                       {type:"adaptive",display:"summarized"} plus
+#                       output_config.effort derived from reasoning_effort.
 #   budget_tokens     – reasoning_config={type:"enabled",budget_tokens:N} where N
 #                       is computed from max_tokens via budget_ratios below.
 #   deepseek_string   – reasoning_config sent as a bare string "low"|"medium"|"high".

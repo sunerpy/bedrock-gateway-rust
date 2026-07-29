@@ -331,7 +331,7 @@ async fn chat_assemble_enables_signature_reasoning_on_first_tool_turn_with_encod
     assert_eq!(
         args.additional_model_request_fields,
         Some(json!({
-            "thinking": { "type": "adaptive" },
+            "thinking": { "type": "adaptive", "display": "summarized" },
             "output_config": { "effort": "medium" }
         }))
     );
