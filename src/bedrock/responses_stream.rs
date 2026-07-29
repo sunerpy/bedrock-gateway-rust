@@ -59,6 +59,7 @@ use aws_sdk_bedrockruntime::types::{
 };
 use futures::StreamExt;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -121,6 +122,15 @@ struct ToolAccum {
     done_emitted: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ReasoningBlockAccum {
+    text: String,
+    signature: String,
+    redacted: Vec<u8>,
+    signature_seen: bool,
+    redacted_seen: bool,
+}
+
 /// The streaming Responses lifecycle state machine.
 ///
 /// Pure and synchronous: feed every Bedrock `ConverseStreamOutput` event through
@@ -156,8 +166,9 @@ pub struct ResponsesStreamState {
     reasoning_output_index: u32,
     /// Accumulated reasoning text (for the `reasoning_text.done` + final item).
     reasoning_text: String,
-    reasoning_signature: Option<String>,
-    reasoning_redacted: Vec<String>,
+    /// Exact Bedrock reasoning blocks, kept in `contentBlockIndex` order so the
+    /// signed continuation can be replayed byte-for-byte.
+    reasoning_by_block: BTreeMap<i32, ReasoningBlockAccum>,
 
     // --- message item state ---
     /// Whether a message output item is currently open.
@@ -245,8 +256,7 @@ impl ResponsesStreamState {
             reasoning_open: false,
             reasoning_output_index: 0,
             reasoning_text: String::new(),
-            reasoning_signature: None,
-            reasoning_redacted: Vec::new(),
+            reasoning_by_block: BTreeMap::new(),
             message_open: false,
             message_output_index: 0,
             message_text: String::new(),
@@ -488,6 +498,11 @@ impl ResponsesStreamState {
                 }
                 self.ensure_reasoning_item(out);
                 self.reasoning_text.push_str(text);
+                self.reasoning_by_block
+                    .entry(block_index)
+                    .or_default()
+                    .text
+                    .push_str(text);
                 let seq = self.next_seq();
                 out.push(ResponseStreamEvent::ReasoningTextDelta {
                     item_id: self.reasoning_item_id(),
@@ -512,15 +527,17 @@ impl ResponsesStreamState {
                 // reasoningText block. Open the item so its encrypted_content
                 // survives in output_item.done and response.completed.
                 self.ensure_reasoning_item(out);
-                self.reasoning_signature = Some(signature.clone());
+                let accum = self.reasoning_by_block.entry(block_index).or_default();
+                accum.signature_seen = true;
+                accum.signature.push_str(signature);
             }
             ContentBlockDelta::ReasoningContent(ReasoningContentBlockDelta::RedactedContent(
                 redacted,
             )) => {
-                use base64::Engine as _;
                 self.ensure_reasoning_item(out);
-                self.reasoning_redacted
-                    .push(base64::engine::general_purpose::STANDARD.encode(redacted.as_ref()));
+                let accum = self.reasoning_by_block.entry(block_index).or_default();
+                accum.redacted_seen = true;
+                accum.redacted.extend_from_slice(redacted.as_ref());
             }
 
             // Tool input fragment → accumulate; the item.done is emitted on
@@ -587,24 +604,43 @@ impl ResponsesStreamState {
     }
 
     fn reasoning_blocks(&self) -> Vec<Value> {
-        let mut blocks = Vec::new();
-        // Converse may omit the text delta for a signed empty reasoning block.
-        // Preserve that block with an empty text string so the shared envelope
-        // decoder can reconstruct the exact text/signature pair.
-        if !self.reasoning_text.is_empty() || self.reasoning_signature.is_some() {
-            blocks.push(json!({
-                "reasoningContent": { "reasoningText": {
-                    "text": self.reasoning_text,
-                    "signature": self.reasoning_signature,
-                } }
-            }));
-        }
-        blocks.extend(
-            self.reasoning_redacted
-                .iter()
-                .map(|data| json!({ "reasoningContent": { "redactedContent": data } })),
-        );
-        blocks
+        use base64::Engine as _;
+
+        self.reasoning_by_block
+            .values()
+            .filter_map(|accum| {
+                if accum.signature_seen {
+                    // Converse may omit the text delta for a signed empty
+                    // reasoning block; the accumulator's empty string is the
+                    // exact replay shape in that case.
+                    Some(json!({
+                        "reasoningContent": { "reasoningText": {
+                            "text": accum.text,
+                            "signature": accum.signature,
+                        } }
+                    }))
+                } else if accum.redacted_seen {
+                    Some(json!({
+                        "reasoningContent": {
+                            "redactedContent":
+                                base64::engine::general_purpose::STANDARD.encode(&accum.redacted)
+                        }
+                    }))
+                } else if !accum.text.is_empty() {
+                    // Unsigned reasoning is still part of the visible final
+                    // response. `encode_reasoning_envelope` filters this block
+                    // out because its signature is null.
+                    Some(json!({
+                        "reasoningContent": { "reasoningText": {
+                            "text": accum.text,
+                            "signature": Value::Null,
+                        } }
+                    }))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn reasoning_encrypted_content(&self) -> Option<String> {
