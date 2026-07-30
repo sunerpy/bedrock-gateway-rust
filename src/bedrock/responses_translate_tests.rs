@@ -601,6 +601,74 @@ async fn assistant_message_with_output_text_becomes_assistant_turn() {
 }
 
 #[tokio::test]
+async fn no_assistant_prefill_appends_continuation_for_responses() {
+    for model in [
+        "us.anthropic.claude-opus-5",
+        "global.anthropic.claude-opus-5",
+    ] {
+        let req = req_from(json!({
+            "model": model,
+            "input": [
+                { "type": "message", "role": "user", "content": "first" },
+                { "type": "message", "role": "assistant", "content": [
+                    { "type": "output_text", "text": "partial reply" }
+                ]}
+            ]
+        }));
+        let c = caps();
+        let r = resolver(true);
+        let out = to_responses_converse_input(&req, model, &r, &c)
+            .await
+            .expect("parse");
+        let msgs = out.messages.as_array().expect("messages");
+
+        assert_eq!(msgs.len(), 3, "{model}");
+        assert_eq!(msgs[1]["role"], "assistant", "{model}");
+        assert_eq!(msgs[2]["role"], "user", "{model}");
+        assert_eq!(
+            msgs[2]["content"][0]["text"], "Please continue your response from where you left off.",
+            "{model}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn no_assistant_prefill_leaves_other_endings_unchanged() {
+    let cases = [
+        (
+            "us.anthropic.claude-opus-5",
+            json!([
+                { "type": "message", "role": "user", "content": "current request" }
+            ]),
+            "user",
+        ),
+        (
+            "us.anthropic.claude-sonnet-5",
+            json!([
+                { "type": "message", "role": "user", "content": "first" },
+                { "type": "message", "role": "assistant", "content": [
+                    { "type": "output_text", "text": "prior reply" }
+                ]}
+            ]),
+            "assistant",
+        ),
+    ];
+
+    for (model, input, expected_last_role) in cases {
+        let req = req_from(json!({ "model": model, "input": input }));
+        let c = caps();
+        let r = resolver(true);
+        let out = to_responses_converse_input(&req, model, &r, &c)
+            .await
+            .expect("parse");
+        let msgs = out.messages.as_array().expect("messages");
+
+        assert_eq!(msgs.last().unwrap()["role"], expected_last_role, "{model}");
+        assert_eq!(msgs.len(), input.as_array().unwrap().len(), "{model}");
+    }
+}
+
+#[tokio::test]
 async fn assistant_replay_empty_output_text_is_skipped() {
     let req = req_from(json!({
         "model": "m",

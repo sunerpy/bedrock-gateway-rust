@@ -66,7 +66,7 @@ use crate::bedrock::tools::{
     convert_tool_spec, should_split_same_role_merge, tool_message_to_tool_result_turn,
 };
 use crate::bedrock::translate::{parse_image_data_uri, ImageResolver};
-use crate::domain::ModelCapabilities;
+use crate::domain::{Capability, ModelCapabilities};
 use crate::error::AppError;
 use crate::openai::responses_schema::{
     FunctionCallOutputValue, ResponseContentPart, ResponseInputItem, ResponsesContent,
@@ -448,10 +448,6 @@ pub async fn to_responses_converse_input(
     resolver: &dyn ImageResolver,
     caps: &dyn ModelCapabilities,
 ) -> Result<ResponsesConverseInput, AppError> {
-    // `caps` is part of the parity signature; the input parse does not branch on
-    // capabilities today (kept for future use — e.g. per-model file handling).
-    let _ = caps;
-
     // 1) Request validation. Tool availability is checked when the provider
     //    builds the reversible tool registry.
     reject_unsatisfiable_text_format(req)?;
@@ -482,8 +478,11 @@ pub async fn to_responses_converse_input(
         }
     };
 
+    let mut messages = reframe_turns(turns);
+    append_no_assistant_prefill_continuation(&mut messages, model_id, caps);
+
     Ok(ResponsesConverseInput {
-        messages: reframe_turns(turns),
+        messages,
         system: Value::Array(system_blocks),
     })
 }
@@ -850,6 +849,35 @@ fn reframe_turns(turns: Vec<Turn>) -> Value {
             .map(|(role, content)| json!({ "role": role, "content": content }))
             .collect(),
     )
+}
+
+fn append_no_assistant_prefill_continuation(
+    messages: &mut Value,
+    model_id: &str,
+    caps: &dyn ModelCapabilities,
+) {
+    if !caps.has(model_id, Capability::NoAssistantPrefill) {
+        return;
+    }
+
+    let Some(turns) = messages.as_array_mut() else {
+        return;
+    };
+    let ends_with_assistant = turns
+        .last()
+        .and_then(|turn| turn.get("role"))
+        .and_then(Value::as_str)
+        == Some("assistant");
+    if !ends_with_assistant {
+        return;
+    }
+
+    turns.push(json!({
+        "role": "user",
+        "content": [{
+            "text": "Please continue your response from where you left off."
+        }]
+    }));
 }
 
 /// Test helper that returns only representable tool specs. Runtime assembly
