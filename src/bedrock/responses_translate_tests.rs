@@ -458,6 +458,126 @@ async fn reasoning_input_item_reconstructs_signed_bedrock_block() {
 }
 
 #[tokio::test]
+async fn signed_reasoning_text_and_tool_calls_stay_in_one_assistant_turn() {
+    let envelope = encode_reasoning_envelope(&[json!({
+        "reasoningContent": {
+            "reasoningText": { "text": "secret", "signature": "sig" }
+        }
+    })])
+    .expect("envelope");
+    let req = req_from(json!({
+        "model": "m",
+        "input": [
+            { "type": "message", "role": "user", "content": "inspect both files" },
+            {
+                "type": "reasoning",
+                "id": "rs_response_1",
+                "encrypted_content": envelope
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "I will inspect both." }]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "read_file",
+                "arguments": "{\"path\":\"a.rs\"}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_2",
+                "name": "read_file",
+                "arguments": "{\"path\":\"b.rs\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "a"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_2",
+                "output": "b"
+            }
+        ]
+    }));
+
+    let out = parse(&req).await.expect("signed tool replay parses");
+    let messages = out.messages.as_array().expect("messages");
+
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[1]["role"], "assistant");
+    let assistant = messages[1]["content"]
+        .as_array()
+        .expect("assistant content");
+    assert_eq!(assistant.len(), 4);
+    assert_eq!(
+        assistant[0]["reasoningContent"]["reasoningText"]["signature"],
+        "sig"
+    );
+    assert_eq!(assistant[1]["text"], "I will inspect both.");
+    assert_eq!(assistant[2]["toolUse"]["toolUseId"], "call_1");
+    assert_eq!(assistant[3]["toolUse"]["toolUseId"], "call_2");
+
+    assert_eq!(messages[2]["role"], "user");
+    let results = messages[2]["content"].as_array().expect("tool results");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["toolResult"]["toolUseId"], "call_1");
+    assert_eq!(results[1]["toolResult"]["toolUseId"], "call_2");
+}
+
+#[tokio::test]
+async fn each_signed_reasoning_item_starts_a_new_assistant_turn() {
+    let first = encode_reasoning_envelope(&[json!({
+        "reasoningContent": {
+            "reasoningText": { "text": "first thought", "signature": "sig-1" }
+        }
+    })])
+    .expect("first envelope");
+    let second = encode_reasoning_envelope(&[json!({
+        "reasoningContent": {
+            "redactedContent": "opaque-redacted-thinking"
+        }
+    })])
+    .expect("second envelope");
+    let req = req_from(json!({
+        "model": "m",
+        "input": [
+            { "type": "message", "role": "user", "content": "start" },
+            { "type": "reasoning", "id": "rs_1", "encrypted_content": first },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "first response" }]
+            },
+            { "type": "reasoning", "id": "rs_2", "encrypted_content": second },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "second response" }]
+            },
+            { "type": "message", "role": "user", "content": "continue" }
+        ]
+    }));
+
+    let out = parse(&req).await.expect("multiple signed responses parse");
+    let messages = out.messages.as_array().expect("messages");
+
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["content"][1]["text"], "first response");
+    assert_eq!(messages[2]["role"], "assistant");
+    assert_eq!(
+        messages[2]["content"][0]["reasoningContent"]["redactedContent"],
+        "opaque-redacted-thinking"
+    );
+    assert_eq!(messages[2]["content"][1]["text"], "second response");
+    assert_eq!(messages[3]["role"], "user");
+}
+
+#[tokio::test]
 async fn reasoning_input_without_id_replays_identically_to_id_bearing_item() {
     let envelope = encode_reasoning_envelope(&[json!({
         "reasoningContent": { "reasoningText": { "text": "secret", "signature": "sig" } }
