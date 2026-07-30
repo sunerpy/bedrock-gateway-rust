@@ -805,6 +805,36 @@ async fn parse_message_content(
 /// Uses the SAME split rule as the chat path
 /// ([`crate::bedrock::tools::should_split_same_role_merge`]) so tool-only turns
 /// merge with each other but split from text turns.
+///
+/// Signed reasoning adds one Responses-specific boundary rule: a
+/// `reasoningContent` block starts a new provider response, while the text and
+/// toolUse blocks that follow it must stay in that same assistant message.
+/// Bedrock rejects any replay that moves those signed blocks across assistant
+/// message boundaries.
+fn should_split_response_turn(role: &str, current: &[Value], next: &[Value]) -> bool {
+    if role == "assistant" {
+        let current_has_reasoning = current.iter().any(|block| {
+            block
+                .as_object()
+                .is_some_and(|object| object.contains_key("reasoningContent"))
+        });
+        let next_has_reasoning = next.iter().any(|block| {
+            block
+                .as_object()
+                .is_some_and(|object| object.contains_key("reasoningContent"))
+        });
+
+        if next_has_reasoning {
+            return true;
+        }
+        if current_has_reasoning {
+            return false;
+        }
+    }
+
+    should_split_same_role_merge(role, current, next)
+}
+
 fn reframe_turns(turns: Vec<Turn>) -> Value {
     let mut reformatted: Vec<(String, Vec<Value>)> = Vec::new();
     let mut current_role: Option<String> = None;
@@ -827,7 +857,7 @@ fn reframe_turns(turns: Vec<Turn>) -> Value {
 
         let should_split = !current_content.is_empty()
             && current_role.as_deref() == Some(next_role.as_str())
-            && should_split_same_role_merge(&next_role, &current_content, &next_content);
+            && should_split_response_turn(&next_role, &current_content, &next_content);
 
         if should_split {
             reformatted.push((
