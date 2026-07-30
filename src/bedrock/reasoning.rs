@@ -163,7 +163,10 @@ pub fn build_reasoning_config(
         ReasoningPath::AdaptiveThinking => {
             let effective = max_completion_tokens.or(max_tokens);
             let mut fields = Map::new();
-            fields.insert("thinking".to_string(), json!({ "type": "adaptive" }));
+            fields.insert(
+                "thinking".to_string(),
+                json!({ "type": "adaptive", "display": "summarized" }),
+            );
             fields.insert(
                 "output_config".to_string(),
                 json!({ "effort": effort_str(reasoning_effort) }),

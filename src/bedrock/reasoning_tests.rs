@@ -89,7 +89,8 @@ const TEST_RATIOS: BudgetRatios = BudgetRatios {
 
 #[test]
 fn adaptive_path_emits_thinking_and_output_config() {
-    // bedrock.py:1168-1172. Effort string flows into output_config.effort;
+    // Effort flows into output_config.effort; summarized display keeps the
+    // model's reasoning summary visible instead of returning only a signature.
     // maxTokens = max_completion_tokens || max_tokens; topP dropped.
     let caps = StubCaps::new(ReasoningPath::AdaptiveThinking, None);
     let outcome = build_reasoning_config(
@@ -102,7 +103,7 @@ fn adaptive_path_emits_thinking_and_output_config() {
 
     assert_eq!(
         outcome.additional_model_request_fields["thinking"],
-        json!({ "type": "adaptive" })
+        json!({ "type": "adaptive", "display": "summarized" })
     );
     assert_eq!(
         outcome.additional_model_request_fields["output_config"],

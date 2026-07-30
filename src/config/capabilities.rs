@@ -32,8 +32,9 @@ pub enum Capability {
     TemperatureToppConflict,
     /// Append a user continuation prompt instead of an assistant prefill.
     NoAssistantPrefill,
-    /// Only supports `thinking.type=adaptive` + `output_config.effort`
-    /// (rejects legacy `reasoning_config` budget_tokens with HTTP 400).
+    /// Only supports `thinking.type=adaptive` + summarized display +
+    /// `output_config.effort` (rejects legacy `reasoning_config` budget_tokens
+    /// with HTTP 400).
     AdaptiveThinking,
     /// Drop BOTH `temperature` and `topP` from `inferenceConfig` — this model
     /// deprecates all sampling parameters and returns HTTP 400 if any
@@ -67,8 +68,8 @@ pub enum Capability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningPath {
-    /// `additionalModelRequestFields.thinking = {type: "adaptive"}` +
-    /// `output_config.effort` (bedrock.py:1168-1172).
+    /// `additionalModelRequestFields.thinking =
+    /// {type: "adaptive", display: "summarized"}` + `output_config.effort`.
     AdaptiveThinking,
     /// `reasoning_config = {type: "enabled", budget_tokens: N}` where `N` is
     /// derived from `budget_ratios` (bedrock.py:1173-1177).

@@ -4,7 +4,7 @@
   "system": [],
   "inferenceConfig": { "maxTokens": 2048 },
   "additionalModelRequestFields": {
-    "thinking": { "type": "adaptive" },
+    "thinking": { "type": "adaptive", "display": "summarized" },
     "output_config": { "effort": "high" }
   }
 }

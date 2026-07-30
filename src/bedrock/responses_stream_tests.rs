@@ -15,6 +15,7 @@ use aws_sdk_bedrockruntime::types::{
     ConverseStreamMetadataEvent, MessageStartEvent, MessageStopEvent, StopReason, TokenUsage,
     ToolUseBlockDelta, ToolUseBlockStart,
 };
+use base64::Engine as _;
 use std::collections::HashMap;
 
 const MODEL: &str = "anthropic.claude-3-sonnet-20240229-v1:0";
@@ -794,6 +795,67 @@ async fn streaming_reasoning_capsule_round_trips_through_continuation_decoder() 
     assert_eq!(
         messages[1]["content"][0]["reasoningContent"]["reasoningText"],
         json!({ "text": "", "signature": "provider-signature" })
+    );
+}
+
+#[tokio::test]
+async fn streaming_reasoning_capsule_preserves_block_order_and_fragments() {
+    let events = drive(&[
+        ev_message_start(),
+        ev_reasoning_redacted(b"redacted-", 0),
+        ev_reasoning_redacted(b"payload", 0),
+        ev_block_stop(0),
+        ev_reasoning_text("sum", 1),
+        ev_reasoning_text("mary", 1),
+        ev_reasoning_signature("provider-", 1),
+        ev_reasoning_signature("signature", 1),
+        ev_block_stop(1),
+        ev_text("answer", 2),
+        ev_message_stop(StopReason::EndTurn),
+        ev_metadata(8, 4, 12),
+    ]);
+    let completed = serde_json::to_value(events.last().expect("response.completed")).unwrap();
+    let encrypted = completed["response"]["output"][0]["encrypted_content"]
+        .as_str()
+        .expect("streaming encrypted_content");
+    let continuation: ResponsesRequest = serde_json::from_value(json!({
+        "model": MODEL,
+        "input": [
+            { "type": "message", "role": "user", "content": "continue" },
+            {
+                "type": "reasoning",
+                "id": "rs_test",
+                "summary": [{ "type": "summary_text", "text": "summary" }],
+                "encrypted_content": encrypted
+            }
+        ]
+    }))
+    .expect("continuation request");
+    let caps = ConfigModelCapabilities::new(
+        ModelCapabilityConfig::load("config/models.toml").expect("load model capabilities"),
+    );
+    let decoded = to_responses_converse_input(&continuation, MODEL, &TestResolver, &caps)
+        .await
+        .expect("streaming capsule accepted by continuation decoder");
+    let messages = decoded.messages.as_array().expect("messages array");
+    assert_eq!(
+        messages[1]["content"],
+        json!([
+            {
+                "reasoningContent": {
+                    "redactedContent":
+                        base64::engine::general_purpose::STANDARD.encode(b"redacted-payload")
+                }
+            },
+            {
+                "reasoningContent": {
+                    "reasoningText": {
+                        "text": "summary",
+                        "signature": "provider-signature"
+                    }
+                }
+            }
+        ])
     );
 }
 

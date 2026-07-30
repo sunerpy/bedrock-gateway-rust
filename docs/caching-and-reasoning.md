@@ -209,7 +209,7 @@ high / xhigh / max -> budget = effective_max - 1
 | reasoning_path      | 适用模型示例            | Bedrock wire 字段                                        |
 | ------------------- | ----------------------- | -------------------------------------------------------- |
 | `budget_tokens`     | claude-sonnet-4-x       | `reasoning_config = {type: "enabled", budget_tokens: N}` |
-| `adaptive_thinking` | claude-opus-4-6/4-7/4-8 | `thinking = {type: "adaptive"} + output_config.effort`   |
+| `adaptive_thinking` | claude-opus-4-6/4-7/4-8/5 | `thinking = {type: "adaptive", display: "summarized"} + output_config.effort` |
 | `deepseek_string`   | deepseek.v3             | `reasoning_config = "low"/"medium"/"high"`               |
 | `none`              | 无推理能力模型          | 无（reasoning_effort 被忽略）                            |
 
