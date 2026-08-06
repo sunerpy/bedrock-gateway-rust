@@ -239,9 +239,13 @@ fn resolve_allow_list(settings: &AppSettings, caps_config: &ModelCapabilityConfi
 }
 
 /// Build the `supports_image` predicate for the multimodal URL resolver by
-/// consulting the live catalog for an `IMAGE` input modality on the resolved
-/// model id. The closure clones the `Arc<RwLock<…>>` so it stays valid for the
-/// lifetime of the provider; it uses a blocking read inside an async context via
+/// consulting the live catalog for an `IMAGE` input modality. Resolved
+/// foundation ids may not be directly listed when the model is callable only
+/// through an inference profile, so a direct miss falls back through
+/// `profile_metadata` to any listed profile backed by that foundation.
+///
+/// The closure clones the `Arc<RwLock<…>>` so it stays valid for the lifetime
+/// of the provider; it uses a blocking read inside an async context via
 /// `try_read`, falling back to `false` when the lock is momentarily contended
 /// (a refresh in progress) — a conservative default that simply skips remote
 /// image fetching rather than risking a deadlock.
@@ -252,15 +256,23 @@ fn supports_image_predicate(
         let Ok(guard) = catalog.try_read() else {
             return false;
         };
-        guard
-            .models()
-            .get(model_id)
-            .map(|info| {
-                info.modalities
-                    .iter()
-                    .any(|m| m.eq_ignore_ascii_case("IMAGE"))
-            })
-            .unwrap_or(false)
+
+        let model_info = guard.models().get(model_id).or_else(|| {
+            guard
+                .profile_metadata()
+                .iter()
+                .find_map(|(profile_id, foundation_id)| {
+                    (foundation_id == model_id)
+                        .then(|| guard.models().get(profile_id))
+                        .flatten()
+                })
+        });
+
+        model_info.is_some_and(|info| {
+            info.modalities
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case("IMAGE"))
+        })
     }
 }
 
@@ -448,7 +460,7 @@ mod tests {
 
     #[test]
     fn supports_image_predicate_reads_catalog_modalities() {
-        use crate::bedrock::models::{assemble_catalog, FoundationModelFacts};
+        use crate::bedrock::models::{assemble_catalog, FoundationModelFacts, ProfileEntry};
         let settings = boot_settings();
         let fms = [
             FoundationModelFacts {
@@ -465,12 +477,31 @@ mod tests {
                 response_streaming_supported: true,
                 status: "ACTIVE".to_string(),
             },
+            FoundationModelFacts {
+                model_id: "profile-only.vision-model-v1:0".to_string(),
+                input_modalities: vec!["TEXT".to_string(), "IMAGE".to_string()],
+                inference_types: vec!["INFERENCE_PROFILE".to_string()],
+                response_streaming_supported: true,
+                status: "ACTIVE".to_string(),
+            },
         ];
-        let catalog = Arc::new(RwLock::new(assemble_catalog(&fms, &[], &settings)));
+        let profiles = [ProfileEntry {
+            key: "us.profile-only.vision-model-v1:0".to_string(),
+            underlying_model_id: "profile-only.vision-model-v1:0".to_string(),
+        }];
+        let catalog = Arc::new(RwLock::new(assemble_catalog(&fms, &profiles, &settings)));
         let predicate = supports_image_predicate(catalog);
 
         assert!(predicate("vision.model-v1:0"), "IMAGE modality => true");
         assert!(!predicate("text.model-v1:0"), "TEXT-only => false");
+        assert!(
+            predicate("us.profile-only.vision-model-v1:0"),
+            "profile inherits IMAGE modality"
+        );
+        assert!(
+            predicate("profile-only.vision-model-v1:0"),
+            "resolved profile-only foundation inherits IMAGE modality"
+        );
         assert!(!predicate("unknown.model"), "absent => false");
     }
 
