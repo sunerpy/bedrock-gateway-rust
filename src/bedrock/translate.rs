@@ -374,61 +374,55 @@ fn decode_continuation_capsule(
     decode_capsule(candidate, &runtime.keyring)
 }
 
+/// Remove the gateway's own `<think>…</think>` rendering from a replayed
+/// assistant turn when it is there, and leave the content alone when it is not.
+///
+/// The match is deliberately a hint, not a requirement. `<think>` is this
+/// gateway's invention for smuggling reasoning through the OpenAI `content`
+/// string (Option B), so clients that render reasoning separately strip it as
+/// ordinary text, and the streaming renderer emits one `<think>` block per
+/// signed reasoning block while the prefix built here concatenates them all.
+/// Rejecting a mismatch proves nothing about authenticity — the caller prepends
+/// the capsule's signed blocks either way and Bedrock validates the signature.
 fn strip_replayed_reasoning(
     content: &Option<ContentInput>,
     reasoning_blocks: &[Value],
-) -> Result<Option<ContentInput>, AppError> {
+) -> Option<ContentInput> {
     let mut reasoning_text = String::new();
-    let mut has_reasoning_text = false;
     for block in reasoning_blocks {
         if let Some(text) = block
             .get("reasoningText")
             .and_then(|reasoning| reasoning.get("text"))
             .and_then(Value::as_str)
         {
-            has_reasoning_text = true;
             reasoning_text.push_str(text);
         }
     }
 
-    if !has_reasoning_text || content.is_none() {
-        return Ok(content.clone());
+    // Signature-only blocks carry `text: ""` and render no `<think>` at all
+    // (`response.rs` and `stream.rs` both gate on non-empty reasoning text), so
+    // there is no prefix to expect.
+    if reasoning_text.is_empty() {
+        return content.clone();
     }
 
     let expected_prefix = format!("<think>{reasoning_text}</think>");
     match content {
-        Some(ContentInput::Text(text)) => text
-            .strip_prefix(&expected_prefix)
-            .map(|rest| Some(ContentInput::Text(rest.to_string())))
-            .ok_or_else(|| {
-                AppError::BadRequest(
-                    "assistant reasoning prefix does not match the reasoning capsule".to_string(),
-                )
-            }),
+        Some(ContentInput::Text(text)) => Some(ContentInput::Text(
+            text.strip_prefix(&expected_prefix)
+                .unwrap_or(text)
+                .to_string(),
+        )),
         Some(ContentInput::Parts(parts)) => {
             let mut stripped = parts.clone();
-            let leading_text = match stripped.first_mut() {
-                Some(ContentPart::Text(text)) => text,
-                Some(ContentPart::Image(_)) | None => {
-                    return Err(AppError::BadRequest(
-                        "assistant content parts have no leading text for reasoning replay"
-                            .to_string(),
-                    ));
+            if let Some(ContentPart::Text(leading_text)) = stripped.first_mut() {
+                if let Some(rest) = leading_text.text.strip_prefix(&expected_prefix) {
+                    leading_text.text = rest.to_string();
                 }
-            };
-            leading_text.text = leading_text
-                .text
-                .strip_prefix(&expected_prefix)
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    AppError::BadRequest(
-                        "assistant reasoning prefix does not match the reasoning capsule"
-                            .to_string(),
-                    )
-                })?;
-            Ok(Some(ContentInput::Parts(stripped)))
+            }
+            Some(ContentInput::Parts(stripped))
         }
-        None => Ok(None),
+        None => None,
     }
 }
 
@@ -506,7 +500,7 @@ async fn build_intermediate_messages(
                 }
 
                 let replayed_content = if let Some(reasoning_blocks) = shared_reasoning {
-                    let stripped_content = strip_replayed_reasoning(content, &reasoning_blocks)?;
+                    let stripped_content = strip_replayed_reasoning(content, &reasoning_blocks);
                     assistant_content.extend(
                         reasoning_blocks
                             .into_iter()

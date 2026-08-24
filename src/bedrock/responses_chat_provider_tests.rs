@@ -274,6 +274,41 @@ fn continuation_replays_reasoning_and_restores_original_call_id() {
 }
 
 #[test]
+fn continuation_without_think_prefix_replays_reasoning() {
+    let runtime = capsule_runtime(true);
+    let id = encode_responses_capsule("call_1", &[reasoning_item()], &runtime.keyring)
+        .expect("capsule encodes");
+    let req = request(vec![Message::Assistant {
+        name: None,
+        content: Some(ContentInput::Text("the weather is sunny".to_string())),
+        tool_calls: Some(vec![ToolCall {
+            index: Some(0),
+            id: Some(id),
+            r#type: "function".to_string(),
+            function: ResponseFunction {
+                name: Some("get_weather".to_string()),
+                arguments: "{\"city\":\"Paris\"}".to_string(),
+            },
+        }]),
+    }]);
+
+    let mapped = chat_request_to_responses(&req, &runtime, false).expect("continuation maps");
+    let ResponsesInput::Items(items) = mapped.input else {
+        panic!("expected item input");
+    };
+    assert!(matches!(items[0], ResponseInputItem::Reasoning { .. }));
+    assert!(matches!(
+        &items[1],
+        ResponseInputItem::Message { content, .. }
+            if matches!(content, ResponsesContent::Text(text) if text == "the weather is sunny")
+    ));
+    assert!(matches!(
+        &items[2],
+        ResponseInputItem::FunctionCall { call_id, .. } if call_id == "call_1"
+    ));
+}
+
+#[test]
 fn continuation_deduplicates_reasoning_ids_across_tool_turns() {
     let runtime = capsule_runtime(true);
     let reasoning = reasoning_item();

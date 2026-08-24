@@ -421,7 +421,7 @@ fn append_assistant_items(
                 )
             })?);
         }
-        strip_replayed_summary(content, items)?
+        strip_replayed_summary(content, items)
     } else {
         content.clone()
     };
@@ -439,44 +439,32 @@ fn append_assistant_items(
     Ok(())
 }
 
+/// Chat-surface analogue of `translate::strip_replayed_reasoning`: the summary
+/// prefix is a hint, so a missing or divergent `<think>` block passes through
+/// untouched while the capsule's reasoning items are replayed regardless.
 fn strip_replayed_summary(
     content: &Option<ContentInput>,
     reasoning_items: &[Value],
-) -> Result<Option<ContentInput>, AppError> {
+) -> Option<ContentInput> {
     let summary = reasoning_summary(reasoning_items);
-    if summary.is_empty() || content.is_none() {
-        return Ok(content.clone());
+    if summary.is_empty() {
+        return content.clone();
     }
     let prefix = format!("<think>{summary}</think>");
     match content {
-        Some(ContentInput::Text(text)) => text
-            .strip_prefix(&prefix)
-            .map(|rest| Some(ContentInput::Text(rest.to_string())))
-            .ok_or_else(|| {
-                AppError::BadRequest(
-                    "assistant reasoning prefix does not match the Responses capsule".to_string(),
-                )
-            }),
+        Some(ContentInput::Text(text)) => Some(ContentInput::Text(
+            text.strip_prefix(&prefix).unwrap_or(text).to_string(),
+        )),
         Some(ContentInput::Parts(parts)) => {
             let mut parts = parts.clone();
-            let Some(ContentPart::Text(first)) = parts.first_mut() else {
-                return Err(AppError::BadRequest(
-                    "assistant content parts have no leading reasoning text".to_string(),
-                ));
-            };
-            first.text = first
-                .text
-                .strip_prefix(&prefix)
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    AppError::BadRequest(
-                        "assistant reasoning prefix does not match the Responses capsule"
-                            .to_string(),
-                    )
-                })?;
-            Ok(Some(ContentInput::Parts(parts)))
+            if let Some(ContentPart::Text(first)) = parts.first_mut() {
+                if let Some(rest) = first.text.strip_prefix(&prefix) {
+                    first.text = rest.to_string();
+                }
+            }
+            Some(ContentInput::Parts(parts))
         }
-        None => Ok(None),
+        None => None,
     }
 }
 
