@@ -1043,10 +1043,34 @@ async fn capsule_with_none_content_injects_reasoning() {
 }
 
 #[tokio::test]
-async fn mismatched_think_prefix_is_bad_request() {
+async fn missing_think_prefix_replays_reasoning_and_keeps_content() {
     let runtime = capsule_runtime();
     let blocks = signed_reasoning("private reasoning", "provider-signature");
-    let capsule = capsule_id(&runtime, "tool-mismatch", &blocks);
+    let capsule = capsule_id(&runtime, "tool-stripped", &blocks);
+    let req = base_request(
+        "anthropic.claude-3-sonnet-v1:0",
+        vec![Message::Assistant {
+            name: None,
+            content: Some(ContentInput::Text("rest".to_string())),
+            tool_calls: Some(vec![tool_call(&capsule, "lookup")]),
+        }],
+    );
+
+    let args = to_converse_args(&req, &caps(), &resolver(false), &capsule_extras(runtime))
+        .await
+        .expect("stripped think prefix still translates");
+    let content = args.messages[0]["content"].as_array().expect("content");
+
+    assert_eq!(content[0], json!({"reasoningContent": blocks[0].clone()}));
+    assert_eq!(content[1], json!({"text": "rest"}));
+    assert_eq!(content[2]["toolUse"]["toolUseId"], "tool-stripped");
+}
+
+#[tokio::test]
+async fn divergent_think_prefix_passes_content_through() {
+    let runtime = capsule_runtime();
+    let blocks = signed_reasoning("private reasoning", "provider-signature");
+    let capsule = capsule_id(&runtime, "tool-divergent", &blocks);
     let req = base_request(
         "anthropic.claude-3-sonnet-v1:0",
         vec![Message::Assistant {
@@ -1058,11 +1082,44 @@ async fn mismatched_think_prefix_is_bad_request() {
         }],
     );
 
-    let error = to_converse_args(&req, &caps(), &resolver(false), &capsule_extras(runtime))
+    let args = to_converse_args(&req, &caps(), &resolver(false), &capsule_extras(runtime))
         .await
-        .expect_err("mismatched reasoning must fail");
+        .expect("divergent think prefix still translates");
+    let content = args.messages[0]["content"].as_array().expect("content");
 
-    assert!(matches!(error, AppError::BadRequest(_)));
+    assert_eq!(content[0], json!({"reasoningContent": blocks[0].clone()}));
+    assert_eq!(
+        content[1],
+        json!({"text": "<think>tampered reasoning</think>rest"})
+    );
+    assert_eq!(content[2]["toolUse"]["toolUseId"], "tool-divergent");
+}
+
+/// Converse mints signature-only reasoning blocks with `text: ""` — see
+/// `stream::StreamState::finalize_reasoning_block`, which normalizes a missing
+/// text delta to the empty string. The renderer emits no `<think>` for those.
+#[tokio::test]
+async fn empty_reasoning_text_expects_no_think_prefix() {
+    let runtime = capsule_runtime();
+    let blocks = signed_reasoning("", "provider-signature");
+    let capsule = capsule_id(&runtime, "tool-empty-reasoning", &blocks);
+    let req = base_request(
+        "anthropic.claude-3-sonnet-v1:0",
+        vec![Message::Assistant {
+            name: None,
+            content: Some(ContentInput::Text("plain answer".to_string())),
+            tool_calls: Some(vec![tool_call(&capsule, "lookup")]),
+        }],
+    );
+
+    let args = to_converse_args(&req, &caps(), &resolver(false), &capsule_extras(runtime))
+        .await
+        .expect("signature-only reasoning translates");
+    let content = args.messages[0]["content"].as_array().expect("content");
+
+    assert_eq!(content[0], json!({"reasoningContent": blocks[0].clone()}));
+    assert_eq!(content[1], json!({"text": "plain answer"}));
+    assert_eq!(content[2]["toolUse"]["toolUseId"], "tool-empty-reasoning");
 }
 
 #[tokio::test]
@@ -1100,7 +1157,7 @@ async fn matching_leading_text_part_strips_think_prefix() {
 }
 
 #[tokio::test]
-async fn parts_without_leading_text_are_bad_request() {
+async fn parts_without_leading_text_replay_reasoning() {
     let runtime = capsule_runtime();
     let blocks = signed_reasoning("private reasoning", "provider-signature");
     let capsule = capsule_id(&runtime, "tool-image", &blocks);
@@ -1121,11 +1178,49 @@ async fn parts_without_leading_text_are_bad_request() {
         }],
     );
 
-    let error = to_converse_args(&req, &caps(), &resolver(true), &capsule_extras(runtime))
-        .await
-        .expect_err("unlocatable leading text must fail");
+    let args = to_converse_args(
+        &req,
+        &caps(),
+        &TestResolver {
+            image_ok: true,
+            canned: Some((b"hi".to_vec(), "image/png".to_string())),
+        },
+        &capsule_extras(runtime),
+    )
+    .await
+    .expect("image-first parts still translate");
+    let content = args.messages[0]["content"].as_array().expect("content");
 
-    assert!(matches!(error, AppError::BadRequest(_)));
+    assert_eq!(content[0], json!({"reasoningContent": blocks[0].clone()}));
+    assert!(content[1].get("image").is_some());
+    assert_eq!(content[2]["toolUse"]["toolUseId"], "tool-image");
+}
+
+#[tokio::test]
+async fn parts_with_unmatched_leading_text_pass_through() {
+    let runtime = capsule_runtime();
+    let blocks = signed_reasoning("private reasoning", "provider-signature");
+    let capsule = capsule_id(&runtime, "tool-parts-stripped", &blocks);
+    let req = base_request(
+        "anthropic.claude-3-sonnet-v1:0",
+        vec![Message::Assistant {
+            name: None,
+            content: Some(ContentInput::Parts(vec![ContentPart::Text(TextContent {
+                r#type: "text".to_string(),
+                text: "rest".to_string(),
+            })])),
+            tool_calls: Some(vec![tool_call(&capsule, "lookup")]),
+        }],
+    );
+
+    let args = to_converse_args(&req, &caps(), &resolver(false), &capsule_extras(runtime))
+        .await
+        .expect("stripped parts continuation translates");
+    let content = args.messages[0]["content"].as_array().expect("content");
+
+    assert_eq!(content[0], json!({"reasoningContent": blocks[0].clone()}));
+    assert_eq!(content[1], json!({"text": "rest"}));
+    assert_eq!(content[2]["toolUse"]["toolUseId"], "tool-parts-stripped");
 }
 
 #[tokio::test]

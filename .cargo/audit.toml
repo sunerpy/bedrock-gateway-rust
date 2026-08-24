@@ -48,10 +48,78 @@
 # REMOVAL CRITERIA: drop these ignores once an AWS SDK release no longer pulls
 # rustls 0.21 / rustls-webpki 0.101.x (re-run `cargo tree -i rustls-webpki` after
 # any aws-config / aws-sdk bump).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Documented advisory ignore — h2 0.3.27
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Reviewed: 2026-08-24
+#
+# WHY THIS IS IGNORED (not a version bump):
+#
+# `RUSTSEC-2026-0258` flags BOTH h2 copies in the tree. The patchable one HAS been
+# patched: `h2 0.4.15` → `0.4.18`, i.e. past the advisory's `>=0.4.16` fix. Only the
+# 0.3 line remains, and it has NO fix — crates.io's 0.3 series ends at exactly
+# `0.3.27`; the patch landed only on 0.4, which is why the advisory reads
+# "Upgrade to >=0.4.16". 0.3 → 0.4 is not a semver-compatible update, so
+# `cargo update -p h2@0.3.27` is a no-op and the bump cannot be forced from here.
+#
+# The vulnerable `h2 0.3.27` is NOT a direct dependency. It has exactly one root —
+# the AWS SDK's legacy hyper-0.14 connector:
+#
+#     h2 0.3.27
+#       ├── aws-smithy-http-client 1.1.13            (direct dependency)
+#       └── hyper 0.14.32
+#             ├── aws-smithy-http-client 1.1.13
+#             └── hyper-rustls 0.24.2
+#                   └── aws-smithy-http-client 1.1.13
+#                         └── aws-smithy-runtime 1.11.3
+#                               └── aws-config / aws-sdk-* → bedrock-gateway-rust
+#
+# This is the SAME legacy `connector-hyper-0-14-x` chain documented above as the
+# reason rustls 0.21 / rustls-webpki 0.101.x cannot advance. Dropping it requires
+# disabling default-features on every aws-sdk-* crate (which would break the SDK's
+# default HTTPS connector).
+#
+# WHY NON-EXPLOITABLE FOR THIS SERVICE:
+#
+# The upstream advisory (GHSA-q83h-524g-xf6h) is a Low-severity DoS that requires
+# ALL THREE of these to be true:
+#
+#     "You are using HTTP/2, either as a server or a client."
+#     "Your application does not fully drain incoming request or response bodies."
+#     "The direct remote peer is malicious and intentionally sends large numbers of
+#      empty DATA frames."
+#
+# Note it explicitly covers CLIENTS as well as servers, so "we are only an outbound
+# client" is NOT by itself a defence. The precondition that fails here is the THIRD.
+#
+#   * The UNTRUSTED inbound boundary never runs h2 0.3.x — in fact it runs no h2 at
+#     all. `axum = "0.8"` is declared with no `http2` feature and axum 0.8 does not
+#     enable one by default: `cargo tree -e features -p axum` contains ZERO
+#     occurrences of `http2`, and axum enables only `hyper` features `http1` and
+#     `server`. Inbound OpenAI-client traffic is HTTP/1.1 only.
+#   * h2 0.3.27's only reachable role is as an OUTBOUND HTTP/2 client inside the AWS
+#     SDK. Its direct remote peer is always an AWS-owned endpoint (bedrock-runtime /
+#     bedrock / ssm / secretsmanager / sts / sso .amazonaws.com), authenticated by
+#     TLS server-certificate validation. A malicious direct peer would require AWS
+#     itself to be hostile, or a TLS MITM that already defeats cert validation —
+#     both outside this service's threat model.
+#   * The modern outbound path (`hyper 1.10.1` via reqwest, hyper-rustls, and the
+#     SDK's default HTTPS connector) resolves to the PATCHED `h2 0.4.18`, so the h2
+#     that carries real traffic is already fixed.
+#
+# REMOVAL CRITERIA: drop this ignore once an AWS SDK release no longer pulls
+# hyper 0.14 / h2 0.3.x (re-run `cargo tree -i h2@0.3.27` after any aws-config /
+# aws-sdk bump — it should report nothing). Re-review immediately if the gateway
+# ever enables axum's `http2` feature, since that would put h2 on the untrusted
+# inbound boundary; in that case the h2 0.4 line must stay >= 0.4.16 (currently
+# 0.4.18) and this ignore must be re-argued from scratch.
 
 [advisories]
 ignore = [
     "RUSTSEC-2026-0098", # rustls-webpki 0.101.7: URI name-constraint bypass — needs CA misissuance; outbound client, N/A
     "RUSTSEC-2026-0099", # rustls-webpki 0.101.7: wildcard name-constraint bypass — needs CA misissuance; outbound client, N/A
     "RUSTSEC-2026-0104", # rustls-webpki 0.101.7: CRL-parse DoS panic — this service uses no CRLs; not reachable
+    "RUSTSEC-2026-0258", # h2 0.3.27: unbounded empty-DATA-frame DoS — 0.3 line has no fix; needs a malicious peer, ours is AWS
 ]
