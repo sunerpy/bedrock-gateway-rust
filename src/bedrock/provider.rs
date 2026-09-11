@@ -968,6 +968,15 @@ impl BedrockChatProvider {
     /// Returns the raw service error in a [`SendError`] so the shared cache
     /// safety net can inspect `.code()`/`.message()` before mapping. JSON→SDK
     /// build failures surface as [`SendError::App`] (never a cache rejection).
+    ///
+    /// `result_large_err` is allowed deliberately: the lint fires because the
+    /// SDK's own `ConverseError` makes `SendError::Service` ~152 bytes, but this
+    /// `Result`'s size is dominated by the `Ok` variant — `ConverseOutput` is the
+    /// entire Bedrock response and is far larger. Boxing the error would add an
+    /// allocation on every failure without shrinking the `Result`, and the error
+    /// must stay un-boxed so `is_cache_unsupported_error` can read
+    /// `.code()`/`.message()` off the raw service error.
+    #[allow(clippy::result_large_err)]
     async fn send_converse(
         &self,
         args: &ConverseArgs,
@@ -1024,6 +1033,11 @@ impl BedrockChatProvider {
     /// [`ConverseArgs`] and send it. Mirrors [`Self::send_converse`]; the
     /// rejection surfaces at `.send()` BEFORE any stream event (confirmed live),
     /// so the strip-and-retry safety net is identical to the non-stream path.
+    ///
+    /// `result_large_err` is allowed for the same reason as
+    /// [`Self::send_converse`]: the `Ok` variant dominates the `Result` size and
+    /// the raw service error must stay un-boxed for the cache predicate.
+    #[allow(clippy::result_large_err)]
     async fn send_converse_stream(
         &self,
         args: &ConverseArgs,

@@ -166,8 +166,10 @@ fn base64_round_trips_to_identical_f32s() {
     let bytes = BASE64_STANDARD.decode(&encoded).expect("valid base64");
     assert_eq!(bytes.len(), original.len() * 4);
     let decoded: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     assert_eq!(decoded, original);
 }
