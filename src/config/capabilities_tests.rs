@@ -29,7 +29,8 @@ fn test_context_1m_beta_header_value() {
 #[test]
 fn test_opus_4_8_capabilities() {
     // Opus 4.7+ deprecate all sampling params (drop_sampling_params) on top
-    // of the adaptive-thinking + no-prefill flags.
+    // of the adaptive-thinking + no-prefill flags. The AWS prompt-caching table
+    // also lists a 1-hour TTL for `anthropic.claude-opus-4-8`.
     let cfg = load_project_config();
     let entry = cfg
         .entry_for_match("claude-opus-4-8")
@@ -40,10 +41,12 @@ fn test_opus_4_8_capabilities() {
         Capability::AdaptiveThinking,
         Capability::DropSamplingParams,
         Capability::StructuredOutput,
+        Capability::CacheTtl1h,
     ]
     .into_iter()
     .collect();
     assert_eq!(caps, expected);
+    assert_eq!(entry.params.cache_min_tokens, Some(1024));
 }
 
 #[test]
@@ -108,7 +111,77 @@ fn test_sonnet_5_capabilities_and_reasoning_path() {
         entry.params.reasoning_path,
         Some(ReasoningPath::AdaptiveThinking)
     );
-    assert_eq!(entry.params.cache_min_tokens, Some(4096));
+    assert_eq!(entry.params.cache_min_tokens, Some(1024));
+}
+
+#[test]
+fn test_fable_5_1_capabilities_and_cache_floor() {
+    // AWS model card (Claude Fable 5.1): adaptive thinking is always on and
+    // cannot be disabled, all sampling params must be unset, prompt caching has
+    // a 512-token minimum per checkpoint and supports both 5m and 1h TTL.
+    // `structured_output` is declared to match resolved behavior, not because AWS
+    // documents it for this id (the structured-outputs doc names only Sonnet 4.5,
+    // Haiku 4.5, Opus 4.5 and Opus 4.6): capability flags are the UNION of every
+    // substring-matching entry, so the `anthropic.claude` catch-all grants it
+    // regardless and withholding it here would only make the entry misleading.
+    let cfg = load_project_config();
+    let entry = cfg
+        .entry_for_match("claude-fable-5-1")
+        .expect("claude-fable-5-1 entry must exist");
+    let caps: HashSet<Capability> = entry.capabilities.iter().copied().collect();
+    let expected: HashSet<Capability> = [
+        Capability::NoAssistantPrefill,
+        Capability::AdaptiveThinking,
+        Capability::DropSamplingParams,
+        Capability::StructuredOutput,
+        Capability::CacheTtl1h,
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(caps, expected);
+    assert_eq!(
+        entry.params.reasoning_path,
+        Some(ReasoningPath::AdaptiveThinking)
+    );
+    assert_eq!(entry.params.cache_min_tokens, Some(512));
+}
+
+#[test]
+fn test_fable_5_1_declared_before_fable_5() {
+    // Resolution is FIRST-MATCH SUBSTRING over declaration order, and
+    // "claude-fable-5" is a substring of "claude-fable-5-1". Declaring the 5
+    // entry first would shadow 5.1 entirely. This locks the ordering contract so
+    // a future reshuffle of config/models.toml cannot silently regress it.
+    let cfg = load_project_config();
+    let position = |pattern: &str| {
+        cfg.models
+            .iter()
+            .position(|e| e.match_pattern == pattern)
+            .unwrap_or_else(|| panic!("{pattern} entry must exist"))
+    };
+    assert!(
+        position("claude-fable-5-1") < position("claude-fable-5"),
+        "claude-fable-5-1 must be declared before claude-fable-5"
+    );
+}
+
+#[test]
+fn test_mythos_5_1_declared_before_mythos_5() {
+    // Same first-match-substring hazard as the Fable pair: "claude-mythos-5" is
+    // a substring of "claude-mythos-5-1", so declaring 5 first would hand 5.1
+    // the wrong [model.params]. Locks the ordering against a future reshuffle.
+    let cfg = load_project_config();
+    let position = |pattern: &str| {
+        cfg.models
+            .iter()
+            .position(|e| e.match_pattern == pattern)
+            .unwrap_or_else(|| panic!("{pattern} entry must exist"))
+    };
+    assert!(
+        position("claude-mythos-5-1") < position("claude-mythos-5"),
+        "claude-mythos-5-1 must be declared before claude-mythos-5"
+    );
 }
 
 #[test]
