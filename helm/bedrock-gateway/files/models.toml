@@ -38,7 +38,15 @@
 #                               top_p; when set, the gateway strips both from the
 #                               request. Stronger than temperature_topp_conflict
 #                               (which only drops top_p when temperature is present).
-#                               Applies to Claude Opus 4.7+, Sonnet 5, Fable/Mythos 5.
+#                               Applies to Claude Opus 4.7+, Sonnet 5, and
+#                               Fable/Mythos 5 including Fable 5.1.
+#   structured_output         – this model supports native structured output via
+#                               Bedrock Converse outputConfig.textFormat; when set,
+#                               an OpenAI response_format (json_object /
+#                               json_schema) is honored by emitting outputConfig.
+#   cache_ttl_1h              – this model supports a 1-hour prompt-cache
+#                               cachePoint.ttl; without this flag a requested 1h
+#                               TTL is silently downgraded to 5m.
 #
 # reasoning_path — selects the shape of the reasoning config the gateway emits:
 #   adaptive_thinking – additionalModelRequestFields.thinking={type:"adaptive"}
@@ -121,82 +129,126 @@ high = -1.0 # sentinel meaning "max_tokens - 1" (the maximum thinking budget)
 
 [[model]]
 match = "claude-sonnet-4-5"
-capabilities = ["temperature_topp_conflict"]
+capabilities = ["temperature_topp_conflict", "cache_ttl_1h"]
 # Non-adaptive Claude: reasoning uses the budget_tokens form (see budget_ratios).
 [model.params]
-cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Sonnet
+cache_min_tokens = 1024 # AWS prompt-caching table row `anthropic.claude-sonnet-4-5-20250929-v1:0`: 1,024 min tokens/checkpoint, 5m + 1h TTL
 reasoning_path = "budget_tokens"
 
 [[model]]
 match = "claude-sonnet-4-6"
-capabilities = ["temperature_topp_conflict", "context_1m_beta"]
+capabilities = ["temperature_topp_conflict", "context_1m_beta", "cache_ttl_1h"]
 [model.params]
-cache_min_tokens = 1024 # Minimum cacheable prefix tokens; Anthropic-on-Bedrock standard for Sonnet family
+cache_min_tokens = 1024 # AWS prompt-caching table row `anthropic.claude-sonnet-4-6`: 1,024 min tokens/checkpoint, 5m + 1h TTL
 reasoning_path = "budget_tokens"
 
 [[model]]
 match = "claude-haiku-4-5"
-capabilities = ["temperature_topp_conflict"]
+capabilities = ["temperature_topp_conflict", "cache_ttl_1h"]
 [model.params]
-cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Haiku
+cache_min_tokens = 4096 # AWS prompt-caching table row `anthropic.claude-haiku-4-5-20251001-v1:0`: 4,096 min tokens/checkpoint, 5m + 1h TTL
 reasoning_path = "budget_tokens"
 
 [[model]]
 match = "claude-opus-4-5"
-capabilities = ["temperature_topp_conflict"]
+capabilities = ["temperature_topp_conflict", "cache_ttl_1h"]
 [model.params]
-cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Opus
+cache_min_tokens = 4096 # AWS prompt-caching table row `anthropic.claude-opus-4-5-20251101-v1:0`: 4,096 min tokens/checkpoint, 5m + 1h TTL
 reasoning_path = "budget_tokens"
 
 [[model]]
 match = "claude-opus-4-6"
-capabilities = ["context_1m_beta", "no_assistant_prefill", "adaptive_thinking"]
+capabilities = ["context_1m_beta", "no_assistant_prefill", "adaptive_thinking", "cache_ttl_1h"]
 # Adaptive-thinking Claude: reasoning uses the thinking.type=adaptive form.
 [model.params]
-cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
+cache_min_tokens = 4096 # AWS prompt-caching table row `anthropic.claude-opus-4-6-v1`: 4,096 min tokens/checkpoint, 5m + 1h TTL
 reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-opus-4-7"
-capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params"]
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
 # Opus 4.7 and later deprecate temperature/top_p (HTTP 400 on non-default values).
 [model.params]
-cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
+cache_min_tokens = 4096 # AWS prompt-caching table row `anthropic.claude-opus-4-7`: 4,096 min tokens/checkpoint, 5m + 1h TTL
 reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-opus-4-8"
-capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params"]
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
 [model.params]
-cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
+cache_min_tokens = 1024 # AWS prompt-caching table row `anthropic.claude-opus-4-8`: 1,024 min tokens/checkpoint, 5m + 1h TTL
 reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-opus-5"
-capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params"]
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
 [model.params]
-cache_min_tokens = 4096 # verified: cachePoint accepted, cacheWriteInputTokens returned, 5m TTL
+cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-opus-5`: 512 min tokens/checkpoint, 5m + 1h TTL
 reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-sonnet-5"
-capabilities = ["adaptive_thinking", "drop_sampling_params"]
+capabilities = ["adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
 [model.params]
-cache_min_tokens = 4096 # AWS model card: 4,096-token cache floor; 5m and 1h TTL
+cache_min_tokens = 1024 # AWS prompt-caching table row `anthropic.claude-sonnet-5`: 1,024 min tokens/checkpoint, 5m + 1h TTL
+reasoning_path = "adaptive_thinking"
+
+[[model]]
+# Claude Mythos 5.1 (Gated) — MUST stay BEFORE `claude-mythos-5`: [model.params]
+# take the FIRST substring match and "claude-mythos-5" is a substring of
+# "claude-mythos-5-1". Capability flags are the UNION of every substring match.
+match = "claude-mythos-5-1"
+capabilities = ["adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
+[model.params]
+cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-mythos-5-1` (Gated): 512 min tokens/checkpoint, 5m + 1h TTL
 reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-mythos-5"
-capabilities = ["adaptive_thinking", "drop_sampling_params"]
+capabilities = ["adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
 [model.params]
-cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
+cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-mythos-5` (Gated): 512 min tokens/checkpoint, 5m + 1h TTL
 reasoning_path = "adaptive_thinking"
 
 [[model]]
-match = "claude-fable-5"
-capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params"]
+# Claude Mythos Preview (Gated). The 4,096 floor equals the family catch-all, so
+# only the 1h TTL actually needs a dedicated entry.
+match = "claude-mythos-preview"
+capabilities = ["adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
 [model.params]
-cache_min_tokens = 4096 # synthetic/future id, no AWS doc row — conservative 4096 floor
+cache_min_tokens = 4096 # AWS prompt-caching table row `anthropic.claude-mythos-preview` (Gated): 4,096 min tokens/checkpoint, 5m + 1h TTL
+reasoning_path = "adaptive_thinking"
+
+[[model]]
+# Claude Fable 5.1 — MUST stay BEFORE `claude-fable-5`, but only [model.params]
+# depends on it: params take the FIRST substring match and "claude-fable-5" is a
+# substring of "claude-fable-5-1". Capability flags are the UNION of every
+# substring-matching entry, so order cannot shadow them and no entry can take a
+# flag away.
+# AWS model card: 1M context with no beta opt-in (so NO context_1m_beta), 128K max
+# output, adaptive thinking always on, temperature/top_p rejected, prompt caching
+# 512 tokens per checkpoint with 5m + 1h TTL. `structured_output` is kept in step
+# with config/models.toml so this model resolves the same in every deployment; AWS
+# documents structured outputs only for Sonnet 4.5, Haiku 4.5, Opus 4.5, Opus 4.6.
+match = "claude-fable-5-1"
+capabilities = [
+  "no_assistant_prefill",
+  "adaptive_thinking",
+  "drop_sampling_params",
+  "structured_output",
+  "cache_ttl_1h",
+]
+[model.params]
+cache_min_tokens = 512 # AWS model card + prompt-caching table: 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
+reasoning_path = "adaptive_thinking"
+
+[[model]]
+# AWS prompt-caching table row `anthropic.claude-fable-5`: 512 min tokens per
+# checkpoint, 4 checkpoints, 5 minutes AND 1 hour TTL — same floor as 5.1.
+match = "claude-fable-5"
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
+[model.params]
+cache_min_tokens = 512 # AWS prompt-caching table: 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
 reasoning_path = "adaptive_thinking"
 
 
@@ -245,6 +297,12 @@ reasoning_path = "deepseek_string"
 # differ in regional availability; available_regions gates them at startup and
 # per request. The `openai.gpt-5.5`/`openai.gpt-5.4` match values are the canonical
 # ids the `[[alias]]` table above rewrites `gpt-5.5`/`gpt-5.4` to.
+#
+# GPT-5.6 Sol/Terra/Luna context window: all three AWS model cards declare 1M
+# tokens, priced in two tiers (Short 272K / Long 1M), so a prompt above 272K is
+# valid and simply bills at the long-context rate. The old 272K / 278528-token
+# ceiling is superseded. The gateway never clamps input length — it forwards the
+# request and returns any upstream limit error verbatim.
 [[model]]
 match = "openai.gpt-5.5"
 capabilities = []

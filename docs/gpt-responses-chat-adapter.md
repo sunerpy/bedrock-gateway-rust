@@ -45,8 +45,9 @@ chat_backend = "responses"
 - `/completions` 仍不支持这些 GPT 模型；
 - 只能展示上游返回的 reasoning summary，不能展示原始思考链；
 - 上游不返回 summary 时，不生成 `<think>` 内容；
-- GPT-5.6 Sol 的上下文硬上限是 272K，即 278528 tokens；网关不会在不知道客户端
-  会话裁剪策略的情况下静默删除历史。
+- GPT-5.6 Sol/Terra/Luna 的上下文窗口按 AWS 模型卡为 1M tokens（272K / 278528 是
+  已被取代的 GA 期上限）；网关不裁剪输入，也不会在不知道客户端会话裁剪策略的情况下
+  静默删除历史，超窗时原样返回上游错误。
 
 ## 2026-07-18 续轮 400 的真实根因
 
@@ -79,8 +80,15 @@ capsule 独立展开后，在发往 Responses API 的 `input` 中制造了重复
 
 ## 独立边界：上下文上限与 Mantle 400
 
-AWS 的 [GPT-5.6 Sol 模型卡](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-56-sol.html)
-声明上下文窗口为 272K tokens。真实 Mantle 返回的精确上限是 278528：
+AWS 的 GPT-5.6
+[Sol](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-56-sol.html)、
+[Terra](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-56-terra.html)、
+[Luna](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-56-luna.html)
+三张模型卡现在都声明 **Context window: 1M tokens**，并按两档计费：Short Context
+Window (272K) 与 Long Context Window (1M)。超过 272K 的请求是合法的，只是按长上下文
+单价结算（Sol In-Region 输入 $4.40 → $8.80 / 1M tokens，输出 $22.00 → $33.00）。
+
+**历史记录（272K 时代）：** 窗口还是 272K 时，Mantle 返回的精确上限是 278528：
 
 ```json
 {
@@ -93,11 +101,11 @@ AWS 的 [GPT-5.6 Sol 模型卡](https://docs.aws.amazon.com/bedrock/latest/userg
 }
 ```
 
-使用 280007 tokens 的独立测试输入可以稳定复现上下文上限 HTTP 400。它证明
-`maxInputTokens` 配置必须遵守模型窗口，但不是上述 WorkBuddy 续轮失败的根因。客户端
-如果把 `maxInputTokens` 错配为 `1000000`，就不会在 Sol 的真实边界前压缩历史。
+当时 280007 tokens 的独立测试输入可以稳定复现该 400。278528 这个数字现在只有历史
+意义，不再是 `maxInputTokens` 的天花板；仍然成立的结论是两条：上限由上游判定而非网关
+判定，且该边界与上述 WorkBuddy 续轮失败（重复 reasoning item ID）相互独立。
 
-WorkBuddy 建议配置：
+WorkBuddy 建议配置（按 272K 短上下文计费档，成本优先）：
 
 ```json
 {
@@ -106,10 +114,11 @@ WorkBuddy 建议配置：
 }
 ```
 
-`200000 + 65536` 为输出和客户端 token 估算误差保留了约 13K tokens 的余量；
-`maxInputTokens` 绝不能使用 `1000000`，输入与预留输出之和也不应超过 278528。网关不
-自动裁掉旧消息，因为无状态 Chat 历史中的 reasoning、function call 和 function output
-必须成组保留，盲目截断会制造新的协议错误。
+`200000 + 65536` 落在 272K 档内，并为客户端 token 估算误差留了约 6K tokens 余量。
+需要更长历史时可以上调，唯一的硬约束变成 1M 窗口：**输入 + 预留输出之和不应超过
+1M**，并同样留出估算误差余量；跨过 272K 即进入长上下文单价，属于成本决策而非报错边界。
+网关不自动裁掉旧消息，因为无状态 Chat 历史中的 reasoning、function call 和 function
+output 必须成组保留，盲目截断会制造新的协议错误。
 
 实测在 Mantle 请求中设置 `truncation: "auto"`，无论单个大消息还是多个历史 item，
 仍会收到同一 `validation_error`，因此不能依赖该参数修复超长 Chat 历史。
@@ -192,7 +201,7 @@ keyring。内部实现只增加协议转换，不增加外部服务或状态存�
   字节、56-message 请求原样重放到真实 Mantle，返回 HTTP 200、`response.completed`
   和完整 Chat `[DONE]`，该次输入为 128740 tokens；
 - 280007-token 独立请求稳定复现上下文上限 400，Mantle 原始错误明确给出 278528
-  上限；该边界与本次重复 ID 故障相互独立；
+  上限；该边界与本次重复 ID 故障相互独立（该 272K 期上限已被 1M 窗口取代，见上文）；
 - 工具 `id` 和 `name` 只发送一次，arguments 按 delta 增量发送；
 - 客户端 usage 与 CloudWatch 均记录同一真实 reasoning token 数；
 - OpenAI Agents SDK 的工具执行次数严格为 1，并正常生成最终回答。

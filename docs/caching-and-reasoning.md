@@ -80,37 +80,77 @@ pub fn supports_caching(model: &str, caps: &dyn ModelCapabilities) -> bool {
 
 **Family 兜底机制：** `config/models.toml` 末尾有一个 `match = "anthropic.claude"` 的兜底条目，未在前面单独列出的 Claude 模型 ID 会自动匹配到此条目，获得 `cache_min_tokens = 4096` 的保守默认值，不会因为新模型未录入而静默禁用缓存。
 
+> **子串遮蔽陷阱（新增模型必读）：** `[model.params]`（`cache_min_tokens`、`reasoning_path`、`available_regions` 等）取**按声明顺序的首次子串命中**。当新模型 ID 以已有条目的 `match` 值为前缀时（例如 `claude-fable-5-1` 含有 `claude-fable-5`），新条目**必须声明在旧条目之前**，否则新模型会静默拿到旧条目的 `cache_min_tokens` 与 `reasoning_path`，请求本身仍返回 200，没有任何报错。`claude-fable-5-1` 的顺序由 `test_fable_5_1_declared_before_fable_5` 锁定。
+>
+> **能力标志不走首次命中，而是并集：** `ConfigModelCapabilities::has()` 用 `.filter(substring).any(has_capability)`，即所有 `match` 命中该 ID 的条目的能力**取并集**。因此 `claude-fable-5-1` 同时继承 `claude-fable-5` 与 `anthropic.claude` 兜底条目的标志，声明顺序对能力无影响，**单个条目也无法收回**上层条目给出的标志（当前没有 deny 机制）。兜底条目的 `structured_output` 因此适用于所有 `anthropic.claude*` ID，包括 AWS 文档未列为支持的型号。
+
 ### 1.3 逐模型 cache_min_tokens 阈值
 
 > **常见故障：** 将 `cache_min_tokens` 配置为错误值（例如把 1024 阈值模型配成 4096），会导致实际 prompt 未达阈值时静默不注入 cachePoint，缓存完全不命中，但请求本身正常返回 200——没有任何错误提示。
 
-下表为网关当前配置（来源：`config/models.toml`，数字与 AWS 官方文档对齐）：
+下表为网关当前配置（来源：`config/models.toml`）。`1h TTL` 列即 `cache_ttl_1h` 能力：未声明时
+请求里的 `ttl: "1h"` 会被静默降级为 5 分钟。所有 Claude 条目的官方 `max_cache_checkpoints`
+均为 4、可缓存字段均为 `system` / `messages` / `tools`，故不再单列这两列。
 
-| 模型                 | Model ID（foundation id）                 | cache_min_tokens | max_cache_checkpoints | 可缓存字段            | config 条目                |
-| -------------------- | ----------------------------------------- | ---------------- | --------------------- | --------------------- | -------------------------- |
-| Claude Sonnet 4.5    | anthropic.claude-sonnet-4-5-20250929-v1:0 | 4,096            | 4                     | system/messages/tools | `claude-sonnet-4-5`        |
-| Claude Sonnet 4.6    | anthropic.claude-sonnet-4-6               | 1,024            | 4                     | system/messages/tools | `claude-sonnet-4-6`        |
-| Claude Haiku 4.5     | anthropic.claude-haiku-4-5-20251001-v1:0  | 4,096            | 4                     | system/messages/tools | `claude-haiku-4-5`         |
-| Claude Opus 4.5      | anthropic.claude-opus-4-5-20251101-v1:0   | 4,096            | 4                     | system/messages/tools | `claude-opus-4-5`          |
-| Claude Opus 4.6      | anthropic.claude-opus-4-6-v1              | 4,096            | 4                     | system/messages/tools | `claude-opus-4-6`          |
-| Claude Opus 4        | anthropic.claude-opus-4-20250514-v1:0     | 1,024            | 4                     | system/messages/tools | `anthropic.claude`（兜底） |
-| Claude 3.7 Sonnet    | anthropic.claude-3-7-sonnet-20250219-v1:0 | 1,024            | 4                     | system/messages/tools | `anthropic.claude`（兜底） |
-| Claude 3.5 Sonnet v2 | anthropic.claude-3-5-sonnet-20241022-v2:0 | 1,024            | 4                     | system/messages/tools | `anthropic.claude`（兜底） |
-| Amazon Nova（所有）  | amazon.nova-\*                            | 1,024            | N/A                   | system/messages/tools | `amazon.nova`              |
+| 模型                  | Model ID（foundation id）                 | cache_min_tokens | 1h TTL | config 条目                |
+| --------------------- | ----------------------------------------- | ---------------- | ------ | -------------------------- |
+| Claude Fable 5.1      | anthropic.claude-fable-5-1                | 512              | 是     | `claude-fable-5-1`         |
+| Claude Fable 5        | anthropic.claude-fable-5                  | 512              | 是     | `claude-fable-5`           |
+| Claude Mythos 5.1     | anthropic.claude-mythos-5-1（Gated）      | 512              | 是     | `claude-mythos-5-1`        |
+| Claude Mythos 5       | anthropic.claude-mythos-5（Gated）        | 512              | 是     | `claude-mythos-5`          |
+| Claude Opus 5         | anthropic.claude-opus-5                   | 512              | 是     | `claude-opus-5`            |
+| Claude Opus 4.8       | anthropic.claude-opus-4-8                 | 1,024            | 是     | `claude-opus-4-8`          |
+| Claude Sonnet 5       | anthropic.claude-sonnet-5                 | 1,024            | 是     | `claude-sonnet-5`          |
+| Claude Sonnet 4.6     | anthropic.claude-sonnet-4-6               | 1,024            | 是     | `claude-sonnet-4-6`        |
+| Claude Sonnet 4.5     | anthropic.claude-sonnet-4-5-20250929-v1:0 | 1,024            | 是     | `claude-sonnet-4-5`        |
+| Claude Opus 4.7       | anthropic.claude-opus-4-7                 | 4,096            | 是     | `claude-opus-4-7`          |
+| Claude Opus 4.6       | anthropic.claude-opus-4-6-v1              | 4,096            | 是     | `claude-opus-4-6`          |
+| Claude Opus 4.5       | anthropic.claude-opus-4-5-20251101-v1:0   | 4,096            | 是     | `claude-opus-4-5`          |
+| Claude Haiku 4.5      | anthropic.claude-haiku-4-5-20251001-v1:0  | 4,096            | 是     | `claude-haiku-4-5`         |
+| Claude Mythos Preview | anthropic.claude-mythos-preview（Gated）  | 4,096            | 是     | `claude-mythos-preview`    |
+| Claude 3.7 Sonnet     | anthropic.claude-3-7-sonnet-20250219-v1:0 | 4,096（兜底）    | 否     | `anthropic.claude`（兜底） |
+| Claude 3.5 Sonnet v2  | anthropic.claude-3-5-sonnet-20241022-v2:0 | 4,096（兜底）    | 否     | `anthropic.claude`（兜底） |
+| Amazon Nova（所有）   | amazon.nova-\*                            | 1,024            | 否     | `amazon.nova`              |
 
 **AWS 官方对应表（四列：Model / Model ID / 最小 token/checkpoint / 最大 checkpoints）：**
 
 | Model                | Model ID                                  | Min tokens/checkpoint | Max checkpoints |
 | -------------------- | ----------------------------------------- | --------------------- | --------------- |
+| Claude Fable 5.1     | anthropic.claude-fable-5-1                | 512                   | 4               |
+| Claude Fable 5       | anthropic.claude-fable-5                  | 512                   | 4               |
+| Claude Opus 5        | anthropic.claude-opus-5                   | 512                   | 4               |
+| Claude Opus 4.8      | anthropic.claude-opus-4-8                 | 1,024                 | 4               |
+| Claude Sonnet 5      | anthropic.claude-sonnet-5                 | 1,024                 | 4               |
+| Claude Opus 4.7      | anthropic.claude-opus-4-7                 | 4,096                 | 4               |
+| Claude Opus 4.6      | anthropic.claude-opus-4-6-v1              | 4,096                 | 4               |
 | Claude Opus 4.5      | anthropic.claude-opus-4-5-20251101-v1:0   | 4,096                 | 4               |
-| Claude Sonnet 4.5    | anthropic.claude-sonnet-4-5-20250929-v1:0 | 4,096                 | 4               |
+| Claude Sonnet 4.5    | anthropic.claude-sonnet-4-5-20250929-v1:0 | 1,024                 | 4               |
 | Claude Haiku 4.5     | anthropic.claude-haiku-4-5-20251001-v1:0  | 4,096                 | 4               |
-| Claude Opus 4        | anthropic.claude-opus-4-20250514-v1:0     | 1,024                 | 4               |
+| Claude Mythos 5.1    | anthropic.claude-mythos-5-1（Gated）      | 512                   | 4               |
+| Claude Mythos 5      | anthropic.claude-mythos-5（Gated）        | 512                   | 4               |
+| Claude Mythos Preview | anthropic.claude-mythos-preview（Gated） | 4,096                 | 4               |
 | Claude Sonnet 4.6    | anthropic.claude-sonnet-4-6               | 1,024                 | 4               |
 | Claude 3.7 Sonnet    | anthropic.claude-3-7-sonnet-20250219-v1:0 | 1,024                 | 4               |
 | Claude 3.5 Sonnet v2 | anthropic.claude-3-5-sonnet-20241022-v2:0 | 1,024                 | 4               |
 
 来源：[AWS 文档 - Prompt caching](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html)
+
+> **已对齐：** 两张表的 Claude 行现已逐行一致。此前 Opus 5、Mythos 5 官方 512 被配成
+> 4,096，Opus 4.8、Sonnet 5、Sonnet 4.5 官方 1,024 被配成 4,096，`claude-mythos-5-1`
+> 没有条目而落到兜底 4,096——这些值当初是在还没有官方行时按 4,096 保守取的。同时补齐了
+> Opus 4.5/4.6/4.7/4.8、Sonnet 4.5/4.6/5、Haiku 4.5、Mythos 5/5.1/Preview 的
+> `cache_ttl_1h`。降低阈值让缓存更早生效：cache write 增多、命中后更省，属计费相关变更。
+> `helm/bedrock-gateway/files/models.toml` 同步了同一批阈值与 TTL——该副本此前连
+> Sonnet 4.5 / Haiku 4.5 / Opus 4.5 / Sonnet 5 的 `cache_ttl_1h` 都没有，helm 部署会把
+> `ttl: "1h"` 静默降级为 5 分钟，与 `config/models.toml` 部署行为分叉。
+> 阈值由 `cache_min_tokens_per_claude_version_floors` 逐条锁定，Mythos 的声明顺序由
+> `test_mythos_5_1_declared_before_mythos_5` 锁定。
+>
+> **仍存的已知分叉（本次未改）：** Claude 3.7 Sonnet 与 3.5 Sonnet v2 官方为 1,024 且
+> 只支持 5 分钟 TTL，网关没有专属条目、落到兜底的 4,096，即 1,024–4,095 tokens 的前缀
+> 不注入 cachePoint。这两个是上一代模型，不在本次范围内。AWS 当前表也已不再列出
+> Claude Opus 4，因此本文档不再声称它的官方阈值。此外 helm 副本在多数 Claude 条目上仍缺
+> `structured_output`（见 1.2 节的能力并集说明），彻底对齐需重新生成该副本并评估部署影响。
 
 ### 1.4 AWS 官方要点摘录
 
@@ -206,12 +246,30 @@ high / xhigh / max -> budget = effective_max - 1
 
 四条推理路径（由 `config/models.toml` 的 `reasoning_path` 字段决定）：
 
-| reasoning_path      | 适用模型示例            | Bedrock wire 字段                                        |
-| ------------------- | ----------------------- | -------------------------------------------------------- |
-| `budget_tokens`     | claude-sonnet-4-x       | `reasoning_config = {type: "enabled", budget_tokens: N}` |
-| `adaptive_thinking` | claude-opus-4-6/4-7/4-8/5 | `thinking = {type: "adaptive", display: "summarized"} + output_config.effort` |
-| `deepseek_string`   | deepseek.v3             | `reasoning_config = "low"/"medium"/"high"`               |
-| `none`              | 无推理能力模型          | 无（reasoning_effort 被忽略）                            |
+| reasoning_path      | 适用模型示例                                                   | Bedrock wire 字段                                                             |
+| ------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `budget_tokens`     | claude-sonnet-4-x                                              | `reasoning_config = {type: "enabled", budget_tokens: N}`                      |
+| `adaptive_thinking` | claude-opus-4-6/4-7/4-8/5、claude-sonnet-5、claude-fable-5/5-1 | `thinking = {type: "adaptive", display: "summarized"} + output_config.effort` |
+| `deepseek_string`   | deepseek.v3                                                    | `reasoning_config = "low"/"medium"/"high"`                                    |
+| `none`              | 无推理能力模型                                                 | 无（reasoning_effort 被忽略）                                                 |
+
+> **Fable 5.1 审视补充（两项均确认无需改代码）：**
+>
+> - **effort 等级不做逐模型门控。** `effort_str`（`src/bedrock/reasoning.rs`）把
+>   `low|medium|high|xhigh|max` 原样写入 `output_config.effort`。Fable 5.1 模型卡明确
+>   列出 effort 可取 low..max（默认 high），因此透传对它是正确的；但 AWS adaptive
+>   thinking 文档的 effort 表把 `max` 限定为 Opus 4.6 / Sonnet 4.6 / Opus 5、`xhigh`
+>   限定为 Opus 4.6 / Opus 5，对其他 adaptive 模型发 `max`/`xhigh` 可能被上游拒。这是
+>   既有面，不属于 Fable 5.1 的审视范围，本次未加门控。
+> - **`stop_reason: "refusal"` 走未知值小写透传。** Fable 5.1 模型卡有独立的 Content
+>   Restrictions 段：分类器拦截时返回 HTTP 200 加 `stop_reason: "refusal"` 与
+>   `stop_details`，且该模型的 refusal 率显著高于以往 Claude，官方要求客户端把 refusal
+>   当作主响应路径处理。`convert_finish_reason`（`src/bedrock/response.rs`）只显式映射
+>   `tool_use` / `end_turn` / `stop_sequence` / `complete` / `max_tokens` /
+>   `content_filtered`，其余一律小写透传，因此客户端会收到
+>   `finish_reason: "refusal"`（非 OpenAI 枚举值）：内容不丢失，但 `stop_details` 不透出。
+>   Converse 是否真的发出该 stopReason 没有文档或探测证据，故不做推测性映射；一旦确认，
+>   再决定是保留 `refusal` 还是映射为 `content_filter`。
 
 **官方示例（Converse API with reasoning）：**
 https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-runtime_example_bedrock-runtime_Converse_AnthropicClaudeReasoning_section.html

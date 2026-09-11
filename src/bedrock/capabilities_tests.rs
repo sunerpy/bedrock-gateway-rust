@@ -20,6 +20,7 @@ fn caps() -> ConfigModelCapabilities {
 // arbitrary test input, not model knowledge encoded in production code.
 const FULL_OPUS_4_8: &str = "global.anthropic.claude-opus-4-8-20251101-v1:0";
 const FULL_OPUS_5: &str = "us.anthropic.claude-opus-5";
+const FULL_FABLE_5_1: &str = "global.anthropic.claude-fable-5-1";
 const FULL_SONNET_4_5: &str = "us.anthropic.claude-sonnet-4-5-20250101-v1:0";
 const FULL_NOVA: &str = "us.amazon.nova-pro-v1:0";
 const FULL_DEEPSEEK_V3: &str = "us.deepseek.v3-v1:0";
@@ -44,6 +45,76 @@ fn opus_5_has_adaptive_thinking_and_required_capabilities() {
     );
     assert!(c.has(FULL_OPUS_5, Capability::DropSamplingParams));
     assert!(c.has(FULL_OPUS_5, Capability::NoAssistantPrefill));
+}
+
+#[test]
+fn fable_5_1_has_adaptive_thinking_and_required_capabilities() {
+    // AWS model card (Claude Fable 5.1): adaptive thinking always on, sampling
+    // params must be unset (temperature 1.0 / top_p 0.99 only), and prompt
+    // caching with a 512-token floor plus 5m + 1h TTL support. The 1M context is
+    // native, so NO `context_1m_beta` opt-in header is injected (same as Fable 5).
+    // StructuredOutput resolves true, but NOT from AWS documentation: the
+    // structured-outputs doc enumerates only Sonnet 4.5, Haiku 4.5, Opus 4.5 and
+    // Opus 4.6. `has()` unions the flags of EVERY entry whose match is a substring
+    // of the id, so `claude-fable-5` and the `anthropic.claude` catch-all grant it
+    // here no matter what the 5.1 entry declares. Denying it for one model would
+    // require a deny mechanism the capability resolver does not have.
+    let c = caps();
+    assert_eq!(
+        c.reasoning_path(FULL_FABLE_5_1),
+        ReasoningPath::AdaptiveThinking
+    );
+    assert!(c.has(FULL_FABLE_5_1, Capability::AdaptiveThinking));
+    assert!(c.has(FULL_FABLE_5_1, Capability::DropSamplingParams));
+    assert!(c.has(FULL_FABLE_5_1, Capability::NoAssistantPrefill));
+    assert!(c.has(FULL_FABLE_5_1, Capability::StructuredOutput));
+    assert!(c.has(FULL_FABLE_5_1, Capability::CacheTtl1h));
+    assert!(!c.has(FULL_FABLE_5_1, Capability::Context1mBeta));
+    assert_eq!(c.cache_min_tokens(FULL_FABLE_5_1), Some(512));
+}
+
+#[test]
+fn fable_5_1_wins_over_fable_5_substring_entry() {
+    // `claude-fable-5` is a SUBSTRING of `claude-fable-5-1`, and PARAMS come from
+    // the first substring match over config order. The 5.1 entry must therefore be
+    // declared BEFORE the 5 entry, otherwise 5.1 silently inherits Fable 5's
+    // `cache_min_tokens` and `reasoning_path`. Capability flags are unaffected by
+    // order — `has()` unions every matching entry — so this ordering contract
+    // protects [model.params] only.
+    let c = caps();
+    for id in [
+        "anthropic.claude-fable-5-1",
+        "us.anthropic.claude-fable-5-1",
+        "global.anthropic.claude-fable-5-1",
+    ] {
+        let matched = c
+            .matching_entry(&normalize_for_match(id))
+            .expect("fable 5.1 must match an entry")
+            .match_pattern
+            .clone();
+        assert_eq!(matched, "claude-fable-5-1", "{id} matched {matched}");
+    }
+    // Fable 5 resolves independently, and the AWS prompt-caching table gives it
+    // the same 512-token floor and 1h TTL support as 5.1 — so a shadowing
+    // regression can no longer be caught by the floor value, only by the pattern
+    // assertion above.
+    assert_eq!(
+        c.cache_min_tokens("global.anthropic.claude-fable-5"),
+        Some(512)
+    );
+    assert!(c.has("global.anthropic.claude-fable-5", Capability::CacheTtl1h));
+    assert!(!c.has("global.anthropic.claude-fable-5", Capability::Context1mBeta));
+}
+
+#[test]
+fn fable_5_1_honors_one_hour_cache_ttl() {
+    // The AWS model card lists both 5 minute and 1 hour TTL support, so a
+    // requested 1h must NOT be downgraded for Fable 5.1.
+    use crate::bedrock::cache::resolve_cache_ttl;
+    let c = caps();
+    let resolved = resolve_cache_ttl(Some("1h"), "5m", FULL_FABLE_5_1, &c);
+    assert_eq!(resolved.effective, "1h");
+    assert!(!resolved.downgraded);
 }
 
 #[test]
@@ -100,6 +171,10 @@ fn full_capability_table_parity() {
         ("claude-mythos-5", &[AdaptiveThinking, DropSamplingParams]),
         (
             "claude-fable-5",
+            &[NoAssistantPrefill, AdaptiveThinking, DropSamplingParams],
+        ),
+        (
+            "claude-fable-5-1",
             &[NoAssistantPrefill, AdaptiveThinking, DropSamplingParams],
         ),
     ];
@@ -244,9 +319,10 @@ fn reasoning_path_parity_from_config() {
 
 #[test]
 fn cache_min_tokens_and_beta_headers_from_config() {
-    // Claude Opus 4-8 configures a 4096 cache_min_tokens floor in config.
+    // Claude Opus 4.8 configures a 1,024 cache_min_tokens floor in config, per
+    // the AWS prompt-caching table row for `anthropic.claude-opus-4-8`.
     let c = caps();
-    assert_eq!(c.cache_min_tokens(FULL_OPUS_4_8), Some(4096));
+    assert_eq!(c.cache_min_tokens(FULL_OPUS_4_8), Some(1024));
     assert!(c.beta_headers(FULL_OPUS_4_8).is_empty());
 }
 
@@ -415,20 +491,34 @@ fn resolve_foundation_unchanged_by_normalization() {
 
 #[test]
 fn cache_min_tokens_per_claude_version_floors() {
-    // C3 regression lock: the per-version cache_min_tokens floors. The
-    // 4.5-gen Sonnet/Opus/Haiku carry the real AWS-doc 4096 floor; opus-4-6
-    // (synthetic) takes the conservative 4096; sonnet-4-6 keeps 1024.
+    // C3 regression lock: every per-version cache_min_tokens floor equals its
+    // row in the AWS prompt-caching table ("Minimum number of tokens per cache
+    // checkpoint"). A floor set ABOVE the official value is a SILENT defect:
+    // prefixes between the official minimum and the configured one skip
+    // cachePoint injection entirely while the request still returns 200, so the
+    // caching win is lost with no error to notice.
     let c = caps();
     let floor = |substr: &str| {
         let full = format!("global.anthropic.{substr}-20250101-v1:0");
         c.cache_min_tokens(&full)
     };
-    assert_eq!(floor("claude-sonnet-4-5"), Some(4096));
+    // 512-token floors.
+    assert_eq!(floor("claude-opus-5"), Some(512));
+    assert_eq!(floor("claude-fable-5"), Some(512));
+    assert_eq!(floor("claude-fable-5-1"), Some(512));
+    assert_eq!(floor("claude-mythos-5"), Some(512));
+    assert_eq!(floor("claude-mythos-5-1"), Some(512));
+    // 1,024-token floors.
+    assert_eq!(floor("claude-sonnet-4-5"), Some(1024));
+    assert_eq!(floor("claude-sonnet-4-6"), Some(1024));
+    assert_eq!(floor("claude-sonnet-5"), Some(1024));
+    assert_eq!(floor("claude-opus-4-8"), Some(1024));
+    // 4,096-token floors.
     assert_eq!(floor("claude-opus-4-5"), Some(4096));
     assert_eq!(floor("claude-haiku-4-5"), Some(4096));
     assert_eq!(floor("claude-opus-4-6"), Some(4096));
-    // sonnet-4-6 is intentionally left at the 1024 floor.
-    assert_eq!(floor("claude-sonnet-4-6"), Some(1024));
+    assert_eq!(floor("claude-opus-4-7"), Some(4096));
+    assert_eq!(floor("claude-mythos-preview"), Some(4096));
 }
 
 #[test]
@@ -436,10 +526,13 @@ fn unlisted_claude_id_hits_family_catch_all() {
     // C3 family catch-all: an unlisted anthropic.claude-* id falls through
     // to the `anthropic.claude` family entry, gaining caching support with
     // the conservative 4096 floor. supports_caching is the production gate.
+    // The ids here must not embed any declared `claude-*` substring — a
+    // future-Sonnet id like `claude-sonnet-5-0-future` legitimately resolves to
+    // the real `claude-sonnet-5` entry (1,024) instead of the catch-all.
     use crate::bedrock::cache::supports_caching;
     let c = caps();
     for id in [
-        "anthropic.claude-sonnet-5-0-future-20260101-v1:0",
+        "anthropic.claude-zephyr-9-20260101-v1:0",
         "anthropic.claude-future-99-v1:0",
     ] {
         assert!(
