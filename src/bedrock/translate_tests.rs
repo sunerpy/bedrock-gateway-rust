@@ -511,6 +511,7 @@ async fn drop_sampling_params_strips_both_temperature_and_topp() {
         "anthropic.claude-opus-4-8",
         "claude-mythos-5",
         "claude-fable-5",
+        "global.anthropic.claude-fable-5-1",
     ] {
         let mut req = base_request(model, vec![user_text("hi")]);
         req.temperature = Some(0.7);
