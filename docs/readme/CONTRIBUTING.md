@@ -57,7 +57,7 @@ contributor conventions in detail.
 
 All model knowledge lives in `config/*.toml`. Adding a new model or adjusting a
 capability flag never requires a code change. See the
-[Zero-Hardcoding Contract](../../AGENTS.md#3-零硬编码契约critical) section in AGENTS.md.
+[Hard rules](../../AGENTS.md#hard-rules) section in AGENTS.md.
 
 ## Code of Conduct
 
