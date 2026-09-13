@@ -725,6 +725,7 @@ async fn no_assistant_prefill_appends_continuation_for_responses() {
     for model in [
         "us.anthropic.claude-opus-5",
         "global.anthropic.claude-opus-5",
+        "global.anthropic.claude-fable-5-1",
     ] {
         let req = req_from(json!({
             "model": model,
