@@ -153,9 +153,10 @@ pub fn supports_caching(model: &str, caps: &dyn ModelCapabilities) -> bool {
 > **仍存的已知分叉（本次未改）：** Claude 3.7 Sonnet 与 3.5 Sonnet v2 官方为 1,024 且
 > 只支持 5 分钟 TTL，网关没有专属条目、落到兜底的 4,096，即 1,024–4,095 tokens 的前缀
 > 不注入 cachePoint。这两个是上一代模型，不在本次范围内。AWS 当前表也已不再列出
-> Claude Opus 4，因此本文档不再声称它的官方阈值。此外 helm 副本在 AWS 支持结构化输出的
-> Sonnet 4.5/4.6、Haiku 4.5、Opus 4.5/4.6 条目上仍缺 `structured_output`（见 1.2 节），
-> 彻底对齐需重新生成该副本并评估部署影响。
+> Claude Opus 4，因此本文档不再声称它的官方阈值。`helm/bedrock-gateway/files/models.toml`
+> 现在与 `config/models.toml` 逐字一致（此前缺 Sonnet 4.5/4.6、Haiku 4.5、Opus 4.5/4.6 的
+> `structured_output` 与 GPT-5.4/5.5 的 `chat_backend`），由
+> `helm_model_registry_matches_config_semantically` 锁定：改动主配置后需同步复制该副本。
 
 ### 1.4 AWS 官方要点摘录
 

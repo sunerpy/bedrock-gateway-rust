@@ -33,17 +33,18 @@ use crate::bedrock::cache_support::{send_with_cache_strip_retry, CacheSupportReg
 use crate::bedrock::capabilities::normalize_for_match;
 use crate::bedrock::client::{region_config_override, BedrockClients};
 use crate::bedrock::provider::{
-    build_sdk_inference_config, build_sdk_messages, build_sdk_system, build_sdk_tool_config,
-    converse_output_to_json,
+    build_sdk_inference_config, build_sdk_messages, build_sdk_output_config, build_sdk_system,
+    build_sdk_tool_config, converse_output_to_json,
 };
 use crate::bedrock::responses_response::from_converse_output_to_responses_with_tools;
 use crate::bedrock::responses_stream::{
     converse_stream_to_openai_responses, ResponsesStreamRuntime,
 };
 use crate::bedrock::responses_translate::{
-    build_responses_tools, reasoning_outcome, to_responses_converse_input, ResponsesToolRegistry,
+    build_responses_tools, reasoning_outcome, responses_output_format, to_responses_converse_input,
+    ResponsesToolRegistry,
 };
-use crate::bedrock::translate::ImageResolver;
+use crate::bedrock::translate::{merge_strict_text_format, ImageResolver};
 use crate::bedrock::{cache, provider, tools};
 use crate::config::{AppSettings, Capability, RegionRoutingConfig};
 use crate::domain::{
@@ -143,10 +144,19 @@ impl BedrockResponsesProvider {
         }
         let inference_config = Value::Object(inference);
 
-        let additional_fields = if reasoning.additional_model_request_fields.is_empty() {
+        // Structured output from `text.format`, translated exactly like chat
+        // `response_format` (gated on StructuredOutput, OpenAI naming/strict).
+        let output_format = responses_output_format(req, resolved, caps)?;
+        let mut additional = reasoning.additional_model_request_fields;
+        if output_format.as_ref().is_some_and(|f| f.strict_field) {
+            merge_strict_text_format(&mut additional);
+        }
+        let output_config = output_format.map(|f| f.output_config);
+
+        let additional_fields = if additional.is_empty() {
             None
         } else {
-            Some(Value::Object(reasoning.additional_model_request_fields))
+            Some(Value::Object(additional))
         };
 
         // toolConfig from the Responses flattened-function tools (the rejection
@@ -232,6 +242,7 @@ impl BedrockResponsesProvider {
             inference_config,
             additional_fields,
             tool_config,
+            output_config,
             tool_registry,
             cache_points_injected: used > 0,
         })
@@ -293,6 +304,9 @@ impl BedrockResponsesProvider {
         if let Some(tc) = &assembled.tool_config {
             call = call.tool_config(build_sdk_tool_config(tc).map_err(SendError::App)?);
         }
+        if let Some(oc) = &assembled.output_config {
+            call = call.output_config(build_sdk_output_config(oc).map_err(SendError::App)?);
+        }
 
         if let Some(route) = &route {
             call.customize()
@@ -352,6 +366,9 @@ impl BedrockResponsesProvider {
         if let Some(tc) = &assembled.tool_config {
             call = call.tool_config(build_sdk_tool_config(tc).map_err(SendError::App)?);
         }
+        if let Some(oc) = &assembled.output_config {
+            call = call.output_config(build_sdk_output_config(oc).map_err(SendError::App)?);
+        }
 
         if let Some(route) = &route {
             call.customize()
@@ -394,6 +411,8 @@ struct AssembledConverse {
     inference_config: Value,
     additional_fields: Option<Value>,
     tool_config: Option<Value>,
+    /// `outputConfig` from `text.format` (structured output), when requested.
+    output_config: Option<Value>,
     tool_registry: ResponsesToolRegistry,
     /// Whether any `cachePoint` landed across the tools/system/messages zones —
     /// consumed by the cache safety net at the send points (read-gate strip).

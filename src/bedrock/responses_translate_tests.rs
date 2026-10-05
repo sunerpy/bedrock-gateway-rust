@@ -1276,3 +1276,113 @@ mod prop_tests {
         }
     }
 }
+
+fn format_req(model: &str, format: Value) -> ResponsesRequest {
+    req_from(json!({ "model": model, "input": "hi", "text": { "format": format } }))
+}
+
+fn strict_capital_format() -> Value {
+    json!({
+        "type": "json_schema",
+        "name": "capital",
+        "strict": true,
+        "schema": {
+            "type": "object",
+            "properties": { "capital": { "type": "string" } },
+            "required": ["capital"],
+            "additionalProperties": false
+        }
+    })
+}
+
+#[test]
+fn text_format_json_schema_maps_to_output_config_with_strict_field() {
+    let req = format_req("gpt-6.1-sol", strict_capital_format());
+    let out = responses_output_format(&req, "global.openai.gpt-6.1-sol", &caps())
+        .expect("supported")
+        .expect("structured output requested");
+
+    let js = &out.output_config["textFormat"]["structure"]["jsonSchema"];
+    assert_eq!(out.output_config["textFormat"]["type"], "json_schema");
+    assert_eq!(js["name"], "capital");
+    let schema: Value = serde_json::from_str(js["schema"].as_str().expect("stringified")).unwrap();
+    assert_eq!(schema["required"], json!(["capital"]));
+    assert!(
+        out.strict_field,
+        "OpenAI-text-format model takes strict as a field"
+    );
+}
+
+#[test]
+fn text_format_nested_json_schema_wrapper_is_read() {
+    let req = format_req(
+        "gpt-6-sol",
+        json!({ "type": "json_schema", "json_schema": {
+            "name": "cap", "strict": true, "schema": { "type": "object", "properties": {} }
+        }}),
+    );
+    let out = responses_output_format(&req, "global.openai.gpt-6-sol", &caps())
+        .expect("supported")
+        .expect("requested");
+    assert_eq!(
+        out.output_config["textFormat"]["structure"]["jsonSchema"]["name"],
+        "cap"
+    );
+    assert!(out.strict_field);
+}
+
+#[test]
+fn text_format_json_object_gets_default_name_and_no_strict() {
+    let req = format_req("gpt-6.1-sol", json!({ "type": "json_object" }));
+    let out = responses_output_format(&req, "global.openai.gpt-6.1-sol", &caps())
+        .expect("supported")
+        .expect("requested");
+    assert_eq!(
+        out.output_config["textFormat"]["structure"]["jsonSchema"]["name"],
+        "response"
+    );
+    assert!(!out.strict_field);
+}
+
+#[test]
+fn text_format_on_claude_keeps_chat_semantics() {
+    // Supported Claude: outputConfig, but never the OpenAI strict field.
+    let req = format_req(
+        "global.anthropic.claude-sonnet-4-6",
+        strict_capital_format(),
+    );
+    let out = responses_output_format(&req, "global.anthropic.claude-sonnet-4-6", &caps())
+        .expect("supported")
+        .expect("requested");
+    assert!(!out.strict_field);
+
+    // Claude 5 generation: AWS rejects outputConfig, so the gateway says so.
+    let req = format_req(
+        "global.anthropic.claude-sonnet-5-5",
+        json!({ "type": "json_object" }),
+    );
+    let err = responses_output_format(&req, "global.anthropic.claude-sonnet-5-5", &caps())
+        .expect_err("unsupported");
+    assert!(
+        matches!(&err, AppError::BadRequest(m) if m.contains("does not support text.format")),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn text_format_text_or_absent_requests_nothing() {
+    let c = caps();
+    let req = format_req(
+        "global.anthropic.claude-sonnet-5-5",
+        json!({ "type": "text" }),
+    );
+    assert_eq!(
+        responses_output_format(&req, "global.anthropic.claude-sonnet-5-5", &c).unwrap(),
+        None
+    );
+    let req = req_from(json!({ "model": "global.anthropic.claude-sonnet-5-5", "input": "hi" }));
+    assert_eq!(
+        responses_output_format(&req, "global.anthropic.claude-sonnet-5-5", &c).unwrap(),
+        None
+    );
+}
