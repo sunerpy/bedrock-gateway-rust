@@ -20,8 +20,9 @@
 //! (no credentials, transient 5xx, region without Bedrock). A failure here must
 //! NOT crash boot — the service still serves `/health` and per-request inference
 //! works without the catalog. The refresh is therefore best-effort: a failure is
-//! logged and an empty catalog is used until `/models` is hit or a later refresh
-//! succeeds.
+//! logged and an empty catalog is used until a later refresh succeeds. A
+//! background task re-lists every `MODEL_CATALOG_REFRESH_SECS` (default 3600,
+//! `0` = boot only), so models launched after boot appear without a restart.
 //!
 //! ## Secrets
 //!
@@ -39,17 +40,20 @@ pub mod routers;
 pub mod state;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::extract::DefaultBodyLimit;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+use tokio::time::MissedTickBehavior;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tower_http::LatencyUnit;
 use tracing::Level;
 
 use crate::bedrock::cache_support::CacheSupportRegistry;
+use crate::bedrock::capabilities::ConfigModelCapabilities;
 use crate::bedrock::capsule::resolve_capsule_runtime;
 use crate::bedrock::client::{build_aws_config, BedrockClients};
 use crate::bedrock::embeddings::BedrockEmbeddingProvider;
@@ -61,6 +65,7 @@ use crate::bedrock::provider::BedrockChatProvider;
 use crate::bedrock::responses_chat_provider::ResponsesChatProvider;
 use crate::bedrock::responses_provider::BedrockResponsesProvider;
 use crate::bedrock::translate::ReqwestImageResolver;
+use crate::config::capabilities::ModelAlias;
 use crate::config::{AppSettings, EmbeddingRegistry, ModelCapabilityConfig, RegionRoutingConfig};
 use crate::domain::{ChatProvider, EmbeddingProvider, ModelCapabilities, ResponsesProvider};
 use crate::server::composite::{resolve_mantle_enabled, CompositeResponsesProvider};
@@ -116,28 +121,36 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
     let mantle_enabled = resolve_mantle_enabled(&caps_config, &settings);
     let mantle_chat_enabled = resolve_mantle_chat_enabled(&caps_config, &settings);
 
-    // Mantle-backed models are absent from the control-plane catalog; surface
-    // their bare alias names so `/models` lists them. Computed before
-    // `caps_config` is moved.
-    let mantle_alias_names = caps_config.mantle_alias_names();
+    // Computed before `caps_config` is moved into the resolver.
+    let shape = CatalogShape {
+        // Mantle-backed models are absent from the control-plane catalog;
+        // surface their bare alias names so `/models` lists them.
+        mantle_alias_names: caps_config.mantle_alias_names(),
+        aliases: caps_config.aliases.clone(),
+        // Effective allow-list: env `ALLOWED_MODELS` (comma-separated)
+        // OVERRIDES the optional `models.toml` `allowed_models` list. Empty ⇒
+        // allow all (identity filter).
+        allow_list: resolve_allow_list(&settings, &caps_config),
+    };
 
-    // Effective allow-list: env `ALLOWED_MODELS` (comma-separated) OVERRIDES the
-    // optional `models.toml` `allowed_models` list. Resolved before `caps_config`
-    // is moved into the resolver. Empty ⇒ allow all (identity filter).
-    let effective_allow_list = resolve_allow_list(&settings, &caps_config);
-
-    let caps: Arc<dyn ModelCapabilities> = Arc::new(
-        crate::bedrock::capabilities::ConfigModelCapabilities::with_profiles(
-            caps_config,
-            catalog.profile_metadata().clone(),
-        ),
-    );
-
-    let catalog = Arc::new(RwLock::new(
-        catalog
-            .with_extra_models(mantle_alias_names)
-            .apply_allow_list(&effective_allow_list),
+    let config_caps = Arc::new(ConfigModelCapabilities::with_profiles(
+        caps_config,
+        catalog.profile_metadata().clone(),
     ));
+    let caps: Arc<dyn ModelCapabilities> = config_caps.clone();
+
+    let catalog = Arc::new(RwLock::new(shape.apply(catalog)));
+
+    if settings.model_catalog_refresh_secs > 0 {
+        spawn_catalog_refresh(
+            clients.control.clone(),
+            settings.clone(),
+            shape,
+            catalog.clone(),
+            config_caps,
+            Duration::from_secs(settings.model_catalog_refresh_secs),
+        );
+    }
 
     let regions = Arc::new(RegionRoutingConfig::load_with_fallback(Some(
         &config_dir.join(REGIONS_CONFIG_FILE),
@@ -148,6 +161,7 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
 
     let image_resolver = Arc::new(ReqwestImageResolver::new(supports_image_predicate(
         catalog.clone(),
+        caps.clone(),
     )));
 
     // One shared negative cache for prompt-caching support, injected into both
@@ -238,23 +252,93 @@ fn resolve_allow_list(settings: &AppSettings, caps_config: &ModelCapabilityConfi
     }
 }
 
+/// What turns a raw control-plane listing into the served catalog. Captured at
+/// boot so the periodic refresh rebuilds the catalog exactly like boot does.
+struct CatalogShape {
+    mantle_alias_names: Vec<String>,
+    aliases: Vec<ModelAlias>,
+    allow_list: Vec<String>,
+}
+
+impl CatalogShape {
+    fn apply(&self, raw: ModelCatalog) -> ModelCatalog {
+        raw.with_extra_models(self.mantle_alias_names.clone())
+            .with_catalog_aliases(&self.aliases)
+            .apply_allow_list(&self.allow_list)
+    }
+}
+
+/// Install a freshly listed catalog. The profile map is swapped first so a new
+/// profile resolves before `/models` advertises it. Returns the number of
+/// listed control-plane models.
+async fn install_catalog(
+    raw: ModelCatalog,
+    shape: &CatalogShape,
+    catalog: &RwLock<ModelCatalog>,
+    caps: &ConfigModelCapabilities,
+) -> usize {
+    caps.replace_profiles(raw.profile_metadata().clone());
+    let fresh = shape.apply(raw);
+    let models = fresh.models().len();
+    *catalog.write().await = fresh;
+    models
+}
+
+/// Re-list the Bedrock control plane every `every` so models launched after
+/// boot show up without a restart. A failed listing keeps the previous catalog;
+/// the task ends with the runtime.
+fn spawn_catalog_refresh(
+    control: aws_sdk_bedrock::Client,
+    settings: Arc<AppSettings>,
+    shape: CatalogShape,
+    catalog: Arc<RwLock<ModelCatalog>>,
+    caps: Arc<ConfigModelCapabilities>,
+    every: Duration,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(every);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        // The first tick completes immediately, and boot has just listed.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            match ModelCatalog::refresh(&control, &settings).await {
+                Ok(raw) => {
+                    let models = install_catalog(raw, &shape, &catalog, &caps).await;
+                    tracing::info!(models, "model catalog refreshed");
+                }
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "model catalog refresh failed; keeping the previous catalog"
+                ),
+            }
+        }
+    });
+}
+
 /// Build the `supports_image` predicate for the multimodal URL resolver by
 /// consulting the live catalog for an `IMAGE` input modality. Resolved
 /// foundation ids may not be directly listed when the model is callable only
 /// through an inference profile, so a direct miss falls back through
-/// `profile_metadata` to any listed profile backed by that foundation.
+/// `profile_metadata` to any listed profile backed by that foundation. A bare
+/// `[[alias]]` name is looked up under its target, which is what the catalog
+/// lists.
 ///
 /// The closure clones the `Arc<RwLock<…>>` so it stays valid for the lifetime
-/// of the provider; it uses a blocking read inside an async context via
-/// `try_read`, falling back to `false` when the lock is momentarily contended
-/// (a refresh in progress) — a conservative default that simply skips remote
-/// image fetching rather than risking a deadlock.
+/// of the provider; it reads inside an async context via `try_read`. The lock
+/// is only contended while a periodic refresh swaps a new catalog in, and a
+/// request racing that swap is let through (`true`) instead of failing with a
+/// spurious "not supported" 400. Bedrock still rejects an image sent to a
+/// text-only model.
 fn supports_image_predicate(
     catalog: Arc<RwLock<ModelCatalog>>,
+    caps: Arc<dyn ModelCapabilities>,
 ) -> impl Fn(&str) -> bool + Send + Sync + 'static {
     move |model_id: &str| {
+        let target = caps.alias_target(model_id);
+        let model_id = target.as_deref().unwrap_or(model_id);
         let Ok(guard) = catalog.try_read() else {
-            return false;
+            return true;
         };
 
         let model_info = guard.models().get(model_id).or_else(|| {
@@ -411,6 +495,7 @@ mod tests {
             aws_connect_timeout_secs: 60,
             aws_read_timeout_secs: 900,
             responses_stream_idle_timeout_secs: 180,
+            model_catalog_refresh_secs: 0,
             aws_max_retry_attempts: 8,
             max_body_size_mb: 20,
             mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"
@@ -490,7 +575,7 @@ mod tests {
             underlying_model_id: "profile-only.vision-model-v1:0".to_string(),
         }];
         let catalog = Arc::new(RwLock::new(assemble_catalog(&fms, &profiles, &settings)));
-        let predicate = supports_image_predicate(catalog);
+        let predicate = supports_image_predicate(catalog, no_alias_caps());
 
         assert!(predicate("vision.model-v1:0"), "IMAGE modality => true");
         assert!(!predicate("text.model-v1:0"), "TEXT-only => false");
@@ -503,6 +588,148 @@ mod tests {
             "resolved profile-only foundation inherits IMAGE modality"
         );
         assert!(!predicate("unknown.model"), "absent => false");
+    }
+
+    fn no_alias_caps() -> Arc<dyn ModelCapabilities> {
+        Arc::new(ConfigModelCapabilities::new(
+            ModelCapabilityConfig::default(),
+        ))
+    }
+
+    fn profile_only_vision_catalog(settings: &AppSettings) -> ModelCatalog {
+        use crate::bedrock::models::{assemble_catalog, FoundationModelFacts, ProfileEntry};
+        let fms = [FoundationModelFacts {
+            model_id: "vendor.vision-model".to_string(),
+            input_modalities: vec!["TEXT".to_string(), "IMAGE".to_string()],
+            inference_types: vec!["INFERENCE_PROFILE".to_string()],
+            response_streaming_supported: true,
+            status: "ACTIVE".to_string(),
+        }];
+        let profiles = [ProfileEntry {
+            key: "global.vendor.vision-model".to_string(),
+            underlying_model_id: "vendor.vision-model".to_string(),
+        }];
+        assemble_catalog(&fms, &profiles, settings)
+    }
+
+    /// A bare `[[alias]]` name is checked under its target, the id the
+    /// catalog actually lists, so image input works through the alias.
+    #[test]
+    fn supports_image_predicate_follows_alias_target() {
+        let settings = boot_settings();
+        let caps_config = ModelCapabilityConfig::from_toml_str(
+            "[[alias]]\nfrom = \"vision\"\nto = \"global.vendor.vision-model\"\n",
+        )
+        .expect("alias config parses");
+        let caps: Arc<dyn ModelCapabilities> = Arc::new(ConfigModelCapabilities::new(caps_config));
+        let catalog = Arc::new(RwLock::new(profile_only_vision_catalog(&settings)));
+        let predicate = supports_image_predicate(catalog, caps);
+
+        assert!(predicate("vision"), "alias resolves to its listed target");
+        assert!(predicate("global.vendor.vision-model"));
+    }
+
+    /// While a refresh holds the write lock, the predicate lets the request
+    /// through instead of failing it with a spurious "not supported" 400.
+    #[test]
+    fn supports_image_predicate_fails_open_while_catalog_is_swapped() {
+        let catalog = Arc::new(RwLock::new(ModelCatalog::default()));
+        let predicate = supports_image_predicate(catalog.clone(), no_alias_caps());
+        assert!(!predicate("unknown.model"), "unlocked + absent => false");
+
+        let _swap = catalog.try_write().expect("no other holder");
+        assert!(predicate("unknown.model"), "contended => true");
+    }
+
+    /// A periodic refresh installs the new listing exactly like boot: the
+    /// profile map is replaced, aliases whose target is listed are advertised,
+    /// and the allow-list still filters.
+    #[tokio::test]
+    async fn install_catalog_replaces_profiles_and_lists_catalog_aliases() {
+        let settings = boot_settings();
+        let caps_config = ModelCapabilityConfig::from_toml_str(
+            "[[alias]]\nfrom = \"vision\"\nto = \"global.vendor.vision-model\"\n\n[[alias]]\nfrom = \"ghost\"\nto = \"global.vendor.not-listed\"\n",
+        )
+        .expect("alias config parses");
+        let shape = CatalogShape {
+            mantle_alias_names: vec!["gpt-mantle".to_string()],
+            aliases: caps_config.aliases.clone(),
+            allow_list: Vec::new(),
+        };
+        let caps = ConfigModelCapabilities::new(caps_config);
+        let catalog = RwLock::new(shape.apply(ModelCatalog::default()));
+        assert_eq!(
+            caps.resolve_foundation("global.vendor.vision-model"),
+            "global.vendor.vision-model",
+            "unknown profile passes through before the refresh"
+        );
+
+        let models = install_catalog(
+            profile_only_vision_catalog(&settings),
+            &shape,
+            &catalog,
+            &caps,
+        )
+        .await;
+
+        assert_eq!(models, 1);
+        assert_eq!(
+            caps.resolve_foundation("global.vendor.vision-model"),
+            "vendor.vision-model",
+            "refreshed profile map resolves the new profile"
+        );
+        let ids: Vec<String> = catalog
+            .read()
+            .await
+            .list()
+            .data
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "global.vendor.vision-model".to_string(),
+                "gpt-mantle".to_string(),
+                "vision".to_string(),
+            ],
+            "alias with an unlisted target (ghost) stays hidden"
+        );
+    }
+
+    /// The allow-list applies to refreshed listings too, aliases included.
+    #[tokio::test]
+    async fn install_catalog_keeps_allow_list() {
+        let settings = boot_settings();
+        let caps_config = ModelCapabilityConfig::from_toml_str(
+            "[[alias]]\nfrom = \"vision\"\nto = \"global.vendor.vision-model\"\n",
+        )
+        .expect("alias config parses");
+        let shape = CatalogShape {
+            mantle_alias_names: Vec::new(),
+            aliases: caps_config.aliases.clone(),
+            allow_list: vec!["global.".to_string()],
+        };
+        let caps = ConfigModelCapabilities::new(caps_config);
+        let catalog = RwLock::new(ModelCatalog::default());
+
+        install_catalog(
+            profile_only_vision_catalog(&settings),
+            &shape,
+            &catalog,
+            &caps,
+        )
+        .await;
+
+        let ids: Vec<String> = catalog
+            .read()
+            .await
+            .list()
+            .data
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, vec!["global.vendor.vision-model".to_string()]);
     }
 
     /// The bootstrap assembles a working `AppState` without AWS credentials

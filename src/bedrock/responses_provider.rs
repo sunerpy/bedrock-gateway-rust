@@ -33,17 +33,18 @@ use crate::bedrock::cache_support::{send_with_cache_strip_retry, CacheSupportReg
 use crate::bedrock::capabilities::normalize_for_match;
 use crate::bedrock::client::{region_config_override, BedrockClients};
 use crate::bedrock::provider::{
-    build_sdk_inference_config, build_sdk_messages, build_sdk_system, build_sdk_tool_config,
-    converse_output_to_json,
+    build_sdk_inference_config, build_sdk_messages, build_sdk_output_config, build_sdk_system,
+    build_sdk_tool_config, converse_output_to_json,
 };
 use crate::bedrock::responses_response::from_converse_output_to_responses_with_tools;
 use crate::bedrock::responses_stream::{
     converse_stream_to_openai_responses, ResponsesStreamRuntime,
 };
 use crate::bedrock::responses_translate::{
-    build_responses_tools, reasoning_outcome, to_responses_converse_input, ResponsesToolRegistry,
+    build_responses_tools, reasoning_outcome, responses_output_format, to_responses_converse_input,
+    ResponsesToolRegistry,
 };
-use crate::bedrock::translate::ImageResolver;
+use crate::bedrock::translate::{merge_strict_text_format, ImageResolver};
 use crate::bedrock::{cache, provider, tools};
 use crate::config::{AppSettings, Capability, RegionRoutingConfig};
 use crate::domain::{
@@ -143,10 +144,19 @@ impl BedrockResponsesProvider {
         }
         let inference_config = Value::Object(inference);
 
-        let additional_fields = if reasoning.additional_model_request_fields.is_empty() {
+        // Structured output from `text.format`, translated exactly like chat
+        // `response_format` (gated on StructuredOutput, OpenAI naming/strict).
+        let output_format = responses_output_format(req, resolved, caps)?;
+        let mut additional = reasoning.additional_model_request_fields;
+        if output_format.as_ref().is_some_and(|f| f.strict_field) {
+            merge_strict_text_format(&mut additional);
+        }
+        let output_config = output_format.map(|f| f.output_config);
+
+        let additional_fields = if additional.is_empty() {
             None
         } else {
-            Some(Value::Object(reasoning.additional_model_request_fields))
+            Some(Value::Object(additional))
         };
 
         // toolConfig from the Responses flattened-function tools (the rejection
@@ -232,6 +242,7 @@ impl BedrockResponsesProvider {
             inference_config,
             additional_fields,
             tool_config,
+            output_config,
             tool_registry,
             cache_points_injected: used > 0,
         })
@@ -241,9 +252,10 @@ impl BedrockResponsesProvider {
     /// it (applying the per-request region override at the call site).
     ///
     /// `request_model` is the ORIGINAL incoming model id (cross-region prefix
-    /// intact). It is what reaches Bedrock and keys the region table — mirroring
-    /// the chat provider. The resolved (prefix-stripped) foundation id is for
-    /// capability matching only; sending it to Bedrock triggers an on-demand 400.
+    /// intact). It — or its `[[alias]]` target, see [`Self::callable_model_id`]
+    /// — is what reaches Bedrock and keys the region table, mirroring the chat
+    /// provider. The resolved (prefix-stripped) foundation id is for capability
+    /// matching only; sending it to Bedrock triggers an on-demand 400.
     /// See [`Self::outbound_model_id`].
     ///
     /// Returns the raw service error in a [`SendError`] so the shared cache
@@ -263,8 +275,9 @@ impl BedrockResponsesProvider {
         request_model: &str,
         assembled: &AssembledConverse,
     ) -> Result<ConverseOutput, SendError<ConverseError>> {
-        let route = self.regions.route_for(request_model);
-        let model_id = Self::outbound_model_id(request_model, route.as_ref());
+        let callable = self.callable_model_id(request_model);
+        let route = self.regions.route_for(&callable);
+        let model_id = Self::outbound_model_id(&callable, route.as_ref());
 
         let messages = build_sdk_messages(&assembled.messages).map_err(SendError::App)?;
         let system = build_sdk_system(&assembled.system).map_err(SendError::App)?;
@@ -290,6 +303,9 @@ impl BedrockResponsesProvider {
         }
         if let Some(tc) = &assembled.tool_config {
             call = call.tool_config(build_sdk_tool_config(tc).map_err(SendError::App)?);
+        }
+        if let Some(oc) = &assembled.output_config {
+            call = call.output_config(build_sdk_output_config(oc).map_err(SendError::App)?);
         }
 
         if let Some(route) = &route {
@@ -321,8 +337,9 @@ impl BedrockResponsesProvider {
         request_model: &str,
         assembled: &AssembledConverse,
     ) -> Result<ConverseStreamOutput, SendError<ConverseStreamError>> {
-        let route = self.regions.route_for(request_model);
-        let model_id = Self::outbound_model_id(request_model, route.as_ref());
+        let callable = self.callable_model_id(request_model);
+        let route = self.regions.route_for(&callable);
+        let model_id = Self::outbound_model_id(&callable, route.as_ref());
 
         let messages = build_sdk_messages(&assembled.messages).map_err(SendError::App)?;
         let system = build_sdk_system(&assembled.system).map_err(SendError::App)?;
@@ -349,6 +366,9 @@ impl BedrockResponsesProvider {
         if let Some(tc) = &assembled.tool_config {
             call = call.tool_config(build_sdk_tool_config(tc).map_err(SendError::App)?);
         }
+        if let Some(oc) = &assembled.output_config {
+            call = call.output_config(build_sdk_output_config(oc).map_err(SendError::App)?);
+        }
 
         if let Some(route) = &route {
             call.customize()
@@ -372,6 +392,15 @@ impl BedrockResponsesProvider {
             .map(|r| r.rewritten_model_id.clone())
             .unwrap_or_else(|| request_model.to_string())
     }
+
+    /// The id to call for `request_model`: its `[[alias]]` target when it is an
+    /// alias (the target may be a cross-region profile), else the request model
+    /// unchanged. Mirrors the chat translation's `ConverseArgs::model_id`.
+    fn callable_model_id(&self, request_model: &str) -> String {
+        self.caps
+            .alias_target(request_model)
+            .unwrap_or_else(|| request_model.to_string())
+    }
 }
 
 /// The assembled Bedrock Converse JSON slots produced by
@@ -382,6 +411,8 @@ struct AssembledConverse {
     inference_config: Value,
     additional_fields: Option<Value>,
     tool_config: Option<Value>,
+    /// `outputConfig` from `text.format` (structured output), when requested.
+    output_config: Option<Value>,
     tool_registry: ResponsesToolRegistry,
     /// Whether any `cachePoint` landed across the tools/system/messages zones —
     /// consumed by the cache safety net at the send points (read-gate strip).

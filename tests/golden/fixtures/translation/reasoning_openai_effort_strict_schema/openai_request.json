@@ -1,0 +1,21 @@
+{
+  "model": "gpt-6.1-sol",
+  "messages": [{ "role": "user", "content": "Give the capital of France." }],
+  "max_tokens": 2048,
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "reasoning_effort": "high",
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "capital",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": { "capital": { "type": "string" } },
+        "required": ["capital"],
+        "additionalProperties": false
+      }
+    }
+  }
+}

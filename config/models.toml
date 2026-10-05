@@ -39,14 +39,30 @@
 #                               top_p; when set, the gateway strips both from the
 #                               request. Stronger than temperature_topp_conflict
 #                               (which only drops top_p when temperature is present).
-#                               Applies to Claude Opus 4.7+, Sonnet 5, and
-#                               Fable/Mythos 5 including Fable 5.1.
+#                               Applies to Claude Opus 4.7+, Sonnet 5 / 5.5,
+#                               Fable/Mythos 5 including Fable 5.1, and the
+#                               GPT-6 family on Converse.
 #   structured_output         – this model supports native structured output via
 #                               Bedrock Converse outputConfig.textFormat (grammar-
 #                               constrained decoding); when set, an OpenAI
 #                               response_format (json_object / json_schema) is
 #                               honored by emitting outputConfig. Models without
 #                               this flag reject response_format with HTTP 400.
+#                               For Claude, AWS (claude-messages-structured-
+#                               outputs) lists only Sonnet 4.5, Sonnet 4.6,
+#                               Haiku 4.5, Opus 4.5 and Opus 4.6; Opus 4.7+ and
+#                               the 5 generation answer an outputConfig with
+#                               "output_config.format: Extra inputs are not
+#                               permitted", so they do not carry the flag.
+#   openai_text_format        – this model's Converse structured output follows
+#                               the OpenAI text.format contract (GPT models):
+#                               jsonSchema.name is required, so the gateway
+#                               fills a default when the request has none
+#                               (always for json_object), and json_schema
+#                               strict:true is forwarded as
+#                               additionalModelRequestFields.text.format.strict.
+#                               Shapes the request only; structured_output still
+#                               gates it.
 #   cache_ttl_1h              – this model supports a 1-hour prompt-cache
 #                               cachePoint.ttl; when set, a requested 1h cache TTL
 #                               (per-request extra_body.prompt_caching.ttl or the
@@ -66,6 +82,9 @@
 #   budget_tokens     – reasoning_config={type:"enabled",budget_tokens:N} where N
 #                       is computed from max_tokens via budget_ratios below.
 #   deepseek_string   – reasoning_config sent as a bare string "low"|"medium"|"high".
+#   openai_effort     – reasoning={effort:"<effort>"} (OpenAI GPT models on
+#                       Converse); the effort is passed through verbatim and the
+#                       upstream rejects values a model does not accept.
 #   none              – the model has no extended-thinking mode; reasoning_effort
 #                       is ignored.
 
@@ -105,6 +124,25 @@ to = "openai.gpt-5.6-luna"
 [[alias]]
 from = "gpt-oss-120b"
 to = "openai.gpt-oss-120b"
+
+# GPT-6.x are profile-only on bedrock-runtime and absent from bedrock-mantle in
+# us-east-2, so their bare names alias straight to the Global cross-Region
+# inference profile, which the Converse path sends upstream unchanged.
+[[alias]]
+from = "gpt-6.1-sol"
+to = "global.openai.gpt-6.1-sol"
+
+[[alias]]
+from = "gpt-6-sol"
+to = "global.openai.gpt-6-sol"
+
+[[alias]]
+from = "gpt-6-luna"
+to = "global.openai.gpt-6-luna"
+
+[[alias]]
+from = "gpt-6-astra"
+to = "global.openai.gpt-6-astra"
 
 [[alias]]
 from = "gpt-oss-20b"
@@ -193,7 +231,6 @@ capabilities = [
   "no_assistant_prefill",
   "adaptive_thinking",
   "drop_sampling_params",
-  "structured_output",
   "cache_ttl_1h",
 ]
 # Opus 4.7 and later deprecate temperature/top_p (HTTP 400 on non-default values).
@@ -207,11 +244,29 @@ capabilities = [
   "no_assistant_prefill",
   "adaptive_thinking",
   "drop_sampling_params",
-  "structured_output",
   "cache_ttl_1h",
 ]
 [model.params]
 cache_min_tokens = 1024 # AWS prompt-caching table row `anthropic.claude-opus-4-8`: 1,024 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
+reasoning_path = "adaptive_thinking"
+
+[[model]]
+# Claude Opus 5.5 — MUST stay BEFORE `claude-opus-5`: params come from the
+# FIRST substring match and "claude-opus-5" is a substring of
+# "claude-opus-5-5", so declaring 5 first would hand 5.5 Opus 5's params.
+# AWS model card (model-card-anthropic-claude-opus-5-5): 1M context with no
+# beta opt-in, 128K max output, adaptive thinking always on (effort low..max,
+# default medium), temperature/top_p deprecated (live: "`temperature` is
+# deprecated for this model"), structured outputs NOT supported.
+match = "claude-opus-5-5"
+capabilities = [
+  "no_assistant_prefill",
+  "adaptive_thinking",
+  "drop_sampling_params",
+  "cache_ttl_1h",
+]
+[model.params]
+cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-opus-5-5`: 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
 reasoning_path = "adaptive_thinking"
 
 [[model]]
@@ -220,7 +275,6 @@ capabilities = [
   "no_assistant_prefill",
   "adaptive_thinking",
   "drop_sampling_params",
-  "structured_output",
   "cache_ttl_1h",
 ]
 [model.params]
@@ -228,8 +282,28 @@ cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-opus-5`:
 reasoning_path = "adaptive_thinking"
 
 [[model]]
+# Claude Sonnet 5.5 — MUST stay BEFORE `claude-sonnet-5` (same first-match
+# params rule as Opus 5.5 above). AWS model card
+# (model-card-anthropic-claude-sonnet-5-5): 1M context with no beta opt-in,
+# 128K max output, adaptive thinking on by default (effort low..max, default
+# high), structured outputs NOT supported. Live: temperature/top_p deprecated
+# and "This model does not support assistant message prefill".
+match = "claude-sonnet-5-5"
+capabilities = [
+  "no_assistant_prefill",
+  "adaptive_thinking",
+  "drop_sampling_params",
+  "cache_ttl_1h",
+]
+[model.params]
+cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-sonnet-5-5`: 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
+reasoning_path = "adaptive_thinking"
+
+[[model]]
+# Live: Sonnet 5 rejects a conversation ending on an assistant turn ("This
+# model does not support assistant message prefill"), hence no_assistant_prefill.
 match = "claude-sonnet-5"
-capabilities = ["adaptive_thinking", "drop_sampling_params", "structured_output", "cache_ttl_1h"]
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
 [model.params]
 cache_min_tokens = 1024 # AWS prompt-caching table row `anthropic.claude-sonnet-5`: 1,024 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
 reasoning_path = "adaptive_thinking"
@@ -244,7 +318,6 @@ match = "claude-mythos-5-1"
 capabilities = [
   "adaptive_thinking",
   "drop_sampling_params",
-  "structured_output",
   "cache_ttl_1h",
 ]
 [model.params]
@@ -256,7 +329,6 @@ match = "claude-mythos-5"
 capabilities = [
   "adaptive_thinking",
   "drop_sampling_params",
-  "structured_output",
   "cache_ttl_1h",
 ]
 [model.params]
@@ -270,7 +342,6 @@ match = "claude-mythos-preview"
 capabilities = [
   "adaptive_thinking",
   "drop_sampling_params",
-  "structured_output",
   "cache_ttl_1h",
 ]
 [model.params]
@@ -290,17 +361,14 @@ reasoning_path = "adaptive_thinking"
 # always on and not disableable (effort low..max, default high), temperature
 # 1.0-or-unset and top_p 0.99-or-unset which cannot be combined and top_k
 # unsupported → drop_sampling_params.
-# structured_output is declared to match RESOLVED behavior, not because AWS
-# documents it for this id: claude-messages-structured-outputs names only Sonnet
-# 4.5, Haiku 4.5, Opus 4.5 and Opus 4.6. The catch-all grants the flag to every
-# anthropic.claude id anyway, so withholding it here would change nothing while
-# making this entry lie about what the model actually gets.
+# No structured_output: claude-messages-structured-outputs names only Sonnet
+# 4.5, Sonnet 4.6, Haiku 4.5, Opus 4.5 and Opus 4.6, and a live outputConfig
+# request returns "output_config.format: Extra inputs are not permitted".
 match = "claude-fable-5-1"
 capabilities = [
   "no_assistant_prefill",
   "adaptive_thinking",
   "drop_sampling_params",
-  "structured_output",
   "cache_ttl_1h",
 ]
 [model.params]
@@ -316,7 +384,6 @@ capabilities = [
   "no_assistant_prefill",
   "adaptive_thinking",
   "drop_sampling_params",
-  "structured_output",
   "cache_ttl_1h",
 ]
 [model.params]
@@ -328,8 +395,11 @@ reasoning_path = "adaptive_thinking"
 # Family catch-all: any unlisted anthropic.claude-* id auto-gets caching support.
 # MUST stay LAST among claude entries — matching is first-match substring, so
 # specific claude-* entries above win; this only catches NEW/unlisted Claude ids.
+# It grants no capability flags: flags are a union over every matching entry,
+# so a flag here would reach every Claude id. structured_output in particular
+# is declared per model on the entries AWS documents it for.
 match = "anthropic.claude"
-capabilities = ["structured_output"]
+capabilities = []
 [model.params]
 cache_min_tokens = 4096 # conservative floor for unlisted Claude versions
 
@@ -422,6 +492,47 @@ capabilities = []
 responses_backend = "mantle"
 chat_backend = "responses"
 available_regions = ["us-east-1", "us-east-2", "us-west-2"]
+
+# ---------------------------------------------------------------------------
+# OpenAI GPT-6 family via Bedrock Converse (cross-region inference profiles)
+# ---------------------------------------------------------------------------
+# No backend override: GPT-6.x are absent from bedrock-mantle in us-east-2
+# (live 404 "The model 'openai.gpt-6.1-sol' does not exist"; the GPT-6.1 Sol
+# model card serves mantle only in us-east-1) and are profile-only on
+# bedrock-runtime (`us.` / `global.` ids), which Converse serves on both
+# surfaces. Live Converse behavior, all four models:
+# - temperature / topP → 400 "This model doesn't support the temperature
+#   field", hence drop_sampling_params;
+# - additionalModelRequestFields.reasoning.effort is the effort knob
+#   (`reasoning_effort` → 400 unknown_parameter), hence openai_effort;
+# - outputConfig.textFormat works once jsonSchema.name is present (missing →
+#   400 "Missing required parameter: 'text.format.name'"), and
+#   text.format.strict is honored, hence structured_output + openai_text_format.
+# Explicit cachePoint is unsupported on Converse for these models (implicit
+# caching still applies), so there is deliberately no cache_min_tokens.
+[[model]]
+match = "openai.gpt-6.1-sol"
+capabilities = ["drop_sampling_params", "structured_output", "openai_text_format"]
+[model.params]
+reasoning_path = "openai_effort"
+
+[[model]]
+match = "openai.gpt-6-sol"
+capabilities = ["drop_sampling_params", "structured_output", "openai_text_format"]
+[model.params]
+reasoning_path = "openai_effort"
+
+[[model]]
+match = "openai.gpt-6-luna"
+capabilities = ["drop_sampling_params", "structured_output", "openai_text_format"]
+[model.params]
+reasoning_path = "openai_effort"
+
+[[model]]
+match = "openai.gpt-6-astra"
+capabilities = ["drop_sampling_params", "structured_output", "openai_text_format"]
+[model.params]
+reasoning_path = "openai_effort"
 
 # ---------------------------------------------------------------------------
 # gpt-oss chat models via bedrock-mantle (chat_backend, /chat/completions ONLY)

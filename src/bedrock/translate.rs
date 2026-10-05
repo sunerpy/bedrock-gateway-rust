@@ -69,7 +69,8 @@ use crate::openai::schema::{
 /// request.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConverseArgs {
-    /// `modelId` — the original request model id (Converse resolves profiles).
+    /// `modelId` — the request model id as the client sent it (Converse
+    /// resolves profiles), or its `[[alias]]` target when it is an alias.
     pub model_id: String,
     /// `messages` — Bedrock user/assistant turns (a JSON array).
     pub messages: Value,
@@ -823,16 +824,23 @@ pub async fn to_converse_args(
         }
     }
 
+    let output_config = build_output_config(req, caps)?;
+    if output_config.is_some() && wants_strict_text_format(req, caps) {
+        merge_strict_text_format(&mut additional);
+    }
+
     let additional_model_request_fields = if additional.is_empty() {
         None
     } else {
         Some(Value::Object(additional))
     };
 
-    let output_config = build_output_config(req, caps)?;
-
     Ok(ConverseArgs {
-        model_id: req.model.clone(),
+        // An `[[alias]]` names the id to call (possibly a cross-region
+        // profile); anything else is sent exactly as the client gave it.
+        model_id: caps
+            .alias_target(&req.model)
+            .unwrap_or_else(|| req.model.clone()),
         messages,
         system,
         inference_config,
@@ -855,36 +863,62 @@ fn build_output_config(
     req: &ChatRequest,
     caps: &dyn ModelCapabilities,
 ) -> Result<Option<Value>, AppError> {
-    let format = match &req.response_format {
+    let (schema, name) = match &req.response_format {
         None | Some(ResponseFormat::Text) => return Ok(None),
-        Some(other) => other,
-    };
-
-    if !caps.has(&req.model, Capability::StructuredOutput) {
-        return Err(AppError::BadRequest(format!(
-            "model `{}` does not support response_format (structured output)",
-            req.model
-        )));
-    }
-
-    let (schema, name) = match format {
-        ResponseFormat::Text => unreachable!("text handled above"),
-        ResponseFormat::JsonObject => (
-            json!({ "type": "object", "additionalProperties": false }),
-            None,
-        ),
-        ResponseFormat::JsonSchema { json_schema } => (
+        Some(ResponseFormat::JsonObject) => (json_object_schema(), None),
+        Some(ResponseFormat::JsonSchema { json_schema }) => (
             json_schema
                 .schema
                 .clone()
                 .unwrap_or_else(|| json!({ "type": "object" })),
-            json_schema.name.clone(),
+            json_schema.name.as_deref(),
         ),
     };
+    json_output_config(
+        &req.model,
+        &req.model,
+        "response_format",
+        &schema,
+        name,
+        caps,
+    )
+    .map(Some)
+}
 
-    let schema_string = serde_json::to_string(&schema).map_err(|e| {
-        AppError::Internal(format!("failed to stringify response_format schema: {e}"))
-    })?;
+/// The schema a `json_object` request decodes against: any JSON object.
+/// Bedrock rejects an `object` schema without `additionalProperties: false`.
+pub(crate) fn json_object_schema() -> Value {
+    json!({ "type": "object", "additionalProperties": false })
+}
+
+/// Build `outputConfig.textFormat` for a JSON output request, shared by the
+/// chat `response_format` and the Responses `text.format` translations.
+///
+/// Gates on [`Capability::StructuredOutput`] for `caps_model` (clean 400 naming
+/// `display_model` and the request `field` when unsupported). An
+/// OpenAI-text-format model gets a default `jsonSchema.name` when the request
+/// carries none, because its upstream rejects an unnamed schema.
+pub(crate) fn json_output_config(
+    caps_model: &str,
+    display_model: &str,
+    field: &str,
+    schema: &Value,
+    name: Option<&str>,
+    caps: &dyn ModelCapabilities,
+) -> Result<Value, AppError> {
+    if !caps.has(caps_model, Capability::StructuredOutput) {
+        return Err(AppError::BadRequest(format!(
+            "model `{display_model}` does not support {field} (structured output)"
+        )));
+    }
+
+    let name = name.map(str::to_string).or_else(|| {
+        caps.has(caps_model, Capability::OpenaiTextFormat)
+            .then(|| DEFAULT_JSON_SCHEMA_NAME.to_string())
+    });
+
+    let schema_string = serde_json::to_string(schema)
+        .map_err(|e| AppError::Internal(format!("failed to stringify {field} schema: {e}")))?;
 
     let mut json_schema = Map::new();
     json_schema.insert("schema".to_string(), Value::String(schema_string));
@@ -892,12 +926,61 @@ fn build_output_config(
         json_schema.insert("name".to_string(), Value::String(name));
     }
 
-    Ok(Some(json!({
+    Ok(json!({
         "textFormat": {
             "type": "json_schema",
             "structure": { "jsonSchema": Value::Object(json_schema) }
         }
-    })))
+    }))
+}
+
+/// `jsonSchema.name` sent for an OpenAI-text-format model when the request
+/// names no schema (always the case for `json_object`). Protocol filler only.
+const DEFAULT_JSON_SCHEMA_NAME: &str = "response";
+
+/// Whether a strict JSON-schema request must also carry
+/// `additionalModelRequestFields.text.format.strict`: only models whose
+/// Converse structured output follows the OpenAI contract
+/// ([`Capability::OpenaiTextFormat`]) take strictness from that field.
+/// Claude-style models carry no such field and never get it.
+pub(crate) fn needs_strict_text_format_field(
+    model: &str,
+    strict: bool,
+    caps: &dyn ModelCapabilities,
+) -> bool {
+    strict && caps.has(model, Capability::OpenaiTextFormat)
+}
+
+/// Chat form of [`needs_strict_text_format_field`]: a `json_schema`
+/// `response_format` with `strict: true`.
+fn wants_strict_text_format(req: &ChatRequest, caps: &dyn ModelCapabilities) -> bool {
+    let strict = matches!(
+        &req.response_format,
+        Some(ResponseFormat::JsonSchema { json_schema }) if json_schema.strict == Some(true)
+    );
+    needs_strict_text_format_field(&req.model, strict, caps)
+}
+
+/// Set `text.format.strict = true` in `additionalModelRequestFields`, keeping
+/// anything a client already placed under `text` via `extra_body`.
+pub(crate) fn merge_strict_text_format(additional: &mut Map<String, Value>) {
+    let text = additional
+        .entry("text".to_string())
+        .or_insert_with(|| json!({}));
+    if !text.is_object() {
+        *text = json!({});
+    }
+    if let Some(text) = text.as_object_mut() {
+        let format = text
+            .entry("format".to_string())
+            .or_insert_with(|| json!({}));
+        if !format.is_object() {
+            *format = json!({});
+        }
+        if let Some(format) = format.as_object_mut() {
+            format.insert("strict".to_string(), Value::Bool(true));
+        }
+    }
 }
 
 /// Merge a single beta header into `additional["anthropic_beta"]`, matching the

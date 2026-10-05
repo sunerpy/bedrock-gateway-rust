@@ -53,12 +53,11 @@ fn fable_5_1_has_adaptive_thinking_and_required_capabilities() {
     // params must be unset (temperature 1.0 / top_p 0.99 only), and prompt
     // caching with a 512-token floor plus 5m + 1h TTL support. The 1M context is
     // native, so NO `context_1m_beta` opt-in header is injected (same as Fable 5).
-    // StructuredOutput resolves true, but NOT from AWS documentation: the
-    // structured-outputs doc enumerates only Sonnet 4.5, Haiku 4.5, Opus 4.5 and
-    // Opus 4.6. `has()` unions the flags of EVERY entry whose match is a substring
-    // of the id, so `claude-fable-5` and the `anthropic.claude` catch-all grant it
-    // here no matter what the 5.1 entry declares. Denying it for one model would
-    // require a deny mechanism the capability resolver does not have.
+    // StructuredOutput resolves false: the structured-outputs doc enumerates only
+    // Sonnet 4.5, Sonnet 4.6, Haiku 4.5, Opus 4.5 and Opus 4.6, and the live
+    // upstream rejects outputConfig for this id. `has()` unions the flags of
+    // EVERY entry whose match is a substring of the id, so neither
+    // `claude-fable-5` nor the `anthropic.claude` catch-all may declare it.
     let c = caps();
     assert_eq!(
         c.reasoning_path(FULL_FABLE_5_1),
@@ -67,7 +66,7 @@ fn fable_5_1_has_adaptive_thinking_and_required_capabilities() {
     assert!(c.has(FULL_FABLE_5_1, Capability::AdaptiveThinking));
     assert!(c.has(FULL_FABLE_5_1, Capability::DropSamplingParams));
     assert!(c.has(FULL_FABLE_5_1, Capability::NoAssistantPrefill));
-    assert!(c.has(FULL_FABLE_5_1, Capability::StructuredOutput));
+    assert!(!c.has(FULL_FABLE_5_1, Capability::StructuredOutput));
     assert!(c.has(FULL_FABLE_5_1, Capability::CacheTtl1h));
     assert!(!c.has(FULL_FABLE_5_1, Capability::Context1mBeta));
     assert_eq!(c.cache_min_tokens(FULL_FABLE_5_1), Some(512));
@@ -691,4 +690,124 @@ fn gpt_oss_from_real_config_chat_mantle_and_regions() {
     assert!(regions.contains(&"us-east-1".to_string()));
     assert!(regions.contains(&"us-east-2".to_string()));
     assert!(regions.contains(&"us-west-2".to_string()));
+}
+
+const FULL_SONNET_5_5: &str = "global.anthropic.claude-sonnet-5-5";
+const FULL_OPUS_5_5: &str = "us.anthropic.claude-opus-5-5";
+
+#[test]
+fn claude_5_5_entries_win_params_over_their_5_parents() {
+    // AWS prompt-caching table: both 5.5 models take a 512-token floor, while
+    // Sonnet 5 keeps 1,024. The 5.5 entries must be matched first.
+    let c = caps();
+    assert_eq!(c.cache_min_tokens(FULL_SONNET_5_5), Some(512));
+    assert_eq!(c.cache_min_tokens(FULL_OPUS_5_5), Some(512));
+    assert_eq!(
+        c.cache_min_tokens("global.anthropic.claude-sonnet-5"),
+        Some(1024)
+    );
+    for model in [FULL_SONNET_5_5, FULL_OPUS_5_5] {
+        assert_eq!(c.reasoning_path(model), ReasoningPath::AdaptiveThinking);
+        assert!(c.has(model, Capability::AdaptiveThinking), "{model}");
+        assert!(c.has(model, Capability::DropSamplingParams), "{model}");
+        assert!(c.has(model, Capability::NoAssistantPrefill), "{model}");
+        assert!(c.has(model, Capability::CacheTtl1h), "{model}");
+        assert!(!c.has(model, Capability::StructuredOutput), "{model}");
+        assert!(!c.has(model, Capability::Context1mBeta), "{model}");
+    }
+}
+
+#[test]
+fn structured_output_resolves_only_for_aws_documented_claude_models() {
+    let c = caps();
+    for model in [
+        "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "global.anthropic.claude-sonnet-4-6",
+        "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "global.anthropic.claude-opus-4-5-20251101-v1:0",
+        "global.anthropic.claude-opus-4-6-v1",
+    ] {
+        assert!(c.has(model, Capability::StructuredOutput), "{model}");
+    }
+    for model in [
+        "global.anthropic.claude-opus-4-7",
+        FULL_OPUS_4_8,
+        FULL_OPUS_5,
+        "global.anthropic.claude-sonnet-5",
+        FULL_SONNET_5_5,
+        FULL_OPUS_5_5,
+        "global.anthropic.claude-fable-5",
+        FULL_FABLE_5_1,
+        "us.anthropic.claude-3-haiku-20240307-v1:0",
+    ] {
+        assert!(!c.has(model, Capability::StructuredOutput), "{model}");
+    }
+}
+
+#[test]
+fn gpt_6_aliases_target_global_profiles_and_resolve_converse_capabilities() {
+    let c = caps();
+    for (alias, profile) in [
+        ("gpt-6.1-sol", "global.openai.gpt-6.1-sol"),
+        ("gpt-6-sol", "global.openai.gpt-6-sol"),
+        ("gpt-6-luna", "global.openai.gpt-6-luna"),
+        ("gpt-6-astra", "global.openai.gpt-6-astra"),
+    ] {
+        assert_eq!(c.alias_target(alias).as_deref(), Some(profile));
+        for model in [alias, profile, &profile.replacen("global.", "us.", 1)] {
+            assert_eq!(
+                c.reasoning_path(model),
+                ReasoningPath::OpenaiEffort,
+                "{model}"
+            );
+            assert!(c.has(model, Capability::DropSamplingParams), "{model}");
+            assert!(c.has(model, Capability::StructuredOutput), "{model}");
+            assert!(c.has(model, Capability::OpenaiTextFormat), "{model}");
+            assert!(!c.has(model, Capability::NoAssistantPrefill), "{model}");
+            assert_eq!(c.cache_min_tokens(model), None, "{model}");
+            assert_eq!(
+                c.responses_backend(model),
+                ResponsesBackend::Converse,
+                "{model}"
+            );
+            assert_eq!(c.chat_backend(model), ChatBackend::Converse, "{model}");
+        }
+    }
+    // GPT-6.1 Sol must not inherit GPT-6 Sol's entry or vice versa.
+    assert!(!"openai.gpt-6.1-sol".contains("openai.gpt-6-sol"));
+}
+
+#[test]
+fn alias_target_never_consults_the_profile_map() {
+    let c = ConfigModelCapabilities::with_profiles(
+        ModelCapabilityConfig::default(),
+        [("us.vendor.model".to_string(), "vendor.model".to_string())]
+            .into_iter()
+            .collect(),
+    );
+    assert_eq!(c.resolve_foundation("us.vendor.model"), "vendor.model");
+    assert_eq!(c.alias_target("us.vendor.model"), None);
+}
+
+#[test]
+fn replace_profiles_swaps_the_map_for_every_clone() {
+    let c = ConfigModelCapabilities::new(ModelCapabilityConfig::default());
+    let shared = c.clone();
+    assert_eq!(
+        c.resolve_foundation("global.vendor.new"),
+        "global.vendor.new"
+    );
+
+    shared.replace_profiles(
+        [("global.vendor.new".to_string(), "vendor.new".to_string())]
+            .into_iter()
+            .collect(),
+    );
+
+    assert_eq!(c.resolve_foundation("global.vendor.new"), "vendor.new");
+    shared.replace_profiles(HashMap::new());
+    assert_eq!(
+        c.resolve_foundation("global.vendor.new"),
+        "global.vendor.new"
+    );
 }

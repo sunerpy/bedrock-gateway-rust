@@ -65,7 +65,10 @@ use serde_json::{json, Value};
 use crate::bedrock::tools::{
     convert_tool_spec, should_split_same_role_merge, tool_message_to_tool_result_turn,
 };
-use crate::bedrock::translate::{parse_image_data_uri, ImageResolver};
+use crate::bedrock::translate::{
+    json_object_schema, json_output_config, needs_strict_text_format_field, parse_image_data_uri,
+    ImageResolver,
+};
 use crate::domain::{Capability, ModelCapabilities};
 use crate::error::AppError;
 use crate::openai::responses_schema::{
@@ -1010,6 +1013,63 @@ fn reject_unsatisfiable_text_format(req: &ResponsesRequest) -> Result<(), AppErr
             "unsupported text.format.type '{other}'"
         ))),
     }
+}
+
+/// Converse structured output derived from a Responses `text.format`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResponsesOutputFormat {
+    /// The `outputConfig` slot, in the shape the chat translation emits.
+    pub output_config: Value,
+    /// Whether `additionalModelRequestFields.text.format.strict` must be set
+    /// (a strict `json_schema` on an OpenAI-text-format model).
+    pub strict_field: bool,
+}
+
+/// Map a Responses `text.format` onto Converse structured output, exactly as
+/// the chat surface maps `response_format`.
+///
+/// `None` for an absent or `text` format. `json_object` / `json_schema` gate on
+/// [`Capability::StructuredOutput`] for `model_id` (the resolved id) and are a
+/// clean 400 on a model without it, matching chat. The schema and its `name` /
+/// `strict` may sit on the format itself or under a nested `json_schema`, the
+/// two shapes [`reject_unsatisfiable_text_format`] accepts.
+///
+/// # Errors
+/// [`AppError::BadRequest`] when the model does not support structured output.
+pub fn responses_output_format(
+    req: &ResponsesRequest,
+    model_id: &str,
+    caps: &dyn ModelCapabilities,
+) -> Result<Option<ResponsesOutputFormat>, AppError> {
+    let Some(format) = req
+        .text
+        .as_ref()
+        .and_then(|t| t.format.as_ref())
+        .and_then(Value::as_object)
+    else {
+        return Ok(None);
+    };
+    let nested = format.get("json_schema").and_then(Value::as_object);
+    let field = |key: &str| format.get(key).or_else(|| nested.and_then(|n| n.get(key)));
+
+    let (schema, name, strict) = match format.get("type").and_then(Value::as_str) {
+        Some("json_object") => (json_object_schema(), None, false),
+        Some("json_schema") => (
+            field("schema")
+                .cloned()
+                .unwrap_or_else(|| json!({ "type": "object" })),
+            field("name").and_then(Value::as_str),
+            field("strict").and_then(Value::as_bool) == Some(true),
+        ),
+        _ => return Ok(None),
+    };
+
+    let output_config =
+        json_output_config(model_id, &req.model, "text.format", &schema, name, caps)?;
+    Ok(Some(ResponsesOutputFormat {
+        output_config,
+        strict_field: needs_strict_text_format_field(model_id, strict, caps),
+    }))
 }
 
 /// Map the request-level `reasoning { effort }` to a Bedrock thinking budget,

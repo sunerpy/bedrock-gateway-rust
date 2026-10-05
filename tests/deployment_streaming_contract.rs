@@ -100,3 +100,27 @@ fn helm_model_registry_contains_every_config_model_match_pattern() {
         missing.join("\n  - ")
     );
 }
+
+#[test]
+fn helm_model_registry_matches_config_semantically() {
+    // The Helm chart mounts its copy as the external registry, which wins over
+    // the embedded default. Any capability, param or alias drift therefore
+    // changes Helm behavior silently (e.g. a missing `structured_output` turns
+    // a supported `response_format` into a 400), and an unparseable copy falls
+    // back to the embedded default without an error.
+    use bedrock_gateway_rust::config::ModelCapabilityConfig;
+    let config_path = root().join("config/models.toml");
+    let helm_path = root().join("helm/bedrock-gateway/files/models.toml");
+    let load = |path: &Path| {
+        ModelCapabilityConfig::load(path)
+            .unwrap_or_else(|error| panic!("{} must parse: {error:#}", path.display()))
+    };
+
+    assert_eq!(
+        load(&helm_path),
+        load(&config_path),
+        "{} must declare exactly what {} declares; copy it over after editing the config",
+        helm_path.display(),
+        config_path.display()
+    );
+}

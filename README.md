@@ -242,6 +242,7 @@ Prefer fetching `API_KEY` from a secrets store. Priority order:
 | `AWS_CONNECT_TIMEOUT_SECS` | `60`    | TCP connection timeout to AWS                             |
 | `AWS_READ_TIMEOUT_SECS`    | `900`   | Response read timeout (15 min, accommodates long streams) |
 | `RESPONSES_STREAM_IDLE_TIMEOUT_SECS` | `180` | Maximum silence between upstream Responses events before a terminal `response.failed` |
+| `MODEL_CATALOG_REFRESH_SECS` | `3600` | Interval between background re-listings of the Bedrock model catalog, so new models appear in `/models` and pass the image check without a restart; `0` lists at boot only |
 | `AWS_MAX_RETRY_ATTEMPTS`   | `8`     | Retries on transient throttling or 5xx failures           |
 
 **GPT-5.x / bedrock-mantle**
@@ -393,12 +394,13 @@ For caching behavior, reasoning budget paths, and cross-region inference profile
 
 The authoritative list is `config/models.toml` and the live `GET /api/v1/models` endpoint. The registry currently covers:
 
-- **Claude** — Sonnet 4.x, Haiku 4.x, Opus 4.x (via Bedrock model IDs and cross-region inference profiles)
+- **Claude** — Sonnet 4.x / 5 / 5.5, Haiku 4.5, Opus 4.x / 5 / 5.5, Fable 5 / 5.1 (via cross-region inference profiles such as `global.anthropic.claude-sonnet-5-5`). `response_format` / Responses `text.format` is honored only where AWS supports structured outputs (Sonnet 4.5/4.6, Haiku 4.5, Opus 4.5/4.6); other Claude models return a 400 for it
 - **Amazon Nova** — multimodal and text models
 - **DeepSeek** — v3 (string-form reasoning path)
 - **GPT-5.x** — `gpt-5.4`, `gpt-5.5`, and `gpt-5.6-sol/terra/luna` on `/api/v1/responses` plus adapted `/api/v1/chat/completions`, via the AWS Bedrock mantle Responses upstream. Region availability is declared in `config/models.toml`. Requires `AWS_BEARER_TOKEN_BEDROCK`; reasoning + tool continuation additionally requires the shared `CHAT_REASONING_CAPSULE_*` keyring.
 - **gpt-oss** — `gpt-oss-120b` and `gpt-oss-20b` on `/api/v1/chat/completions` only, via the AWS Bedrock mantle upstream (`chat_backend = "mantle"`). Byte-level raw SSE passthrough; the gateway appends `data: [DONE]` at the stream tail. Not available on `/completions`. Listed in `GET /models` under the bare alias names `gpt-oss-120b` / `gpt-oss-20b`. Region-gated: `us-east-1` / `us-east-2` / `us-west-2`. Requires `AWS_BEARER_TOKEN_BEDROCK` to be set (otherwise those models are disabled with a WARN; the gateway still starts).
-- Any Bedrock foundation model or inference profile accessible in your account — the catalog refreshes from the control plane at startup
+- **GPT-6.x** — `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, and `gpt-6-astra` on both `/api/v1/chat/completions` and `/api/v1/responses` through Bedrock Converse. The bare names alias to the `global.openai.*` cross-region inference profiles; the `us.` / `global.` profile ids also work directly. `reasoning_effort` maps to `reasoning.effort`, `temperature` / `top_p` are dropped (the models reject them), and `response_format` (chat) or `text.format` (Responses) uses the OpenAI `text.format` shape (strict schemas honored)
+- Any Bedrock foundation model or inference profile accessible in your account — the catalog is listed from the control plane at startup and re-listed every `MODEL_CATALOG_REFRESH_SECS`
 
 Adding a model requires only a `config/models.toml` entry and no recompile.
 

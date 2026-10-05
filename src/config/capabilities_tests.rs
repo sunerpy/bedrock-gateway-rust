@@ -30,7 +30,10 @@ fn test_context_1m_beta_header_value() {
 fn test_opus_4_8_capabilities() {
     // Opus 4.7+ deprecate all sampling params (drop_sampling_params) on top
     // of the adaptive-thinking + no-prefill flags. The AWS prompt-caching table
-    // also lists a 1-hour TTL for `anthropic.claude-opus-4-8`.
+    // also lists a 1-hour TTL for `anthropic.claude-opus-4-8`. No
+    // structured_output: AWS does not list Opus 4.8 for structured outputs and
+    // a live outputConfig request returns "output_config.format: Extra inputs
+    // are not permitted".
     let cfg = load_project_config();
     let entry = cfg
         .entry_for_match("claude-opus-4-8")
@@ -40,7 +43,6 @@ fn test_opus_4_8_capabilities() {
         Capability::NoAssistantPrefill,
         Capability::AdaptiveThinking,
         Capability::DropSamplingParams,
-        Capability::StructuredOutput,
         Capability::CacheTtl1h,
     ]
     .into_iter()
@@ -97,10 +99,11 @@ fn test_sonnet_5_capabilities_and_reasoning_path() {
         .entry_for_match("claude-sonnet-5")
         .expect("claude-sonnet-5 entry must exist");
     let caps: HashSet<Capability> = entry.capabilities.iter().copied().collect();
+    // Live: Sonnet 5 rejects assistant prefill and any outputConfig.
     let expected: HashSet<Capability> = [
+        Capability::NoAssistantPrefill,
         Capability::AdaptiveThinking,
         Capability::DropSamplingParams,
-        Capability::StructuredOutput,
         Capability::CacheTtl1h,
     ]
     .into_iter()
@@ -119,11 +122,9 @@ fn test_fable_5_1_capabilities_and_cache_floor() {
     // AWS model card (Claude Fable 5.1): adaptive thinking is always on and
     // cannot be disabled, all sampling params must be unset, prompt caching has
     // a 512-token minimum per checkpoint and supports both 5m and 1h TTL.
-    // `structured_output` is declared to match resolved behavior, not because AWS
-    // documents it for this id (the structured-outputs doc names only Sonnet 4.5,
-    // Haiku 4.5, Opus 4.5 and Opus 4.6): capability flags are the UNION of every
-    // substring-matching entry, so the `anthropic.claude` catch-all grants it
-    // regardless and withholding it here would only make the entry misleading.
+    // No `structured_output`: the structured-outputs doc names only Sonnet 4.5,
+    // Sonnet 4.6, Haiku 4.5, Opus 4.5 and Opus 4.6, and a live outputConfig
+    // request returns "output_config.format: Extra inputs are not permitted".
     let cfg = load_project_config();
     let entry = cfg
         .entry_for_match("claude-fable-5-1")
@@ -133,7 +134,6 @@ fn test_fable_5_1_capabilities_and_cache_floor() {
         Capability::NoAssistantPrefill,
         Capability::AdaptiveThinking,
         Capability::DropSamplingParams,
-        Capability::StructuredOutput,
         Capability::CacheTtl1h,
     ]
     .into_iter()
@@ -467,4 +467,106 @@ fn test_gpt_5_6_trio_aliases_and_region_gate() {
             "region gate must reject an unlisted region"
         );
     }
+}
+
+#[test]
+fn claude_5_5_entries_are_declared_before_their_5_parents() {
+    // Params come from the FIRST substring match, and `claude-sonnet-5` /
+    // `claude-opus-5` are substrings of the 5.5 ids.
+    let cfg = load_project_config();
+    let pos = |m: &str| {
+        cfg.models
+            .iter()
+            .position(|e| e.match_pattern == m)
+            .unwrap_or_else(|| panic!("{m} entry must exist"))
+    };
+    assert!(pos("claude-sonnet-5-5") < pos("claude-sonnet-5"));
+    assert!(pos("claude-opus-5-5") < pos("claude-opus-5"));
+
+    for m in ["claude-sonnet-5-5", "claude-opus-5-5"] {
+        let entry = cfg.entry_for_match(m).unwrap();
+        let caps: HashSet<Capability> = entry.capabilities.iter().copied().collect();
+        let expected: HashSet<Capability> = [
+            Capability::NoAssistantPrefill,
+            Capability::AdaptiveThinking,
+            Capability::DropSamplingParams,
+            Capability::CacheTtl1h,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(caps, expected, "{m}");
+        assert_eq!(entry.params.cache_min_tokens, Some(512), "{m}");
+        assert_eq!(
+            entry.params.reasoning_path,
+            Some(ReasoningPath::AdaptiveThinking),
+            "{m}"
+        );
+    }
+}
+
+#[test]
+fn claude_catch_all_grants_no_capability_flags() {
+    // Flags are a union over every matching entry, so anything on the
+    // catch-all would reach every Claude id, including ones AWS rejects it for.
+    let cfg = load_project_config();
+    let entry = cfg.entry_for_match("anthropic.claude").unwrap();
+    assert!(entry.capabilities.is_empty());
+    assert_eq!(entry.params.cache_min_tokens, Some(4096));
+}
+
+#[test]
+fn gpt_6_family_entries_and_aliases() {
+    let cfg = load_project_config();
+    for (alias, canonical) in [
+        ("gpt-6.1-sol", "openai.gpt-6.1-sol"),
+        ("gpt-6-sol", "openai.gpt-6-sol"),
+        ("gpt-6-luna", "openai.gpt-6-luna"),
+        ("gpt-6-astra", "openai.gpt-6-astra"),
+    ] {
+        let entry = cfg
+            .entry_for_match(canonical)
+            .unwrap_or_else(|| panic!("{canonical} entry must exist"));
+        let caps: HashSet<Capability> = entry.capabilities.iter().copied().collect();
+        let expected: HashSet<Capability> = [
+            Capability::DropSamplingParams,
+            Capability::StructuredOutput,
+            Capability::OpenaiTextFormat,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(caps, expected, "{canonical}");
+        assert_eq!(
+            entry.params.reasoning_path,
+            Some(ReasoningPath::OpenaiEffort),
+            "{canonical}"
+        );
+        // Converse on both surfaces: not on mantle in us-east-2.
+        assert_eq!(entry.params.responses_backend, None, "{canonical}");
+        assert_eq!(entry.params.chat_backend, None, "{canonical}");
+        assert_eq!(entry.params.cache_min_tokens, None, "{canonical}");
+
+        let target = cfg
+            .aliases
+            .iter()
+            .find(|a| a.from == alias)
+            .unwrap_or_else(|| panic!("{alias} alias must exist"));
+        assert_eq!(target.to, format!("global.{canonical}"));
+    }
+    // Converse aliases are not mantle aliases.
+    let mantle: HashSet<String> = cfg.mantle_alias_names().into_iter().collect();
+    assert!(!mantle.contains("gpt-6.1-sol"));
+}
+
+#[test]
+fn openai_text_format_and_openai_effort_parse() {
+    let cfg = ModelCapabilityConfig::from_toml_str(
+        "[[model]]\nmatch = \"x.y\"\ncapabilities = [\"openai_text_format\"]\n[model.params]\nreasoning_path = \"openai_effort\"\n",
+    )
+    .expect("config must parse");
+    let entry = cfg.entry_for_match("x.y").unwrap();
+    assert!(entry.has_capability(Capability::OpenaiTextFormat));
+    assert_eq!(
+        entry.params.reasoning_path,
+        Some(ReasoningPath::OpenaiEffort)
+    );
 }

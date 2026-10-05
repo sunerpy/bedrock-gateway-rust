@@ -259,6 +259,43 @@ fn deepseek_path_passes_all_effort_levels_through() {
     }
 }
 
+// -- OpenAI effort (GPT on Converse) ---------------------------------------
+
+#[test]
+fn openai_effort_path_emits_reasoning_effort_object() {
+    // Live Converse contract for GPT-6.x: `reasoning.effort`, not
+    // `reasoning_effort` (the latter is an `unknown_parameter` 400).
+    let caps = StubCaps::new(ReasoningPath::OpenaiEffort, None);
+    let outcome = build_reasoning_config("m", ReasoningEffort::High, Some(1000), None, &caps);
+    assert_eq!(
+        Value::Object(outcome.additional_model_request_fields.clone()),
+        json!({ "reasoning": { "effort": "high" } })
+    );
+    assert_eq!(outcome.max_tokens, None);
+    assert!(!outcome.drop_top_p);
+    assert!(!ReasoningPath::OpenaiEffort.requires_signature_replay());
+}
+
+#[test]
+fn openai_effort_path_passes_every_level_through_verbatim() {
+    let caps = StubCaps::new(ReasoningPath::OpenaiEffort, None);
+    for (effort, expected) in [
+        (ReasoningEffort::None, "none"),
+        (ReasoningEffort::Minimal, "minimal"),
+        (ReasoningEffort::Low, "low"),
+        (ReasoningEffort::Medium, "medium"),
+        (ReasoningEffort::High, "high"),
+        (ReasoningEffort::Xhigh, "xhigh"),
+        (ReasoningEffort::Max, "max"),
+    ] {
+        let outcome = build_reasoning_config("m", effort, None, None, &caps);
+        assert_eq!(
+            outcome.additional_model_request_fields["reasoning"]["effort"],
+            Value::String(expected.to_string())
+        );
+    }
+}
+
 // -- Path 4: none / unsupported ----------------------------------------
 
 #[test]

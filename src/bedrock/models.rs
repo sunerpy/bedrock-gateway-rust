@@ -35,6 +35,7 @@ use aws_sdk_bedrock::types::{
     FoundationModelLifecycleStatus, InferenceProfileType, InferenceType, ModelModality,
 };
 
+use crate::config::capabilities::ModelAlias;
 use crate::config::AppSettings;
 use crate::error::AppError;
 use crate::openai::schema::{Model, Models};
@@ -189,6 +190,19 @@ impl ModelCatalog {
     /// capability resolution and routing are unaffected.
     pub fn with_extra_models(mut self, ids: Vec<String>) -> Self {
         self.extra_model_ids = ids;
+        self
+    }
+
+    /// Also list the client-facing name of every `[[alias]]` whose target this
+    /// catalog serves (e.g. a bare name aliased to a cross-region profile), so
+    /// `/models` advertises it next to its target. Appends to the display-only
+    /// ids, so call it after [`Self::with_extra_models`], which replaces them.
+    pub fn with_catalog_aliases(mut self, aliases: &[ModelAlias]) -> Self {
+        for alias in aliases {
+            if self.models.contains_key(&alias.to) && !self.extra_model_ids.contains(&alias.from) {
+                self.extra_model_ids.push(alias.from.clone());
+            }
+        }
         self
     }
 

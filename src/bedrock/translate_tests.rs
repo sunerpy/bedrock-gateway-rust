@@ -1994,3 +1994,191 @@ async fn max_completion_tokens_wins_and_omitted_limit_stays_absent() {
         .expect("translate without limit");
     assert!(args.inference_config.get("maxTokens").is_none());
 }
+
+fn strict_schema_format(strict: Option<bool>) -> ResponseFormat {
+    ResponseFormat::JsonSchema {
+        json_schema: JsonSchemaSpec {
+            name: Some("cap".to_string()),
+            description: None,
+            strict,
+            schema: Some(json!({
+                "type": "object",
+                "properties": { "capital": { "type": "string" } },
+                "required": ["capital"],
+                "additionalProperties": false
+            })),
+        },
+    }
+}
+
+#[tokio::test]
+async fn alias_target_is_the_converse_model_id() {
+    // A bare GPT-6 name is an alias for a cross-region profile; Converse must
+    // receive the profile id, not the bare name (400 "invalid identifier").
+    let req = base_request("gpt-6.1-sol", vec![user_text("hi")]);
+    let args = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
+        .await
+        .expect("translate");
+    assert_eq!(args.model_id, "global.openai.gpt-6.1-sol");
+
+    // A non-alias id is sent exactly as the client gave it.
+    let req = base_request("us.openai.gpt-6.1-sol", vec![user_text("hi")]);
+    let args = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
+        .await
+        .expect("translate");
+    assert_eq!(args.model_id, "us.openai.gpt-6.1-sol");
+}
+
+#[tokio::test]
+async fn gpt_6_drops_sampling_params() {
+    let mut req = base_request("gpt-6.1-sol", vec![user_text("hi")]);
+    req.temperature = Some(0.2);
+    req.top_p = Some(0.9);
+    let args = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
+        .await
+        .expect("translate");
+    assert!(args.inference_config.get("temperature").is_none());
+    assert!(args.inference_config.get("topP").is_none());
+}
+
+#[tokio::test]
+async fn openai_text_format_names_json_object_schema() {
+    // OpenAI's text.format requires a name; json_object never carries one.
+    let mut req = base_request("gpt-6.1-sol", vec![user_text("hi")]);
+    req.response_format = Some(ResponseFormat::JsonObject);
+    let args = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
+        .await
+        .expect("translate");
+    let oc = args.output_config.expect("output_config present");
+    assert_eq!(
+        oc["textFormat"]["structure"]["jsonSchema"]["name"],
+        "response"
+    );
+    // json_object is never strict: an empty-property strict schema would only
+    // admit `{}`.
+    assert!(args.additional_model_request_fields.is_none());
+}
+
+#[tokio::test]
+async fn openai_text_format_keeps_client_name_and_forwards_strict() {
+    let mut req = base_request("us.openai.gpt-6-sol", vec![user_text("hi")]);
+    req.response_format = Some(strict_schema_format(Some(true)));
+    let args = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
+        .await
+        .expect("translate");
+    let oc = args.output_config.expect("output_config present");
+    assert_eq!(oc["textFormat"]["structure"]["jsonSchema"]["name"], "cap");
+    assert_eq!(
+        args.additional_model_request_fields,
+        Some(json!({ "text": { "format": { "strict": true } } }))
+    );
+}
+
+#[tokio::test]
+async fn openai_text_format_without_strict_sends_no_text_field() {
+    for strict in [None, Some(false)] {
+        let mut req = base_request("gpt-6-luna", vec![user_text("hi")]);
+        req.response_format = Some(strict_schema_format(strict));
+        let args = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
+            .await
+            .expect("translate");
+        assert!(args.output_config.is_some());
+        assert!(args.additional_model_request_fields.is_none(), "{strict:?}");
+    }
+}
+
+#[tokio::test]
+async fn strict_text_format_merges_with_client_text_fields() {
+    let mut req = base_request("gpt-6-astra", vec![user_text("hi")]);
+    req.response_format = Some(strict_schema_format(Some(true)));
+    req.extra_body = Some(json!({ "text": { "verbosity": "low" } }));
+    let args = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
+        .await
+        .expect("translate");
+    assert_eq!(
+        args.additional_model_request_fields,
+        Some(json!({ "text": { "verbosity": "low", "format": { "strict": true } } }))
+    );
+}
+
+#[tokio::test]
+async fn claude_structured_output_never_gets_openai_fields() {
+    // Claude takes strictness from grammar decoding, not a `text` field, and
+    // an unnamed schema stays unnamed (Bedrock accepts it).
+    let mut req = base_request("global.anthropic.claude-sonnet-4-6", vec![user_text("hi")]);
+    req.response_format = Some(strict_schema_format(Some(true)));
+    let args = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
+        .await
+        .expect("translate");
+    assert!(args.output_config.is_some());
+    assert!(args.additional_model_request_fields.is_none());
+
+    let mut req = base_request("global.anthropic.claude-sonnet-4-6", vec![user_text("hi")]);
+    req.response_format = Some(ResponseFormat::JsonObject);
+    let args = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
+        .await
+        .expect("translate");
+    let oc = args.output_config.expect("output_config present");
+    assert!(oc["textFormat"]["structure"]["jsonSchema"]
+        .get("name")
+        .is_none());
+}
+
+#[tokio::test]
+async fn claude_5_generation_response_format_is_a_gateway_400() {
+    // AWS rejects outputConfig for these ids upstream; the gateway now says so
+    // itself instead of forwarding the request.
+    for model in [
+        "global.anthropic.claude-sonnet-5-5",
+        "global.anthropic.claude-opus-5-5",
+        "global.anthropic.claude-sonnet-5",
+        "global.anthropic.claude-opus-4-7",
+    ] {
+        let mut req = base_request(model, vec![user_text("hi")]);
+        req.response_format = Some(ResponseFormat::JsonObject);
+        let err = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
+            .await
+            .expect_err("must reject");
+        assert!(
+            matches!(&err, AppError::BadRequest(m) if m.contains("does not support response_format")),
+            "{model}: {err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn image_check_receives_the_client_model_name() {
+    // The chat translator asks the resolver about the model the client sent;
+    // the production predicate maps an alias to its listed target
+    // (`supports_image_predicate_follows_alias_target` in server tests).
+    struct RecordingResolver(std::sync::Mutex<Vec<String>>);
+    #[async_trait::async_trait]
+    impl ImageResolver for RecordingResolver {
+        fn supports_image(&self, model_id: &str) -> bool {
+            self.0.lock().unwrap().push(model_id.to_string());
+            true
+        }
+        async fn fetch(&self, _url: &str) -> Result<(Vec<u8>, String), AppError> {
+            unreachable!("data URI only")
+        }
+    }
+    let resolver = RecordingResolver(std::sync::Mutex::new(Vec::new()));
+    let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    let req = base_request(
+        "gpt-6.1-sol",
+        vec![Message::User {
+            name: None,
+            content: ContentInput::Parts(vec![ContentPart::Image(ImageContent {
+                r#type: "image_url".to_string(),
+                image_url: ImageUrl {
+                    url: png.to_string(),
+                    detail: "auto".to_string(),
+                },
+            })]),
+        }],
+    );
+    to_converse_args(&req, &caps(), &resolver, &ConverseExtras::default())
+        .await
+        .expect("translate");
+    assert_eq!(*resolver.0.lock().unwrap(), vec!["gpt-6.1-sol".to_string()]);
+}

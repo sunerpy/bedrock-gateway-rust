@@ -1,0 +1,21 @@
+{
+  "modelId": "global.openai.gpt-6.1-sol",
+  "messages": [{ "role": "user", "content": [{ "text": "Give the capital of France." }] }],
+  "system": [],
+  "inferenceConfig": { "maxTokens": 2048 },
+  "additionalModelRequestFields": {
+    "reasoning": { "effort": "high" },
+    "text": { "format": { "strict": true } }
+  },
+  "outputConfig": {
+    "textFormat": {
+      "type": "json_schema",
+      "structure": {
+        "jsonSchema": {
+          "name": "capital",
+          "schema": "{\"additionalProperties\":false,\"properties\":{\"capital\":{\"type\":\"string\"}},\"required\":[\"capital\"],\"type\":\"object\"}"
+        }
+      }
+    }
+  }
+}

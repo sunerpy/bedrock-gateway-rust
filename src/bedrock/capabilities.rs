@@ -22,6 +22,7 @@
 //! - 1679-1689 `_calc_budget_tokens` (budget ratios, sourced from config).
 
 use std::collections::HashMap;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::config::capabilities::ModelEntry;
 use crate::config::{BudgetRatios, Capability, ModelCapabilityConfig, ReasoningPath};
@@ -91,13 +92,14 @@ fn alias_map(config: &ModelCapabilityConfig) -> HashMap<String, String> {
 /// The `profile_map` maps an inference-profile id / ARN to its underlying
 /// foundation model id. It is populated at runtime (task 23's model listing);
 /// constructing without it (an empty map) is valid and means "no profiles known
-/// yet — pass ids through unchanged".
+/// yet — pass ids through unchanged". The periodic catalog refresh swaps it via
+/// [`Self::replace_profiles`], so it sits behind a lock; clones share it.
 #[derive(Debug, Clone)]
 pub struct ConfigModelCapabilities {
     /// The externalized model-capability registry (task 4 data).
     config: ModelCapabilityConfig,
     /// Inference-profile-id/ARN → underlying foundation model id.
-    profile_map: HashMap<String, String>,
+    profile_map: Arc<RwLock<HashMap<String, String>>>,
     /// Client-facing model name → canonical resolved id, from the config's
     /// `[[alias]]` tables. Consulted BEFORE `profile_map` so an alias resolves
     /// without any runtime-seeded inference-profile catalog.
@@ -107,12 +109,7 @@ pub struct ConfigModelCapabilities {
 impl ConfigModelCapabilities {
     /// Construct from a loaded config with an empty profile map.
     pub fn new(config: ModelCapabilityConfig) -> Self {
-        let aliases = alias_map(&config);
-        Self {
-            config,
-            profile_map: HashMap::new(),
-            aliases,
-        }
+        Self::with_profiles(config, HashMap::new())
     }
 
     /// Construct from a loaded config and a seeded profile→foundation map.
@@ -123,7 +120,7 @@ impl ConfigModelCapabilities {
         let aliases = alias_map(&config);
         Self {
             config,
-            profile_map,
+            profile_map: Arc::new(RwLock::new(profile_map)),
             aliases,
         }
     }
@@ -131,6 +128,15 @@ impl ConfigModelCapabilities {
     /// Borrow the wrapped configuration.
     pub fn config(&self) -> &ModelCapabilityConfig {
         &self.config
+    }
+
+    /// Replace the profile→foundation map with a freshly listed one, so
+    /// inference profiles that appeared after boot resolve like boot-time ones.
+    pub fn replace_profiles(&self, profile_map: HashMap<String, String>) {
+        *self
+            .profile_map
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = profile_map;
     }
 
     /// First entry whose `match` pattern is a SUBSTRING of `model_lower`.
@@ -173,9 +179,15 @@ impl ModelCapabilities for ConfigModelCapabilities {
             return canonical.clone();
         }
         self.profile_map
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(model_or_profile)
             .cloned()
             .unwrap_or_else(|| model_or_profile.to_string())
+    }
+
+    fn alias_target(&self, model: &str) -> Option<String> {
+        self.aliases.get(model).cloned()
     }
 
     fn budget_ratios(&self, model: &str) -> Option<BudgetRatios> {

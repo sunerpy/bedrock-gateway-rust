@@ -260,6 +260,11 @@ async fn translation_reasoning_deepseek_string() {
 }
 
 #[tokio::test]
+async fn translation_reasoning_openai_effort_strict_schema() {
+    run_translation("reasoning_openai_effort_strict_schema").await;
+}
+
+#[tokio::test]
 async fn translation_reasoning_none_ignored() {
     run_translation("reasoning_none_ignored").await;
 }

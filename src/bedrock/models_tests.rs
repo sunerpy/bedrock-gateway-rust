@@ -38,6 +38,7 @@ fn settings(default_model: &str) -> AppSettings {
         aws_connect_timeout_secs: 60,
         aws_read_timeout_secs: 900,
         responses_stream_idle_timeout_secs: 180,
+        model_catalog_refresh_secs: 0,
         aws_max_retry_attempts: 8,
         max_body_size_mb: 20,
         mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1".to_string(),
@@ -750,4 +751,52 @@ async fn refresh_against_live_bedrock() {
         !catalog.models().is_empty(),
         "live refresh should return at least the fallback model"
     );
+}
+
+#[test]
+fn catalog_aliases_listed_only_when_their_target_is_listed() {
+    use crate::config::capabilities::ModelAlias;
+    let s = settings("fallback.model-v1:0");
+    let models = [fm(
+        "vendor.vision-model",
+        &["TEXT", "IMAGE"],
+        &["INFERENCE_PROFILE"],
+        true,
+        "ACTIVE",
+    )];
+    let profiles = [ProfileEntry {
+        key: "global.vendor.vision-model".to_string(),
+        underlying_model_id: "vendor.vision-model".to_string(),
+    }];
+    let aliases = [
+        ModelAlias {
+            from: "vision".to_string(),
+            to: "global.vendor.vision-model".to_string(),
+        },
+        ModelAlias {
+            from: "ghost".to_string(),
+            to: "global.vendor.not-listed".to_string(),
+        },
+        ModelAlias {
+            from: "gpt-mantle".to_string(),
+            to: "global.vendor.vision-model".to_string(),
+        },
+    ];
+    let catalog = assemble_catalog(&models, &profiles, &s)
+        .with_extra_models(vec!["gpt-mantle".to_string()])
+        .with_catalog_aliases(&aliases);
+
+    let ids: Vec<String> = catalog.list().data.into_iter().map(|m| m.id).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "global.vendor.vision-model".to_string(),
+            "gpt-mantle".to_string(),
+            "vision".to_string(),
+        ]
+    );
+    assert!(catalog.get("vision").is_some());
+    assert!(catalog.get("ghost").is_none());
+    // Display-only: routing data is untouched.
+    assert!(!catalog.models().contains_key("vision"));
 }
