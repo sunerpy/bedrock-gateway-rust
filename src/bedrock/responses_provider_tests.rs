@@ -72,6 +72,7 @@ fn test_settings(enable_prompt_caching: bool) -> Arc<AppSettings> {
         aws_connect_timeout_secs: 60,
         aws_read_timeout_secs: 900,
         responses_stream_idle_timeout_secs: 180,
+        model_catalog_refresh_secs: 0,
         aws_max_retry_attempts: 8,
         max_body_size_mb: 20,
         mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1".to_string(),
@@ -324,6 +325,26 @@ fn outbound_model_id_uses_prefixed_request_model_not_resolved() {
 
     assert_eq!(outbound, request_model);
     assert_ne!(outbound, resolved);
+}
+
+/// A bare `[[alias]]` name is called under its target (here a cross-region
+/// profile); any other id is called exactly as the client sent it.
+#[tokio::test]
+async fn callable_model_id_follows_alias_target() {
+    let config = ModelCapabilityConfig::from_toml_str(
+        "[[alias]]\nfrom = \"bare-name\"\nto = \"global.vendor.model\"\n",
+    )
+    .expect("alias config");
+    let provider = test_provider_with_config(false, config).await;
+
+    assert_eq!(
+        provider.callable_model_id("bare-name"),
+        "global.vendor.model"
+    );
+    assert_eq!(
+        provider.callable_model_id("us.vendor.model"),
+        "us.vendor.model"
+    );
 }
 
 /// A matching region override wins and supplies its rewritten id (the same

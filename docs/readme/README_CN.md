@@ -241,6 +241,7 @@ aws cloudformation deploy \
 | `AWS_CONNECT_TIMEOUT_SECS` | `60`   | 与 AWS 建立 TCP 连接的超时秒数              |
 | `AWS_READ_TIMEOUT_SECS`    | `900`  | 响应读取超时秒数（15 分钟，适应长流式会话） |
 | `RESPONSES_STREAM_IDLE_TIMEOUT_SECS` | `180` | Responses 上游事件连续静默达到该秒数后，以 `response.failed` 终止 |
+| `MODEL_CATALOG_REFRESH_SECS` | `3600` | 后台重新拉取 Bedrock 模型目录的间隔秒数，新上线的模型无需重启即可出现在 `/models` 并通过图片能力检查；`0` 表示只在启动时拉取 |
 | `AWS_MAX_RETRY_ATTEMPTS`   | `8`    | 瞬时限流或 5xx 故障时的最大重试次数         |
 
 </details>
@@ -385,11 +386,12 @@ src/
 
 权威列表在 `config/models.toml` 和实时 `GET /api/v1/models` 端点。注册表当前覆盖：
 
-- **Claude** — Sonnet 4.x、Haiku 4.x、Opus 4.x 系列（通过 Bedrock 模型 ID 和跨区域 inference profile）
+- **Claude** — Sonnet 4.x / 5 / 5.5、Haiku 4.5、Opus 4.x / 5 / 5.5、Fable 5 / 5.1（通过 `global.anthropic.claude-sonnet-5-5` 这类跨区域 inference profile）。`response_format` 只对 AWS 支持结构化输出的型号生效（Sonnet 4.5/4.6、Haiku 4.5、Opus 4.5/4.6），其余 Claude 型号对它返回 400
 - **Amazon Nova** — 多模态和文本模型
 - **DeepSeek** — v3（字符串形式推理路径）
 - **GPT-5.x** — `gpt-5.4`、`gpt-5.5` 和 `gpt-5.6-sol/terra/luna`，支持 `/api/v1/responses` 以及适配后的 `/api/v1/chat/completions`，通过 AWS Bedrock Mantle Responses 上游提供。区域范围由 `config/models.toml` 声明。需要设置 `AWS_BEARER_TOKEN_BEDROCK`；reasoning 与工具同时续轮还需要共享的 `CHAT_REASONING_CAPSULE_*` keyring。
-- 账户中可访问的任何 Bedrock 基础模型或 inference profile — 模型目录在启动时从控制面刷新
+- **GPT-6.x** — `gpt-6.1-sol`、`gpt-6-sol`、`gpt-6-luna`、`gpt-6-astra`，经 Bedrock Converse 同时支持 `/api/v1/chat/completions` 与 `/api/v1/responses`。裸名是 `global.openai.*` 跨区域 inference profile 的别名，`us.` / `global.` profile ID 也可直接使用。`reasoning_effort` 映射为 `reasoning.effort`，`temperature` / `top_p` 会被丢弃（模型不接受），`response_format` 按 OpenAI `text.format` 形状下发（支持 strict schema）
+- 账户中可访问的任何 Bedrock 基础模型或 inference profile — 模型目录在启动时从控制面拉取，并每隔 `MODEL_CATALOG_REFRESH_SECS` 秒重新拉取
 
 添加新模型只需一条 `config/models.toml` 条目，无需重新编译。
 

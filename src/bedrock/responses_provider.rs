@@ -241,9 +241,10 @@ impl BedrockResponsesProvider {
     /// it (applying the per-request region override at the call site).
     ///
     /// `request_model` is the ORIGINAL incoming model id (cross-region prefix
-    /// intact). It is what reaches Bedrock and keys the region table — mirroring
-    /// the chat provider. The resolved (prefix-stripped) foundation id is for
-    /// capability matching only; sending it to Bedrock triggers an on-demand 400.
+    /// intact). It — or its `[[alias]]` target, see [`Self::callable_model_id`]
+    /// — is what reaches Bedrock and keys the region table, mirroring the chat
+    /// provider. The resolved (prefix-stripped) foundation id is for capability
+    /// matching only; sending it to Bedrock triggers an on-demand 400.
     /// See [`Self::outbound_model_id`].
     ///
     /// Returns the raw service error in a [`SendError`] so the shared cache
@@ -263,8 +264,9 @@ impl BedrockResponsesProvider {
         request_model: &str,
         assembled: &AssembledConverse,
     ) -> Result<ConverseOutput, SendError<ConverseError>> {
-        let route = self.regions.route_for(request_model);
-        let model_id = Self::outbound_model_id(request_model, route.as_ref());
+        let callable = self.callable_model_id(request_model);
+        let route = self.regions.route_for(&callable);
+        let model_id = Self::outbound_model_id(&callable, route.as_ref());
 
         let messages = build_sdk_messages(&assembled.messages).map_err(SendError::App)?;
         let system = build_sdk_system(&assembled.system).map_err(SendError::App)?;
@@ -321,8 +323,9 @@ impl BedrockResponsesProvider {
         request_model: &str,
         assembled: &AssembledConverse,
     ) -> Result<ConverseStreamOutput, SendError<ConverseStreamError>> {
-        let route = self.regions.route_for(request_model);
-        let model_id = Self::outbound_model_id(request_model, route.as_ref());
+        let callable = self.callable_model_id(request_model);
+        let route = self.regions.route_for(&callable);
+        let model_id = Self::outbound_model_id(&callable, route.as_ref());
 
         let messages = build_sdk_messages(&assembled.messages).map_err(SendError::App)?;
         let system = build_sdk_system(&assembled.system).map_err(SendError::App)?;
@@ -370,6 +373,15 @@ impl BedrockResponsesProvider {
     fn outbound_model_id(request_model: &str, route: Option<&RouteOverride>) -> String {
         route
             .map(|r| r.rewritten_model_id.clone())
+            .unwrap_or_else(|| request_model.to_string())
+    }
+
+    /// The id to call for `request_model`: its `[[alias]]` target when it is an
+    /// alias (the target may be a cross-region profile), else the request model
+    /// unchanged. Mirrors the chat translation's `ConverseArgs::model_id`.
+    fn callable_model_id(&self, request_model: &str) -> String {
+        self.caps
+            .alias_target(request_model)
             .unwrap_or_else(|| request_model.to_string())
     }
 }

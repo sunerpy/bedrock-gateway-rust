@@ -5,7 +5,8 @@
 //! the caller must honor (an explicit `maxTokens` and dropping `topP`).
 //!
 //! It implements the four distinct reasoning paths from the legacy Python
-//! `.legacy-python/src/api/models/bedrock.py` lines 1152-1189:
+//! `.legacy-python/src/api/models/bedrock.py` lines 1152-1189, plus the OpenAI
+//! effort path (4) for GPT models served through Converse:
 //!
 //! 1. Adaptive thinking (Claude w/ `adaptive_thinking`, bedrock.py:1168-1172):
 //!    `{ "thinking": {"type":"adaptive"}, "output_config": {"effort": <effort>} }`
@@ -16,7 +17,9 @@
 //!    [`crate::config::BudgetRatios`] (bedrock.py:1679-1689).
 //! 3. DeepSeek string (bedrock.py:1178-1185):
 //!    `{ "reasoning_config": "<effort string>" }`. No `maxTokens`, no `topP` drop.
-//! 4. None / unsupported (bedrock.py:1186-1189): no reasoning fields at all;
+//! 4. OpenAI effort (OpenAI GPT models on Converse; no Python counterpart):
+//!    `{ "reasoning": {"effort": <effort>} }`. No `maxTokens`, no `topP` drop.
+//! 5. None / unsupported (bedrock.py:1186-1189): no reasoning fields at all;
 //!    `reasoning_effort` is ignored.
 //!
 //! DE-HARDCODING CONTRACT: every path/ratio decision is read from
@@ -147,6 +150,7 @@ fn scale(max_tokens: i32, ratio: f32) -> i32 {
 ///   `budget_tokens` from [`calc_budget_tokens`] (ratios via
 ///   `caps.budget_ratios(model)`), set `maxTokens`, drop `topP`.
 /// - [`ReasoningPath::DeepseekString`] → `reasoning_config = "<effort>"`.
+/// - [`ReasoningPath::OpenaiEffort`] → `reasoning = {effort: "<effort>"}`.
 /// - [`ReasoningPath::None`] → empty outcome (effort ignored).
 ///
 /// `max_tokens` and `max_completion_tokens` are the request's respective fields
@@ -221,6 +225,18 @@ pub fn build_reasoning_config(
             fields.insert(
                 "reasoning_config".to_string(),
                 Value::String(effort_str(reasoning_effort).to_string()),
+            );
+            ReasoningOutcome {
+                additional_model_request_fields: fields,
+                max_tokens: None,
+                drop_top_p: false,
+            }
+        }
+        ReasoningPath::OpenaiEffort => {
+            let mut fields = Map::new();
+            fields.insert(
+                "reasoning".to_string(),
+                json!({ "effort": effort_str(reasoning_effort) }),
             );
             ReasoningOutcome {
                 additional_model_request_fields: fields,

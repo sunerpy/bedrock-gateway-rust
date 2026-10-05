@@ -52,6 +52,14 @@ pub enum Capability {
     /// `response_format` request is rejected with HTTP 400 rather than silently
     /// ignored.
     StructuredOutput,
+    /// This model's Converse structured output follows the OpenAI `text.format`
+    /// contract (OpenAI GPT models on Bedrock): `jsonSchema.name` is required,
+    /// so the gateway supplies a default when the request carries none (always
+    /// the case for `json_object`), and a `json_schema` request with
+    /// `strict: true` is forwarded as
+    /// `additionalModelRequestFields.text.format.strict = true`. Only shapes the
+    /// request; [`Capability::StructuredOutput`] still gates it.
+    OpenaiTextFormat,
     /// This model supports a 1-hour prompt-cache `cachePoint.ttl`. When set, a
     /// per-request or configured `1h` cache TTL is honored; when a model lacks
     /// this flag, a requested `1h` TTL is silently downgraded to `5m` (which is
@@ -77,6 +85,10 @@ pub enum ReasoningPath {
     /// DeepSeek v3 string form: `reasoning_config = "low"|"medium"|"high"`
     /// (bedrock.py:1178-1185).
     DeepseekString,
+    /// OpenAI Responses form used by OpenAI GPT models on Bedrock Converse:
+    /// `reasoning = {effort: "<effort>"}`, with the effort passed through
+    /// verbatim (the upstream rejects values a model does not support).
+    OpenaiEffort,
     /// Reasoning effort is ignored / unsupported (bedrock.py:1186-1189).
     None,
 }
@@ -88,6 +100,10 @@ impl ReasoningPath {
             Self::AdaptiveThinking => true,
             Self::BudgetTokens => true,
             Self::DeepseekString => false,
+            // OpenAI reasoning comes back as opaque `redactedContent`; a tool
+            // continuation that omits it is accepted upstream, so no capsule
+            // round-trip is required.
+            Self::OpenaiEffort => false,
             Self::None => false,
         }
     }

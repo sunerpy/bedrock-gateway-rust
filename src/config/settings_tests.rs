@@ -800,3 +800,29 @@ fn capture_content_defaults_false() {
     assert!(!settings.otel_capture_content);
     assert_eq!(settings.otel_exporter_otlp_endpoint, None);
 }
+
+#[test]
+fn model_catalog_refresh_secs_defaults_and_env_override() {
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+    std::env::remove_var("MODEL_CATALOG_REFRESH_SECS");
+
+    let settings = AppSettings::load().unwrap();
+    assert_eq!(settings.model_catalog_refresh_secs, 3600);
+
+    std::env::set_var("MODEL_CATALOG_REFRESH_SECS", "0");
+    let settings = AppSettings::load().unwrap();
+    assert_eq!(
+        settings.model_catalog_refresh_secs, 0,
+        "0 = boot-only listing"
+    );
+
+    std::env::set_var("MODEL_CATALOG_REFRESH_SECS", "900");
+    let settings = AppSettings::load().unwrap();
+    assert_eq!(settings.model_catalog_refresh_secs, 900);
+
+    std::env::set_var("MODEL_CATALOG_REFRESH_SECS", "not-a-number");
+    let settings = AppSettings::load().unwrap();
+    assert_eq!(settings.model_catalog_refresh_secs, 3600);
+
+    std::env::remove_var("MODEL_CATALOG_REFRESH_SECS");
+}

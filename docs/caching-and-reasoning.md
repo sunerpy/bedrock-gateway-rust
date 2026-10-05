@@ -82,7 +82,7 @@ pub fn supports_caching(model: &str, caps: &dyn ModelCapabilities) -> bool {
 
 > **子串遮蔽陷阱（新增模型必读）：** `[model.params]`（`cache_min_tokens`、`reasoning_path`、`available_regions` 等）取**按声明顺序的首次子串命中**。当新模型 ID 以已有条目的 `match` 值为前缀时（例如 `claude-fable-5-1` 含有 `claude-fable-5`），新条目**必须声明在旧条目之前**，否则新模型会静默拿到旧条目的 `cache_min_tokens` 与 `reasoning_path`，请求本身仍返回 200，没有任何报错。`claude-fable-5-1` 的顺序由 `test_fable_5_1_declared_before_fable_5` 锁定。
 >
-> **能力标志不走首次命中，而是并集：** `ConfigModelCapabilities::has()` 用 `.filter(substring).any(has_capability)`，即所有 `match` 命中该 ID 的条目的能力**取并集**。因此 `claude-fable-5-1` 同时继承 `claude-fable-5` 与 `anthropic.claude` 兜底条目的标志，声明顺序对能力无影响，**单个条目也无法收回**上层条目给出的标志（当前没有 deny 机制）。兜底条目的 `structured_output` 因此适用于所有 `anthropic.claude*` ID，包括 AWS 文档未列为支持的型号。
+> **能力标志不走首次命中，而是并集：** `ConfigModelCapabilities::has()` 用 `.filter(substring).any(has_capability)`，即所有 `match` 命中该 ID 的条目的能力**取并集**。因此 `claude-fable-5-1` 同时继承 `claude-fable-5` 与 `anthropic.claude` 兜底条目的标志，声明顺序对能力无影响，**单个条目也无法收回**上层条目给出的标志（当前没有 deny 机制）。所以兜底条目不声明任何能力标志：`structured_output` 只写在 AWS 结构化输出文档列出的 Sonnet 4.5/4.6、Haiku 4.5、Opus 4.5/4.6 条目上。Opus 4.7+ 与 5 代模型收到 outputConfig 时上游返回 `output_config.format: Extra inputs are not permitted`，网关现在直接对它们的 `response_format` 返回 400。
 
 ### 1.3 逐模型 cache_min_tokens 阈值
 
@@ -94,6 +94,8 @@ pub fn supports_caching(model: &str, caps: &dyn ModelCapabilities) -> bool {
 
 | 模型                  | Model ID（foundation id）                 | cache_min_tokens | 1h TTL | config 条目                |
 | --------------------- | ----------------------------------------- | ---------------- | ------ | -------------------------- |
+| Claude Sonnet 5.5     | anthropic.claude-sonnet-5-5               | 512              | 是     | `claude-sonnet-5-5`        |
+| Claude Opus 5.5       | anthropic.claude-opus-5-5                 | 512              | 是     | `claude-opus-5-5`          |
 | Claude Fable 5.1      | anthropic.claude-fable-5-1                | 512              | 是     | `claude-fable-5-1`         |
 | Claude Fable 5        | anthropic.claude-fable-5                  | 512              | 是     | `claude-fable-5`           |
 | Claude Mythos 5.1     | anthropic.claude-mythos-5-1（Gated）      | 512              | 是     | `claude-mythos-5-1`        |
@@ -116,6 +118,8 @@ pub fn supports_caching(model: &str, caps: &dyn ModelCapabilities) -> bool {
 
 | Model                | Model ID                                  | Min tokens/checkpoint | Max checkpoints |
 | -------------------- | ----------------------------------------- | --------------------- | --------------- |
+| Claude Sonnet 5.5    | anthropic.claude-sonnet-5-5               | 512                   | 4               |
+| Claude Opus 5.5      | anthropic.claude-opus-5-5                 | 512                   | 4               |
 | Claude Fable 5.1     | anthropic.claude-fable-5-1                | 512                   | 4               |
 | Claude Fable 5       | anthropic.claude-fable-5                  | 512                   | 4               |
 | Claude Opus 5        | anthropic.claude-opus-5                   | 512                   | 4               |
@@ -149,8 +153,9 @@ pub fn supports_caching(model: &str, caps: &dyn ModelCapabilities) -> bool {
 > **仍存的已知分叉（本次未改）：** Claude 3.7 Sonnet 与 3.5 Sonnet v2 官方为 1,024 且
 > 只支持 5 分钟 TTL，网关没有专属条目、落到兜底的 4,096，即 1,024–4,095 tokens 的前缀
 > 不注入 cachePoint。这两个是上一代模型，不在本次范围内。AWS 当前表也已不再列出
-> Claude Opus 4，因此本文档不再声称它的官方阈值。此外 helm 副本在多数 Claude 条目上仍缺
-> `structured_output`（见 1.2 节的能力并集说明），彻底对齐需重新生成该副本并评估部署影响。
+> Claude Opus 4，因此本文档不再声称它的官方阈值。此外 helm 副本在 AWS 支持结构化输出的
+> Sonnet 4.5/4.6、Haiku 4.5、Opus 4.5/4.6 条目上仍缺 `structured_output`（见 1.2 节），
+> 彻底对齐需重新生成该副本并评估部署影响。
 
 ### 1.4 AWS 官方要点摘录
 
@@ -244,13 +249,14 @@ high / xhigh / max -> budget = effective_max - 1
 
 比例来自 `config/models.toml` 的 `budget_ratios`（`low=0.3, medium=0.6, high=-1.0 sentinel`），可在 TOML 中逐模型覆盖，**无需改代码**。
 
-四条推理路径（由 `config/models.toml` 的 `reasoning_path` 字段决定）：
+五条推理路径（由 `config/models.toml` 的 `reasoning_path` 字段决定）：
 
 | reasoning_path      | 适用模型示例                                                   | Bedrock wire 字段                                                             |
 | ------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | `budget_tokens`     | claude-sonnet-4-x                                              | `reasoning_config = {type: "enabled", budget_tokens: N}`                      |
-| `adaptive_thinking` | claude-opus-4-6/4-7/4-8/5、claude-sonnet-5、claude-fable-5/5-1 | `thinking = {type: "adaptive", display: "summarized"} + output_config.effort` |
+| `adaptive_thinking` | claude-opus-4-6/4-7/4-8/5/5-5、claude-sonnet-5/5-5、claude-fable-5/5-1 | `thinking = {type: "adaptive", display: "summarized"} + output_config.effort` |
 | `deepseek_string`   | deepseek.v3                                                    | `reasoning_config = "low"/"medium"/"high"`                                    |
+| `openai_effort`     | openai.gpt-6.1-sol / gpt-6-sol / gpt-6-luna / gpt-6-astra      | `reasoning = {effort: "<effort>"}`（原样透传，模型不支持的值由上游 400）      |
 | `none`              | 无推理能力模型                                                 | 无（reasoning_effort 被忽略）                                                 |
 
 > **Fable 5.1 审视补充（两项均确认无需改代码）：**
@@ -386,6 +392,8 @@ Chat 和 Responses 两个接口均已对齐此行为（`src/bedrock/provider.rs`
 - **INFERENCE_PROFILE-only 的模型**（如 Claude 全系列，其裸 foundation `inferenceTypesSupported` 仅含 `INFERENCE_PROFILE`、无 `ON_DEMAND`）：其**裸 foundation ID 不出现在列表**（不可直调，直接发裸 id 会被 Bedrock 拒绝），但其跨区 profile ID（`us.anthropic.claude-*` / `global.anthropic.claude-*` 等）**会出现在列表**，且可直接用作 `model` 请求参数。
 - `GET /api/v1/models/{id}` 支持用 profile ID 查询（如 `GET /api/v1/models/us.anthropic.claude-sonnet-4-5-20250929-v1:0` → 200）。
 
+> 目录在启动时拉取一次，之后每隔 `MODEL_CATALOG_REFRESH_SECS`（默认 3600 秒，`0` = 只在启动时）在后台重新拉取，并同步刷新 profile → foundation 映射，所以启动后才上线的模型无需重启即可出现在列表中、通过图片能力检查。`[[alias]]` 的目标若在目录中（例如 `gpt-6.1-sol` → `global.openai.gpt-6.1-sol`），裸别名也会列出。
+>
 > 这是现状设计：目录范围 = 部署 region 范围。如需访问其他地理区的模型，需在该地理区单独部署网关实例。目录组装逻辑见 `src/bedrock/models.rs` 的 `assemble_catalog`（裸 foundation 按 `ON_DEMAND` 过滤入目录；其 backing 的 inference profiles 独立纳入，使 INFERENCE_PROFILE-only 模型的跨区 profile 可被发现）。
 
 ---
@@ -444,6 +452,7 @@ CONFIG_DIR=/etc/bedrock-gateway/config docker run ...
 | `CONFIG_DIR`            | `config`（相对 WORKDIR）                    | 外部 config 目录路径                         |
 | `LOG_LEVEL`             | `info`                                      | 日志级别；设为 `debug` 可看 Bedrock 调用细节 |
 | `DEFAULT_MODEL`         | `anthropic.claude-3-5-sonnet-20241022-v2:0` | 默认模型                                     |
+| `MODEL_CATALOG_REFRESH_SECS` | `3600`                                 | 后台重新拉取模型目录的间隔；`0` = 只在启动时 |
 
 ---
 

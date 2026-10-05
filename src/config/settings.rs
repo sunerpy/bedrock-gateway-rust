@@ -17,6 +17,10 @@ const fn default_responses_stream_idle_timeout_secs() -> u64 {
     180
 }
 
+const fn default_model_catalog_refresh_secs() -> u64 {
+    3600
+}
+
 /// Application settings with layered configuration loading:
 /// defaults → optional file (config/app.toml) → environment variable overrides
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +120,14 @@ pub struct AppSettings {
     #[serde(default = "default_responses_stream_idle_timeout_secs")]
     pub responses_stream_idle_timeout_secs: u64,
 
+    /// Interval, in seconds, between background re-listings of the Bedrock
+    /// model catalog, so models launched after boot appear in `/models`, pass
+    /// the image-modality gate and resolve their inference profiles without a
+    /// restart. `0` lists once at boot only. Env: `MODEL_CATALOG_REFRESH_SECS`.
+    /// Default: 3600 seconds.
+    #[serde(default = "default_model_catalog_refresh_secs")]
+    pub model_catalog_refresh_secs: u64,
+
     /// AWS maximum retry attempts (default: 8, from botocore parity)
     pub aws_max_retry_attempts: u32,
 
@@ -193,6 +205,7 @@ impl AppSettings {
             .set_default("aws_connect_timeout_secs", 60u64)?
             .set_default("aws_read_timeout_secs", 900u64)?
             .set_default("responses_stream_idle_timeout_secs", 180u64)?
+            .set_default("model_catalog_refresh_secs", 3600u64)?
             .set_default("aws_max_retry_attempts", 8u32)?
             .set_default("max_body_size_mb", 20u32)?
             .set_default(
@@ -236,7 +249,7 @@ impl AppSettings {
 /// `DISABLE_MANTLE`, `API_KEY`, `API_KEY_SECRET_ARN`, `API_KEY_PARAM_NAME`,
 /// `AWS_BEARER_TOKEN_BEDROCK` (alias `BEDROCK_API_KEY`), plus the operational
 /// knobs `PORT`, `BIND_ADDR`, `LOG_LEVEL`, `MAX_BODY_SIZE_MB`,
-/// `RESPONSES_STREAM_IDLE_TIMEOUT_SECS`,
+/// `RESPONSES_STREAM_IDLE_TIMEOUT_SECS`, `MODEL_CATALOG_REFRESH_SECS`,
 /// `MANTLE_BASE_URL_TEMPLATE`, `MANTLE_CHAT_BASE_URL_TEMPLATE`,
 /// `ALLOWED_MODELS`, `PROMPT_CACHE_TTL`, `CHAT_REASONING_CAPSULE_ENABLED`,
 /// `CHAT_REASONING_CAPSULE_ACTIVE_KID`, `CHAT_REASONING_CAPSULE_KEYS`,
@@ -316,6 +329,7 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
             "RESPONSES_STREAM_IDLE_TIMEOUT_SECS",
             "responses_stream_idle_timeout_secs",
         ),
+        ("MODEL_CATALOG_REFRESH_SECS", "model_catalog_refresh_secs"),
         ("AWS_MAX_RETRY_ATTEMPTS", "aws_max_retry_attempts"),
         ("MAX_BODY_SIZE_MB", "max_body_size_mb"),
     ] {

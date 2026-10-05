@@ -281,6 +281,14 @@ pub trait ModelCapabilities: Send + Sync {
     /// foundation model id.
     fn resolve_foundation(&self, model_or_profile: &str) -> String;
 
+    /// The configured `[[alias]]` target for a client-facing model name, if
+    /// any. Unlike [`Self::resolve_foundation`] this never consults the
+    /// profile map, so the result is a callable id (an alias may target a
+    /// cross-region profile) that a backend can send upstream unchanged.
+    fn alias_target(&self, _model: &str) -> Option<String> {
+        None
+    }
+
     /// Budget-token ratios for reasoning effort levels, if configured.
     fn budget_ratios(&self, model: &str) -> Option<BudgetRatios>;
 

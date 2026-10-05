@@ -169,6 +169,7 @@ mod tests {
             aws_connect_timeout_secs: connect,
             aws_read_timeout_secs: read,
             responses_stream_idle_timeout_secs: 180,
+            model_catalog_refresh_secs: 0,
             aws_max_retry_attempts: attempts,
             max_body_size_mb: 20,
             mantle_base_url_template: "https://bedrock-mantle.{region}.api.aws/openai/v1"

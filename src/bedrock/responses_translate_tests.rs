@@ -726,6 +726,9 @@ async fn no_assistant_prefill_appends_continuation_for_responses() {
         "us.anthropic.claude-opus-5",
         "global.anthropic.claude-opus-5",
         "global.anthropic.claude-fable-5-1",
+        "us.anthropic.claude-sonnet-5",
+        "global.anthropic.claude-sonnet-5-5",
+        "global.anthropic.claude-opus-5-5",
     ] {
         let req = req_from(json!({
             "model": model,
@@ -764,7 +767,8 @@ async fn no_assistant_prefill_leaves_other_endings_unchanged() {
             "user",
         ),
         (
-            "us.anthropic.claude-sonnet-5",
+            // A model without `no_assistant_prefill` keeps the assistant ending.
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             json!([
                 { "type": "message", "role": "user", "content": "first" },
                 { "type": "message", "role": "assistant", "content": [

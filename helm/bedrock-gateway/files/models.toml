@@ -98,6 +98,24 @@ to = "openai.gpt-oss-120b"
 from = "gpt-oss-20b"
 to = "openai.gpt-oss-20b"
 
+# GPT-6.x are profile-only on bedrock-runtime; bare names alias to the Global
+# cross-Region inference profile, which the Converse path calls unchanged.
+[[alias]]
+from = "gpt-6.1-sol"
+to = "global.openai.gpt-6.1-sol"
+
+[[alias]]
+from = "gpt-6-sol"
+to = "global.openai.gpt-6-sol"
+
+[[alias]]
+from = "gpt-6-luna"
+to = "global.openai.gpt-6-luna"
+
+[[alias]]
+from = "gpt-6-astra"
+to = "global.openai.gpt-6-astra"
+
 
 # ---------------------------------------------------------------------------
 # Defaults entry
@@ -180,6 +198,14 @@ cache_min_tokens = 1024 # AWS prompt-caching table row `anthropic.claude-opus-4-
 reasoning_path = "adaptive_thinking"
 
 [[model]]
+# Claude Opus 5.5 — MUST stay BEFORE `claude-opus-5` (params are first-match).
+match = "claude-opus-5-5"
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
+[model.params]
+cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-opus-5-5`: 512 min tokens/checkpoint, 5m + 1h TTL
+reasoning_path = "adaptive_thinking"
+
+[[model]]
 match = "claude-opus-5"
 capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
 [model.params]
@@ -187,8 +213,17 @@ cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-opus-5`:
 reasoning_path = "adaptive_thinking"
 
 [[model]]
+# Claude Sonnet 5.5 — MUST stay BEFORE `claude-sonnet-5` (params are first-match).
+match = "claude-sonnet-5-5"
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
+[model.params]
+cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-sonnet-5-5`: 512 min tokens/checkpoint, 5m + 1h TTL
+reasoning_path = "adaptive_thinking"
+
+[[model]]
+# Sonnet 5 rejects assistant prefill upstream.
 match = "claude-sonnet-5"
-capabilities = ["adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
 [model.params]
 cache_min_tokens = 1024 # AWS prompt-caching table row `anthropic.claude-sonnet-5`: 1,024 min tokens/checkpoint, 5m + 1h TTL
 reasoning_path = "adaptive_thinking"
@@ -235,7 +270,6 @@ capabilities = [
   "no_assistant_prefill",
   "adaptive_thinking",
   "drop_sampling_params",
-  "structured_output",
   "cache_ttl_1h",
 ]
 [model.params]
@@ -340,6 +374,36 @@ capabilities = []
 responses_backend = "mantle"
 chat_backend = "responses"
 available_regions = ["us-east-1", "us-east-2", "us-west-2"]
+
+# ---------------------------------------------------------------------------
+# OpenAI GPT-6 family via Bedrock Converse (cross-region inference profiles)
+# ---------------------------------------------------------------------------
+# Absent from bedrock-mantle in us-east-2 and profile-only on bedrock-runtime,
+# so no backend override. temperature/topP are rejected, the effort knob is
+# reasoning.effort, and structured output needs the OpenAI text.format shape.
+[[model]]
+match = "openai.gpt-6.1-sol"
+capabilities = ["drop_sampling_params", "structured_output", "openai_text_format"]
+[model.params]
+reasoning_path = "openai_effort"
+
+[[model]]
+match = "openai.gpt-6-sol"
+capabilities = ["drop_sampling_params", "structured_output", "openai_text_format"]
+[model.params]
+reasoning_path = "openai_effort"
+
+[[model]]
+match = "openai.gpt-6-luna"
+capabilities = ["drop_sampling_params", "structured_output", "openai_text_format"]
+[model.params]
+reasoning_path = "openai_effort"
+
+[[model]]
+match = "openai.gpt-6-astra"
+capabilities = ["drop_sampling_params", "structured_output", "openai_text_format"]
+[model.params]
+reasoning_path = "openai_effort"
 
 # ---------------------------------------------------------------------------
 # gpt-oss chat models via bedrock-mantle (chat_backend, /chat/completions ONLY)
