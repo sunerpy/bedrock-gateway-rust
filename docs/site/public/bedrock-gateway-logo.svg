@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100" role="img" aria-label="bedrock-gateway">
+  <!-- Two lanes, the OpenAI APIs a client speaks, merge into one and pass between two gateposts;
+       past the gate the lane is teal, Amazon Bedrock. FirLab's navy app tile in its pale and teal
+       marks. The same drawing is the catalog icon on firlab.app (AppIcon.astro). -->
+  <rect width="100" height="100" rx="22" fill="#0B1220" />
+  <path d="M18 31 H30 C42 31 42 50 54 50 M18 69 H30 C42 69 42 50 54 50" fill="none" stroke="#E7EDF5" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M50 46 H62 V54 H50 Z" fill="#E7EDF5" />
+  <path d="M62 46 H82 A4 4 0 0 1 82 54 H62 Z" fill="#14B8A6" />
+  <path d="M62 24 V38 M62 62 V76" stroke="#E7EDF5" stroke-width="8" stroke-linecap="round" />
+</svg>

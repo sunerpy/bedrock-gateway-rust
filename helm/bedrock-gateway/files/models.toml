@@ -9,10 +9,10 @@
 #
 # How the gateway uses it:
 #   Each [[model]] entry's `match` value is tested as a SUBSTRING against the
-#   lowercased resolved foundation model id. The first matching entry supplies
-#   that model's capability flags and parameters. The `default` entry below
-#   supplies fallback values (currently the budget ratios) for anything a model
-#   does not override.
+#   lowercased resolved foundation model id. The capability flags of every
+#   matching entry apply together; the first matching entry supplies the
+#   parameters. The `default` entry below supplies fallback values (currently
+#   the budget ratios) for anything a model does not override.
 #
 # How to add a model:
 #   Append a new [[model]] table with a `match` substring, zero or more
