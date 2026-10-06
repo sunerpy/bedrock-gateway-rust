@@ -10,8 +10,6 @@ Pull requests are squash-merged, so the title becomes the commit on main.
 
 ## Verification
 
-- [ ] `cargo fmt --all`
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] `cargo test --all-features`
+- [ ] `make check` (format check, clippy with all and with the default features, tests)
 - [ ] Golden fixture added under `tests/golden/` (translation or rendering changes)
 - [ ] Docs updated where behavior or configuration changed

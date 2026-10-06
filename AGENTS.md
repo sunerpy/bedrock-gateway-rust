@@ -6,20 +6,28 @@ OpenAI-compatible HTTP gateway for AWS Bedrock. Rust, `axum + tokio + aws-sdk-be
 
 ## Verification gate
 
-Run all three, in order, before any commit. `--all-features` is not optional: it is the only thing that compiles the `otel` feature, and CI runs it.
+Run `make check` before any push. It runs, in order:
 
 ```bash
-cargo fmt --all
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --all-features --locked
 ```
 
-- CI (`.github/workflows/ci.yml`) runs exactly those three plus `cargo audit`. `ci-success` requires only `test` + `audit`; `coverage` is informational and never blocks.
-- `make hooks` once per clone points `core.hooksPath` at `.githooks/`, enabling a pre-push hook that runs the same three checks. It gates `git push` only — `git commit` stays free for WIP. Passing pre-push implies passing CI. `core.hooksPath` is local config and is never inherited by a fresh clone.
-- Toolchain is pinned to 1.91.1 (`rust-toolchain.toml`). Do not add a `rustup override`.
+`--all-features` is the only thing that compiles the `otel` feature; the second clippy compiles the default features, which is what the released binaries and images are built with, including the `cfg(not(feature = "otel"))` arms. `cargo fmt --all` fixes formatting.
+
+- CI (`.github/workflows/ci.yml`) runs `make check` on Linux, `cargo test --locked` on Windows (the release ships an `x86_64-pc-windows-msvc` binary), and `cargo audit`. `CI Success` passes only when all three succeed; it is the one check the `main` ruleset requires. `coverage` is informational and never blocks.
+- `make hooks` once per clone points `core.hooksPath` at `.githooks/`, enabling a pre-push hook that runs `make check`. It gates `git push` only — `git commit` stays free for WIP. Passing pre-push implies passing CI's Linux job. `core.hooksPath` is local config and is never inherited by a fresh clone.
+- Toolchain is pinned in `rust-toolchain.toml` (1.98.0). The workflows name the same version for `dtolnay/rust-toolchain`; change all of them together. Do not add a `rustup override`.
+- Every action in `.github/workflows/` is pinned to a full commit SHA with its tag in a comment; Dependabot (`.github/dependabot.yml`) proposes updates weekly.
 - `make fmt` also runs `oxfmt` over TOML when installed, so it can produce unrelated `config/*.toml` diffs. Use `cargo fmt --all` when you only mean Rust.
 - `cargo audit` reads `.cargo/audit.toml`, which carries four ignores with a written non-exploitability argument each (legacy `rustls 0.21` / `h2 0.3` pulled transitively by the AWS SDK). Do not delete them to make a red build green. After any `aws-config` / `aws-sdk-*` bump, re-run `cargo tree -i rustls-webpki` and `cargo tree -i h2@0.3.27` and drop an ignore only once its root is gone.
 - Release profile sets `panic = "abort"`, but that applies to release only; the test profile still unwinds, so `catch_unwind` in `tests/golden` works.
+
+## Releases
+
+Everything lands on `main` through a squash-merged pull request whose title is a Conventional Commit; nothing is pushed to `main` directly. release-please (`.github/workflows/release-please.yml`) keeps a release PR open; merging it creates the tag `bedrock-gateway-rust-vX.Y.Z` and a **draft** Release, and the same run verifies the tagged commit, builds and runs the five binaries, attaches them with `SHA256SUMS` and an attestation, writes the git-cliff notes, pushes the image to Docker Hub and ECR Public, publishes the crate, and only then makes the Release public. A failure leaves a draft; rebuild it with `gh workflow run release-please.yml -f tag_name=<tag>`. The release PR is opened by `GITHUB_TOKEN`, so its CI run waits for approval (`gh api -X POST repos/sunerpy/bedrock-gateway-rust/actions/runs/<id>/approve`) before `CI Success` can pass.
 
 ## Where things live
 

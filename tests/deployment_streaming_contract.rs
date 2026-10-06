@@ -7,12 +7,17 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::{Command, Output};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+// The validator is a bash and jq tool for operators on Linux and macOS, so the two tests
+// that run it are Unix-only; the Linux CI job runs them. On Windows, `bash` may resolve to
+// the WSL launcher rather than a shell, and the script's paths are POSIX paths.
+#[cfg(unix)]
 fn validate(path: &Path) -> Output {
     Command::new("bash")
         .arg(root().join("scripts/check-ecs-service-connect-timeouts.sh"))
@@ -48,6 +53,7 @@ fn model_match_patterns(path: &Path) -> BTreeSet<String> {
         .collect()
 }
 
+#[cfg(unix)]
 #[test]
 fn rejects_service_connects_implicit_fifteen_second_request_timeout() {
     let output = validate(&root().join("tests/fixtures/ecs_service_connect_unsafe.json"));
@@ -69,6 +75,7 @@ fn rejects_service_connects_implicit_fifteen_second_request_timeout() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn accepts_versioned_streaming_safe_service_connect_config() {
     let output = validate(&root().join("deployment/service-connect-streaming.json"));

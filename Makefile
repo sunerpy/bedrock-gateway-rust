@@ -11,7 +11,7 @@ COMMIT_ID = $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 RUST_FILES = $(shell find . -name "*.rs" -not -path "./target/*")
 TOML_FILES = $(shell find . -name "*.toml" -not -path "./target/*")
 
-.PHONY: all build build-binaries build-local docker-build docker-release fmt lint test run clean help hooks setup-hooks \
+.PHONY: all build build-binaries build-local docker-build docker-release fmt fmt-check lint lint-default test check run clean help hooks setup-hooks \
         coverage coverage-html coverage-lcov coverage-open coverage-clean
 
 # ─── 测试覆盖率（cargo-llvm-cov + Codecov）──────────────────────────────
@@ -28,7 +28,7 @@ endef
 
 all: fmt lint build
 
-build: fmt
+build:
 	@echo "Building $(PROJECT_NAME) in release mode..."
 	@mkdir -p $(DIST_DIR)
 	cargo build --release
@@ -42,7 +42,7 @@ build-local:
 	@cp target/debug/$(PROJECT_NAME) $(DIST_DIR)/$(PROJECT_NAME)-debug
 	@echo "Debug binary: $(DIST_DIR)/$(PROJECT_NAME)-debug"
 
-build-binaries: fmt
+build-binaries:
 	@echo "Building multi-platform binaries with cargo-zigbuild..."
 	@if ! command -v cargo-zigbuild > /dev/null 2>&1; then \
 		echo "cargo-zigbuild not found. Install with:"; \
@@ -103,8 +103,12 @@ fmt-config:
 	@if command -v oxfmt > /dev/null 2>&1; then \
 		oxfmt --no-error-on-unmatched-pattern "$(PROJECT_ROOT)" 2>/dev/null || true; \
 	else \
-		echo "(oxfmt not found; skipping config formatting - install with: cargo install oxfmt)"; \
+		echo "(oxfmt not found; skipping config formatting - install with: npm install --global oxfmt@0.64.0)"; \
 	fi
+
+# Check formatting without rewriting anything (what CI and the pre-push hook run).
+fmt-check:
+	cargo fmt --all -- --check
 
 lint:
 	@echo "Running clippy linter..."
@@ -112,14 +116,21 @@ lint:
 		echo "cargo-clippy not found. Installing..."; \
 		rustup component add clippy; \
 	fi
-	cargo clippy --all-targets --all-features -- -D warnings
+	cargo clippy --all-targets --all-features --locked -- -D warnings
 	@echo "Clippy check passed."
+
+# The released binaries and images are built with the default features, which
+# --all-features never compiles on its own (the cfg(not(feature = "otel")) arms).
+lint-default:
+	cargo clippy --all-targets --locked -- -D warnings
 
 test:
 	@echo "Running tests..."
-	@mkdir -p $(DIST_DIR)
-	cargo test --all-features
+	cargo test --all-features --locked
 	@echo "All tests passed."
+
+# The whole gate, in the order CI runs it. The pre-push hook calls this target.
+check: fmt-check lint lint-default test
 
 run: build
 	@echo "Running $(PROJECT_NAME)..."
@@ -181,7 +192,7 @@ help:
 	@echo ""
 	@echo "Main targets:"
 	@echo "  all              - Default: fmt → lint → build"
-	@echo "  build            - Build release binary (with fmt pre-check)"
+	@echo "  build            - Build release binary"
 	@echo "  build-local      - Build debug binary for local dev"
 	@echo "  build-binaries   - Cross-compile musl binaries (x86_64, aarch64)"
 	@echo ""
@@ -193,8 +204,11 @@ help:
 	@echo "  fmt              - Format Rust + config files (cargo fmt + oxfmt)"
 	@echo "  fmt-rust         - Format Rust code only"
 	@echo "  fmt-config       - Format config files with oxfmt (optional)"
-	@echo "  lint             - Run clippy with -D warnings"
-	@echo "  test             - Run all tests (lib + doc)"
+	@echo "  fmt-check        - Check formatting without rewriting files"
+	@echo "  lint             - Run clippy with all features and -D warnings"
+	@echo "  lint-default     - Run clippy with the default features (what releases ship)"
+	@echo "  test             - Run all tests (lib + doc) with all features"
+	@echo "  check            - fmt-check + lint + lint-default + test (the CI gate)"
 	@echo ""
 	@echo "Coverage (cargo-llvm-cov + Codecov; target 95%, informational):"
 	@echo "  coverage         - Coverage summary to stdout"
@@ -217,6 +231,6 @@ help:
 	@echo ""
 	@echo "Examples:"
 	@echo "  make all                # Default workflow"
-	@echo "  make fmt lint test      # Code quality checks"
+	@echo "  make check              # The same gate CI and the pre-push hook run"
 	@echo "  make build-binaries     # Multi-platform build"
 	@echo "  make docker-release     # Push to Docker Hub"

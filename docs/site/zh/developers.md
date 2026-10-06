@@ -26,13 +26,11 @@ bedrock-gateway 用 Rust 编写，使用 axum、tokio 和 AWS SDK for Rust。`ru
 ```sh
 git clone https://github.com/sunerpy/bedrock-gateway-rust
 cd bedrock-gateway-rust
-make hooks                                                # run the three checks below before every git push
-cargo fmt --all
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+make hooks    # 每次 git push 之前运行 make check
+make check    # 与 CI 相同：格式检查、全部功能与默认功能各一次 clippy、测试
 ```
 
-`--all-features` 会把 `otel` 功能一起编译。CI 运行同样的三条命令以及 `cargo audit`，因此通过了这个 hook 的分支也能通过 CI。
+`make check` 会运行两次 clippy：一次带 `--all-features`，把 `otel` 功能一起编译；一次用默认功能，也就是发布的二进制文件和镜像所用的配置。CI 运行 `make check`、Windows 上的测试和 `cargo audit`，`CI Success` 要求三者全部通过，因此通过了这个 hook 的分支也能通过 Linux 上的 CI。
 
 测试离线运行，不需要 AWS 凭据。修改转换逻辑时，要在 `tests/golden/` 中附带一个 fixture；golden 测试按语义比较回答，而不是逐字节比较。调用 Bedrock 的测试默认跳过，只有明确要求时才会运行，并且需要能访问 `us-east-2` 的 Bedrock：
 
@@ -48,7 +46,7 @@ BEDROCK_INTEGRATION=1 AWS_PROFILE=<your profile> cargo test -- --ignored
 
 - 提交信息和 pull request 标题遵循 Conventional Commits，例如 `fix: preserve image support in Responses translation`。release-please 根据它们确定下一个版本号。
 - Pull request 以 squash 方式合并到 `main`，不直接向 `main` 推送任何内容。
-- 版本由 release-please 发布：它的 pull request 会更新版本号和 changelog，合并后会构建五个平台的二进制文件、Docker Hub 和 Amazon ECR Public 上的镜像，以及 crates.io 上的 crate。
+- 版本由 release-please 发布：它的 pull request 会更新版本号，合并后创建 tag 和一个草稿 release。同一次运行会检查打 tag 的提交，构建五个平台的二进制文件并逐个运行，连同 `SHA256SUMS` 和证明一起附加到 release，把镜像推送到 Docker Hub 和 Amazon ECR Public，把 crate 发布到 crates.io，最后才公开这个 release。
 
 ## 本站
 
