@@ -129,6 +129,33 @@ fn nova_encode_default_dimension() {
     assert_eq!(params["text"]["value"], "nova text");
 }
 
+/// Nova embeds one text per request. A list of several inputs is refused, as
+/// Titan refuses it, instead of embedding the first one and silently dropping
+/// the rest: an OpenAI client that batches inputs would otherwise get fewer
+/// vectors than it sent. A one-element list is still accepted.
+#[test]
+fn nova_encode_rejects_multi_input_and_accepts_one_element_list() {
+    let req = |input: EmbeddingInput| EmbeddingsRequest {
+        input,
+        model: "amazon.nova-2-multimodal-embeddings-v1:0".to_string(),
+        encoding_format: EncodingFormat::Float,
+        dimensions: None,
+        user: None,
+    };
+    let err = NovaCodec
+        .encode(&req(EmbeddingInput::StringArray(vec![
+            "a".to_string(),
+            "b".to_string(),
+        ])))
+        .expect_err("must reject two inputs");
+    assert!(matches!(err, AppError::BadRequest(_)), "got {err:?}");
+
+    let body = NovaCodec
+        .encode(&req(EmbeddingInput::StringArray(vec!["only".to_string()])))
+        .expect("a one-element list is one input");
+    assert_eq!(body["singleEmbeddingParams"]["text"]["value"], "only");
+}
+
 /// Nova rejects invalid dimensions (bedrock.py:2061-2065).
 #[test]
 fn nova_encode_rejects_invalid_dimension() {

@@ -93,7 +93,7 @@
 | Titan    | `amazon.titan-embed-text-v1`、`amazon.titan-embed-text-v2:0` | 每个请求一个字符串 |
 | Nova     | `amazon.nova-2-multimodal-embeddings-v1:0`                   | 每个请求一个字符串 |
 
-`encoding_format` 可以是 `float` 或 `base64`。Nova 接受的 `dimensions` 为 256、384、1024 或 3072（默认）。token 数组会先用 `cl100k_base` 编码解码为文本。注册表之外的模型返回 HTTP 400；要提供这样的模型，请把它连同所属的模型系列一起加入注册表。
+Titan 和 Nova 收到多于一个输入的列表时返回 HTTP 400。`encoding_format` 可以是 `float` 或 `base64`。Nova 接受的 `dimensions` 为 256、384、1024 或 3072（默认）。token 数组会先用 `cl100k_base` 编码解码为文本。注册表之外的模型返回 HTTP 400；要提供这样的模型，请把它连同所属的模型系列一起加入注册表。
 
 ## 模型
 
