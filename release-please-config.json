@@ -9,7 +9,10 @@
       "draft": true,
       "force-tag-creation": true,
       "extra-files": [
-        "helm/bedrock-gateway/Chart.yaml"
+        {
+          "type": "generic",
+          "path": "helm/bedrock-gateway/Chart.yaml"
+        }
       ]
     }
   }
