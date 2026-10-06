@@ -30,14 +30,13 @@ Bedrock reach it through `extra_body`, never through new top-level request field
 ```sh
 git clone https://github.com/sunerpy/bedrock-gateway-rust
 cd bedrock-gateway-rust
-make hooks                                                # run the three checks below before every git push
-cargo fmt --all
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+make hooks    # run make check before every git push
+make check    # what CI runs: format check, clippy with all and with the default features, tests
 ```
 
-`--all-features` compiles the `otel` feature as well. CI runs the same three commands and `cargo audit`, so a branch
-that passes the hook passes CI.
+`make check` runs clippy twice: with `--all-features`, which compiles the `otel` feature as well, and with the default
+features, which are what the released binaries and images are built with. CI runs `make check`, the tests on Windows
+and `cargo audit`, and `CI Success` requires all three, so a branch that passes the hook passes CI on Linux.
 
 The tests run offline, with no AWS credentials. A change to a translation comes with a fixture in `tests/golden/`;
 the golden tests compare answers by meaning, not byte for byte. Tests that call Bedrock are skipped unless asked for,
@@ -58,8 +57,10 @@ differ in any entry, so change both.
 - Commit messages and pull request titles follow Conventional Commits, for example
   `fix: preserve image support in Responses translation`. release-please reads them to choose the next version.
 - Pull requests are squash-merged into `main`; nothing is pushed to `main` directly.
-- Releases are cut by release-please: its pull request bumps the version and the changelog, and merging it builds the
-  binaries for five platforms, the images on Docker Hub and Amazon ECR Public, and the crate on crates.io.
+- Releases are cut by release-please: its pull request bumps the version, and merging it creates the tag and a draft
+  release. The same run checks the tagged commit, builds the binaries for five platforms and runs each one, attaches
+  them with `SHA256SUMS` and an attestation, pushes the images to Docker Hub and Amazon ECR Public and the crate to
+  crates.io, and only then makes the release public.
 
 ## This site
 
