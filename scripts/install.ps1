@@ -9,9 +9,11 @@ function Die($Message) {
   exit 1
 }
 
+# Releases build x86_64-pc-windows-msvc only, so ARM64 is refused instead of
+# requesting an aarch64 archive that does not exist.
 switch ($env:PROCESSOR_ARCHITECTURE) {
   "AMD64" { $Arch = "x86_64" }
-  "ARM64" { $Arch = "aarch64" }
+  "ARM64" { Die "no Windows ARM64 build is published; download the x86_64-pc-windows-msvc zip from https://github.com/$Repo/releases, which Windows 11 on Arm runs under emulation" }
   default { Die "unsupported architecture: $env:PROCESSOR_ARCHITECTURE" }
 }
 
