@@ -105,14 +105,12 @@ mod prop_tests {
     //! Property-based round-trip coverage for the legacy text-completions
     //! wire schema.
     //!
-    //! Feature: test-coverage-codecov, Property 1: Schema 序列化往返
+    //! Property 1: Schema 序列化往返
     //!
     //! For any valid `CompletionRequest` / `CompletionResponse`, serializing to
     //! JSON then deserializing yields a semantically equivalent value. Proven
     //! via serialization idempotence (`serialize -> deserialize -> serialize`
     //! reproduces the same JSON `Value`) so no `PartialEq` derive is required.
-    //!
-    //! Validates: Requirements 1.2
 
     use super::super::*;
     use crate::openai::schema::{StreamOptions, StringOrVec, Usage};

@@ -104,7 +104,7 @@ Golden record/replay lives in `tests/golden/`, fixtures under `fixtures/<group>/
 Live integration tests are `#[ignore]`d and env-gated (`src/bedrock/cache_tests.rs`, `src/bedrock/models_tests.rs`):
 
 ```bash
-BEDROCK_INTEGRATION=1 AWS_PROFILE=us cargo test -- --ignored   # needs real Bedrock access in us-east-2
+BEDROCK_INTEGRATION=1 AWS_PROFILE=<your-profile> cargo test -- --ignored   # needs real Bedrock access in us-east-2
 ```
 
 Coverage is tracked but never blocking: `make coverage`, `make coverage-html`, `make coverage-lcov`. Target 95%; see `docs/coverage.md`.
@@ -113,12 +113,11 @@ Transient Bedrock 503/500 in CI: retry. Before re-running a task that may alread
 
 ## Conventions
 
-- **Commits:** Conventional Commits with a Chinese, imperative subject — `feat: 添加 Nova embedding 支持`, `fix: 修复流式响应 finish_reason 映射`.
-- **Do not edit `src/api/`** — Python reference artifact from the original gateway, not live code.
+- **Commits:** Conventional Commits with an English, imperative subject and no scope — `feat: add Nova embedding support`, `fix: map streaming finish_reason`.
 - **Two unrelated auth directions.** Client → gateway is `API_KEY` / `API_KEY_SECRET_ARN` / `API_KEY_PARAM_NAME`, resolved SSM → Secrets Manager → env, enforced in `server/auth.rs` (`AppSettings::api_key`). Gateway → Bedrock is `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY` with SigV4 fallback, injected in `bedrock::client::build_aws_config` (`AppSettings::bedrock_api_key`). Never conflate them.
 - **Env vars:** both `APP_`-prefixed and bare Python-parity names are accepted; bare names win. Allow-list is `apply_bare_env_overrides` in `src/config/settings.rs`.
 - **Lambda:** never set `AWS_REGION` in the Lambda environment — reserved variable, cfn-lint `E3663`. The runtime injects it.
-- **Docs layout:** root holds only `README.md` and `AGENTS.md`. Everything else goes under `docs/readme/` (README_CN, CONTRIBUTING, CODE_OF_CONDUCT) or `docs/deploy/`. Do not add `.md` files to the root.
+- **Docs layout:** root holds only `README.md` and `AGENTS.md`. Community files (CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, PR template) live in `.github/`; README_CN stays in `docs/readme/`; deployment guides go under `docs/deploy/`. Do not add `.md` files to the root.
 - **axum stays.** actix-web was evaluated and rejected (SSE path is axum-native, `FromRequestParts`/`IntoResponse` encode the 401-vs-405 error contract, graceful shutdown is built in; the service is IO-bound). Closed decision — reopen only with a benchmark showing axum as the bottleneck.
 
 ## Deeper reference

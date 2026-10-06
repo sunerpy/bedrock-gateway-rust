@@ -1,14 +1,13 @@
 //! Golden record/replay parity test harness.
 //!
-//! This is the **Tier-1 offline parity safety net** described in the Metis
-//! two-tier plan: it proves the Rust gateway is behaviourally faithful to the
-//! pinned Python reference (SHA `9a3e752`) **without** any live Bedrock / AWS
-//! access. It runs entirely against on-disk fixtures.
+//! This is the **Tier-1 offline parity safety net**: it proves the Rust gateway
+//! is behaviourally faithful to the Python reference gateway **without** any
+//! live Bedrock / AWS access. It runs entirely against on-disk fixtures.
 //!
 //! # What lives here
 //!
 //! * A **semantic-equality comparator** ([`assert_semantic_eq`] and friends).
-//!   Metis decision: parity is checked **semantically**, NOT byte-exact. Two
+//!   Design decision: parity is checked **semantically**, NOT byte-exact. Two
 //!   payloads match when they have the same field *set*, the same field
 //!   *values*, and — for streams — the same event-type *ordering*, after
 //!   volatile fields (`id`, `created`, request IDs, `system_fingerprint`, …)
@@ -17,8 +16,8 @@
 //!   pairs and streaming/response pairs). See `tests/golden/README.md` for the
 //!   directory layout and on-disk format.
 //! * **Self-tests** (positive + negative controls) that prove the comparator
-//!   actually works *before* any real fixtures are captured (real fixtures land
-//!   in task 32). The negative control asserts the comparator REJECTS a genuine
+//!   actually works on its own, independently of the real corpus in
+//!   `corpus.rs`. The negative control asserts the comparator REJECTS a genuine
 //!   difference (e.g. a changed `finish_reason`); the positive control asserts
 //!   it ACCEPTS payloads that differ only in volatile fields / key ordering.
 //!

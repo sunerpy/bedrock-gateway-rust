@@ -2,21 +2,21 @@
 
 This directory holds the **Tier-1 offline parity safety net** for the Rust
 gateway. It proves the Rust implementation is behaviourally faithful to the
-pinned Python reference (SHA `9a3e752`) **without any live Bedrock / AWS
-access**. The whole suite runs from on-disk fixtures via:
+Python reference gateway **without any live Bedrock / AWS access**. The whole
+suite runs from on-disk fixtures via:
 
 ```bash
 cargo test --test golden
 ```
 
-> The harness + comparator live in [`mod.rs`](./mod.rs). **Real fixtures are
-> captured in task 32** — the files under `fixtures/.../placeholder_selftest/`
+> The harness + comparator live in [`mod.rs`](./mod.rs). **Real fixtures live in
+> the corpus** (see below) — the files under `fixtures/.../placeholder_selftest/`
 > are minimal self-test placeholders that exercise the loaders and comparator
-> before the real corpus exists.
+> independently of the real corpus.
 
 ## Why semantic, not byte-exact?
 
-**Metis decision: parity is checked SEMANTICALLY.** Two payloads are considered
+**Design decision: parity is checked SEMANTICALLY.** Two payloads are considered
 equal when they have:
 
 1. the same field **set** (after volatile fields are removed),
@@ -122,7 +122,7 @@ Proves non-streaming response parity (Bedrock output → OpenAI response).
 
 Compared with `assert_semantic_eq(&expected_openai_response, &actual_openai_response)`.
 
-## Adding a real fixture (task 32)
+## Adding a real fixture
 
 1. Capture the input/output pair against the pinned Python reference.
 2. Drop the pair into a new `<case>/` directory under the matching family.
@@ -131,7 +131,7 @@ Compared with `assert_semantic_eq(&expected_openai_response, &actual_openai_resp
 
 No live AWS access is required at test time — fixtures are static files.
 
-## Corpus (task 32) — wired into `cargo test --test golden`
+## Corpus — wired into `cargo test --test golden`
 
 The real corpus lives next to the harness in [`corpus.rs`](./corpus.rs)
 (compiled as `golden::corpus`). Every case drives the **real** Rust pipeline
@@ -199,7 +199,7 @@ over the static fixture and asserts semantic parity:
 
 ### Documented intentional divergences (encoded in the corpus)
 
-These are the Metis-sanctioned FIX divergences from the Python gateway; the
+These are the intentional FIX divergences from the Python gateway; the
 fixtures encode the **Rust** (correct) behaviour:
 
 | Divergence | Where it shows | Behaviour |

@@ -162,7 +162,7 @@ fn reasoning_effort_variants() {
 // Property-based tests
 // -----------------------------------------------------------------------
 //
-// Feature: test-coverage-codecov, Property 1: Schema serialization round-trip
+// Property 1: Schema serialization round-trip
 //
 // For any well-formed wire value, `serialize -> deserialize -> serialize`
 // is semantically stable: the JSON produced from the original value equals
@@ -559,7 +559,7 @@ mod property_tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
 
-        /// Feature: test-coverage-codecov, Property 1
+        /// Property 1: schema serialization round-trip.
         #[test]
         fn chat_request_roundtrip(req in arb_chat_request()) {
             let v1 = roundtrip_value(&req);
@@ -569,7 +569,7 @@ mod property_tests {
             }
         }
 
-        /// Feature: test-coverage-codecov, Property 1
+        /// Property 1: schema serialization round-trip.
         #[test]
         fn chat_response_roundtrip(resp in arb_chat_response()) {
             let v1 = roundtrip_value(&resp);
@@ -592,7 +592,7 @@ mod property_tests {
             }
         }
 
-        /// Feature: test-coverage-codecov, Property 1
+        /// Property 1: schema serialization round-trip.
         #[test]
         fn chat_stream_response_roundtrip(resp in arb_chat_stream_response()) {
             roundtrip_value(&resp);
@@ -600,31 +600,31 @@ mod property_tests {
             prop_assert!(!s.contains("reasoning_content"), "reasoning_content leaked: {s}");
         }
 
-        /// Feature: test-coverage-codecov, Property 1
+        /// Property 1: schema serialization round-trip.
         #[test]
         fn usage_roundtrip(usage in arb_usage()) {
             roundtrip_value(&usage);
         }
 
-        /// Feature: test-coverage-codecov, Property 1
+        /// Property 1: schema serialization round-trip.
         #[test]
         fn embeddings_request_roundtrip(req in arb_embeddings_request()) {
             roundtrip_value(&req);
         }
 
-        /// Feature: test-coverage-codecov, Property 1
+        /// Property 1: schema serialization round-trip.
         #[test]
         fn embeddings_response_roundtrip(resp in arb_embeddings_response()) {
             roundtrip_value(&resp);
         }
 
-        /// Feature: test-coverage-codecov, Property 1
+        /// Property 1: schema serialization round-trip.
         #[test]
         fn model_roundtrip(model in arb_model()) {
             roundtrip_value(&model);
         }
 
-        /// Feature: test-coverage-codecov, Property 1
+        /// Property 1: schema serialization round-trip.
         #[test]
         fn models_list_roundtrip(models in prop::collection::vec(arb_model(), 0..4)) {
             let list = Models { object: "list".to_string(), data: models };

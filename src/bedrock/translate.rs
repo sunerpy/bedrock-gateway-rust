@@ -34,12 +34,12 @@
 //! support is supplied by the caller via [`ImageResolver::supports_image`],
 //! mirroring the Python `is_supported_modality` gate (bedrock.py:1641-1645).
 //!
-//! ## Integration seam for reasoning (task 16) and tools (task 17)
+//! ## Integration seam for reasoning and tools
 //!
 //! [`to_converse_args`] owns messages, system prompts, inference config,
 //! multimodal content, and the additional-fields passthrough/context-1m
 //! assembly. It deliberately does **not** build the `reasoning_config` /
-//! `thinking` additional fields (task 16) nor the `toolConfig` (task 17).
+//! `thinking` additional fields nor the `toolConfig`.
 //! Instead it exposes them as already-built inputs via [`ConverseExtras`]:
 //! a follow-up wires `crate::bedrock::reasoning` and `crate::bedrock::tools`
 //! into those slots. Reasoning fields are merged into
@@ -111,8 +111,8 @@ impl ConverseArgs {
     }
 }
 
-/// Pre-built pieces contributed by the reasoning (task 16) and tool (task 17)
-/// tasks. Translation composes these without re-deriving them.
+/// Pre-built pieces contributed by reasoning and tool normalization.
+/// Translation composes these without re-deriving them.
 ///
 /// This is the explicit integration seam: callers that have run reasoning/tool
 /// normalization pass the results in here. The default ([`ConverseExtras::default`])
@@ -124,7 +124,7 @@ pub struct ConverseExtras {
     /// into `additionalModelRequestFields`. If this contains a `thinking`
     /// key, `topP` is dropped from inference config (bedrock.py:1267-1268).
     pub reasoning_fields: Option<Value>,
-    /// The fully-built `toolConfig` object (task 17). Placed verbatim into
+    /// The fully-built `toolConfig` object. Placed verbatim into
     /// [`ConverseArgs::tool_config`].
     pub tool_config: Option<Value>,
     /// Chat reasoning capsule decoder state. Decoding is independent of the
@@ -762,8 +762,8 @@ fn build_inference_config(req: &ChatRequest, caps: &dyn ModelCapabilities) -> Va
 /// This is the pure entrypoint (no Bedrock client calls). It ports
 /// `_parse_request` (bedrock.py:1106-1296) for messages, system prompts,
 /// inference config, multimodal content, the controlled passthrough allowlist,
-/// and context-1m beta-header auto-injection. Reasoning (task 16) and tool
-/// (task 17) pieces are supplied pre-built via `extras` — see [`ConverseExtras`].
+/// and context-1m beta-header auto-injection. Reasoning and tool pieces are
+/// supplied pre-built via `extras` — see [`ConverseExtras`].
 ///
 /// Image fetching for remote (`http(s)://`) URLs goes through `resolver`; this
 /// function is otherwise synchronous in spirit (only awaits the resolver).
@@ -845,7 +845,7 @@ pub async fn to_converse_args(
         system,
         inference_config,
         additional_model_request_fields,
-        // Tool config is the task-17 seam; translation never builds it.
+        // Tool config arrives pre-built via `ConverseExtras`; translation never builds it.
         tool_config: extras.tool_config.clone(),
         output_config,
     })

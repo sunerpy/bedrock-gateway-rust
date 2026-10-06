@@ -1,7 +1,7 @@
 //! Unit and property-based tests for the token-accounting helpers.
 //!
 //! Relocated out of `tokens.rs` for code organization (see the
-//! `test-coverage-codecov` spec). Behavior is unchanged; the two original
+//! sidecar-test convention in `AGENTS.md`). Behavior is unchanged; the two original
 //! test modules (`tests` and `prop_tests`) are preserved verbatim as nested
 //! submodules so the source file references exactly one `mod tests;`.
 //!
@@ -92,10 +92,7 @@ mod unit_tests {
 
 /// Property-based tests for the token-accounting invariants.
 ///
-/// Feature: test-coverage-codecov, Property 2: Token 计账不变量
-/// (see `.kiro/specs/test-coverage-codecov/design.md`).
-///
-/// Validates: Requirements 1.2
+/// Property 2: Token 计账不变量.
 mod prop_tests {
     use super::super::*;
     use proptest::prelude::*;
@@ -108,7 +105,7 @@ mod prop_tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
-        /// Feature: test-coverage-codecov, Property 2: Token 计账不变量.
+        /// Property 2: Token 计账不变量.
         ///
         /// For any non-negative input/output/cacheRead/cacheWrite:
         /// - prompt_tokens   == input + cacheRead + cacheWrite
@@ -138,7 +135,7 @@ mod prop_tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
 
-        /// Feature: test-coverage-codecov, Property 2: Token 计账不变量
+        /// Property 2: Token 计账不变量
         /// (`estimate_reasoning_tokens` monotonic / non-negative half).
         ///
         /// For any non-whitespace base string `a`:
@@ -170,7 +167,7 @@ mod prop_tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
 
-        /// Feature: test-coverage-codecov, Property 2: Token 计账不变量
+        /// Property 2: Token 计账不变量
         /// (`estimate_reasoning_tokens` determinism + whitespace => 0).
         #[test]
         fn prop_estimate_reasoning_tokens_deterministic_and_zero_on_blank(

@@ -1,7 +1,7 @@
 //! wiremock-backed tests for the `bedrock-mantle` HTTP client.
 //!
 //! Relocated out of `mantle_client.rs` into this sibling file for code
-//! organization (see the `test-coverage-codecov` spec, Option A). Behavior is
+//! organization (see the sidecar-test convention in `AGENTS.md`). Behavior is
 //! unchanged; functions are flat and share the implementation module via
 //! `use super::*;`.
 //!

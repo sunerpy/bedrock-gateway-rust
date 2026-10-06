@@ -3,7 +3,7 @@
 //! Ports `list_bedrock_models` from `.legacy-python/src/api/models/bedrock.py`
 //! (lines 194-302) to the `aws-sdk-bedrock` control-plane client. It builds a
 //! unified model map plus `profile_metadata` that feeds the capability
-//! resolver's `with_profiles` constructor (task 11).
+//! resolver's `with_profiles` constructor.
 //!
 //! ## Design
 //!

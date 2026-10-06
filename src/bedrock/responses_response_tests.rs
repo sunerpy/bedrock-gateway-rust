@@ -1,7 +1,7 @@
 //! Unit tests for the non-streaming Converse → Responses mapper.
 //!
 //! Relocated out of `responses_response.rs` into a sibling `#[path]` module for
-//! code organization (see the `test-coverage-codecov` spec). Behavior is
+//! code organization (see the sidecar-test convention in `AGENTS.md`). Behavior is
 //! unchanged; `use super::*;` still resolves to the implementation module.
 
 use super::*;

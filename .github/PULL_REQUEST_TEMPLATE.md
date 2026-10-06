@@ -1,5 +1,17 @@
-_Issue #, if available:_
+<!--
+The PR title must be a Conventional Commit with an English, imperative subject
+and no scope, for example `fix: preserve image support in Responses translation`.
+Pull requests are squash-merged, so the title becomes the commit on main.
+-->
 
-_Description of changes:_
+## Summary
 
-By submitting this pull request, I confirm that you can use, modify, copy, and redistribute this contribution, under the terms of your choice.
+<!-- What does this change and why? Link related issues, e.g. "Closes #123". -->
+
+## Verification
+
+- [ ] `cargo fmt --all`
+- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
+- [ ] `cargo test --all-features`
+- [ ] Golden fixture added under `tests/golden/` (translation or rendering changes)
+- [ ] Docs updated where behavior or configuration changed

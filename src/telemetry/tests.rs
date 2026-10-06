@@ -1,7 +1,7 @@
 //! Unit tests for the telemetry module.
 //!
 //! Relocated out of `mod.rs` for code organization (see the
-//! `test-coverage-codecov` spec). Behavior is unchanged; `use super::*`
+//! sidecar-test convention in `AGENTS.md`). Behavior is unchanged; `use super::*`
 //! continues to resolve to the parent `telemetry` module since this file is
 //! declared as its child `mod tests;`.
 

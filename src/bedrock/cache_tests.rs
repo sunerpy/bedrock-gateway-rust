@@ -843,7 +843,7 @@ fn t6_decorate_tools_empty_and_double_insert_guard() {
     assert_eq!(count_cp(&full), 0, "no room under the ceiling");
 }
 
-// ---- PR-G: cachePoint.ttl (5m/1h) ----
+// ---- cachePoint.ttl (5m/1h) ----
 
 /// A test-only capabilities impl that reports `Capability::CacheTtl1h` for a
 /// model, so the 1h gate can be exercised in a `.rs` test WITHOUT naming a
@@ -1092,15 +1092,12 @@ fn collect_ttls(value: &Value) -> Vec<String> {
 
 // ---- Property 3: cache-checkpoint budget invariant (for-all) ----
 //
-// Feature: test-coverage-codecov, Property 3: 缓存点预算不变量
-// (see `.kiro/specs/test-coverage-codecov/design.md`).
-//
 // These proptests generalize the example-based `t6_*` budget tests above
 // into for-all properties. They drive the exact tools → system → messages
 // zone order that `provider.rs::assemble` uses (via `run_three_zones`),
 // sharing ONE running checkpoint budget. There is NO model-name branching:
 // caching support flows solely from the config-gated `cache_min_tokens` /
-// `max_cache_tokens` accessors on the fake capabilities impl (Req 1.5).
+// `max_cache_tokens` accessors on the fake capabilities impl.
 
 /// Build a Bedrock `system` array from generated per-block word counts.
 /// An empty slice yields an empty (undecorated) system zone.
@@ -1133,7 +1130,7 @@ fn messages_from(turns: &[(bool, usize)]) -> Value {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// Feature: test-coverage-codecov, Property 3: 缓存点预算不变量.
+    /// Property 3: 缓存点预算不变量.
     ///
     /// For ANY model capabilities, tools/system/messages content and cache
     /// toggle, decorating the three zones in `tools → system → messages`
@@ -1183,7 +1180,7 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// Feature: test-coverage-codecov, Property 3: 缓存点预算不变量
+    /// Property 3: 缓存点预算不变量
     /// (zero-injection half).
     ///
     /// When the model does NOT support caching (no cache params) OR caching
@@ -1232,7 +1229,7 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
-    /// Feature: test-coverage-codecov, Property 3: 缓存点预算不变量
+    /// Property 3: 缓存点预算不变量
     /// (no-double-insertion guard).
     ///
     /// The tools and messages decorators are idempotent: decorating a zone

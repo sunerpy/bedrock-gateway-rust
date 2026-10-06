@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/sunerpy/bedrock-gateway-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/sunerpy/bedrock-gateway-rust/actions/workflows/ci.yml)
 [![Docker Pulls](https://img.shields.io/docker/pulls/sunerpy/bedrock-gateway-rust)](https://hub.docker.com/r/sunerpy/bedrock-gateway-rust)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
+[![License: MIT-0](https://img.shields.io/badge/License-MIT--0-yellow.svg)](../../LICENSE)
 
 **100% Rust 实现的 OpenAI 兼容 API 网关，后端对接 AWS Bedrock。单二进制、零 GC、高并发。**
 
-> 📖 [English Documentation / 英文文档](../../README.md)
+> 🌐 网站：[firlab.app/bedrock-gateway/zh](https://firlab.app/bedrock-gateway/zh/) · 📖 [English Documentation / 英文文档](../../README.md)
 
 将本网关部署在 AWS Bedrock 前，任何 OpenAI SDK、工具或 Agent 无需修改客户端代码即可直接使用。运行时栈为 **axum + tokio + aws-sdk-bedrockruntime** — 全异步，无 GC 暂停，无 Python 依赖。替代了早期的 Python/FastAPI 实现，同时保持与 OpenAI REST API 的字节级兼容。
 
@@ -401,24 +401,24 @@ src/
 
 ```bash
 cargo build --release          # release 二进制 → target/release/bedrock-gateway
-cargo test                     # 单元测试 + golden replay（无需 AWS 凭证）
+cargo test --all-features      # 单元测试 + golden replay（无需 AWS 凭证）
 cargo clippy --all-targets --all-features -- -D warnings
-cargo fmt
+cargo fmt --all
 ```
 
-**提交前检查（每次提交前必须按序执行）：**
+**推送前检查（`make hooks` 后会在 `git push` 时自动执行）：**
 
 ```bash
-cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test
+cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features
 ```
 
 `tests/golden/` 中的 golden fixtures 为离线固定测试，在 CI 中无需 AWS 凭证即可运行。实时集成测试需要真实凭证：
 
 ```bash
-BEDROCK_INTEGRATION=1 AWS_PROFILE=us cargo test -- --ignored
+BEDROCK_INTEGRATION=1 AWS_PROFILE=<your-profile> cargo test -- --ignored
 ```
 
-贡献规范见 [贡献指南](CONTRIBUTING.md)。
+贡献规范见 [贡献指南](../../.github/CONTRIBUTING.md)。
 
 ---
 
@@ -427,8 +427,8 @@ BEDROCK_INTEGRATION=1 AWS_PROFILE=us cargo test -- --ignored
 | 资源             | 链接                                                     |
 | ---------------- | -------------------------------------------------------- |
 | English README   | [Read in English](../../README.md)                       |
-| 贡献指南         | [贡献指南](CONTRIBUTING.md)                              |
-| 行为准则         | [行为准则](CODE_OF_CONDUCT.md)                           |
+| 贡献指南         | [贡献指南](../../.github/CONTRIBUTING.md)                |
+| 行为准则         | [行为准则](../../.github/CODE_OF_CONDUCT.md)             |
 | 缓存与推理详解   | [深入 → 缓存与推理](../../docs/caching-and-reasoning.md) |
 | Docker 部署      | [部署 → Docker](../../docs/deploy/docker.md)             |
 | ECS/Fargate 部署 | [部署 → ECS / Fargate](../../docs/deploy/ecs.md)         |
@@ -439,7 +439,7 @@ BEDROCK_INTEGRATION=1 AWS_PROFILE=us cargo test -- --ignored
 
 ## 许可证
 
-[MIT](../../LICENSE)
+[MIT-0](../../LICENSE)
 
 ---
 

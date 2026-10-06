@@ -1,5 +1,5 @@
 //! Unit tests for [`crate::bedrock::tools`], relocated out of the source
-//! module for code organization (see the `test-coverage-codecov` spec).
+//! module for code organization (see the sidecar-test convention in `AGENTS.md`).
 //!
 //! The source file declares this via a `#[path]` mod tests, so the
 //! top-level `use super::*;` resolves to the implementation module.
@@ -463,8 +463,7 @@ fn safety_net_replaces_non_object_config() {
 
 // ---- Property: tool-name round-trip invariants -------------------------
 //
-// Feature: test-coverage-codecov, Property: namespace-prefix-roundtrip
-// (see `.kiro/specs/test-coverage-codecov/design.md`, tools.rs row).
+// Property: namespace-prefix-roundtrip.
 //
 // The `{ns}__{fn}` flattening itself lives in `responses_translate.rs`
 // (`build_responses_tool_specs` / `NAMESPACE_DELIMITER`), but the stateless
@@ -473,15 +472,13 @@ fn safety_net_replaces_non_object_config() {
 // `tools.rs` functions that carry it: a prefixed name replayed as an assistant
 // `toolUse` is preserved verbatim by `assistant_tool_calls_to_tool_use` and by
 // `synthesize_tool_config_from_messages` (the prefix is never stripped).
-//
-// Validates: Requirements 1.2
 
 use proptest::prelude::*;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// Feature: test-coverage-codecov, Property: namespace-prefix-roundtrip.
+    /// Property: namespace-prefix-roundtrip.
     ///
     /// For ANY namespace/inner name pair, the flattened `{ns}__{fn}` tool name
     /// round-trips UNCHANGED through the tools.rs continuation pipeline:
@@ -518,7 +515,7 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
-    /// Feature: test-coverage-codecov, Property: toolConfig name preservation.
+    /// Property: toolConfig name preservation.
     ///
     /// `build_tool_config` emits exactly one `toolSpec` per input tool, in the
     /// same order, each keeping its bare name.

@@ -2132,7 +2132,7 @@ fn stream_true_variant_deserializes() {
 mod prop_tests {
     //! Property-based round-trip coverage for the Responses wire schema.
     //!
-    //! Feature: test-coverage-codecov, Property 1: Schema 序列化往返
+    //! Property 1: Schema 序列化往返
     //!
     //! For any valid `ResponsesRequest` / `ResponsesResponse` / stream event /
     //! tool value, serializing to JSON then deserializing yields a semantically
@@ -2142,8 +2142,6 @@ mod prop_tests {
     //! `Value`. This also locks the `#[serde(other)] Unknown` catch-all so an
     //! unrecognized tool `type` NEVER fails deserialization at the wire
     //! boundary.
-    //!
-    //! Validates: Requirements 1.2
 
     use super::super::*;
     use proptest::prelude::*;

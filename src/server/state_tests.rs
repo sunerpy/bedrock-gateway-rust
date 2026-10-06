@@ -1,5 +1,5 @@
 //! Unit tests for [`crate::server::state`], kept in a sibling file (see the
-//! `test-coverage-codecov` spec). The source module declares this via a
+//! sidecar-test convention in `AGENTS.md`). The source module declares this via a
 //! `#[path]` mod tests, so the top-level `use super::*;` resolves to the
 //! implementation module.
 //!

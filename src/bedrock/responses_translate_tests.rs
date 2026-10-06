@@ -1,7 +1,7 @@
 //! Unit and property tests for the Responses → Converse input translation.
 //!
 //! Relocated out of `responses_translate.rs` into a sibling `#[path]` module for
-//! code organization (see the `test-coverage-codecov` spec). Behavior is
+//! code organization (see the sidecar-test convention in `AGENTS.md`). Behavior is
 //! unchanged; `use super::*;` still resolves to the implementation module.
 
 use super::*;
@@ -1164,10 +1164,7 @@ async fn text_format_without_type_is_bad_request() {
 /// Property tests for the `namespace` → `{ns}__{fn}` flattening in
 /// [`build_responses_tool_specs`].
 ///
-/// Feature: test-coverage-codecov, Property: namespace-flatten
-/// (see `.kiro/specs/test-coverage-codecov/design.md`).
-///
-/// Validates: Requirements 1.2
+/// Property: namespace-flatten.
 mod prop_tests {
     use super::super::*;
     use proptest::prelude::*;
@@ -1212,7 +1209,7 @@ mod prop_tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
-        /// Feature: test-coverage-codecov, Property: namespace-flatten.
+        /// Property: namespace-flatten.
         ///
         /// For any set of namespaces (distinct names) each holding a set of
         /// inner function tools (names distinct within a namespace):

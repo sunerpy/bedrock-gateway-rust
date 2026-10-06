@@ -1,7 +1,7 @@
 //! Unit tests for the streaming Converse → Responses lifecycle state machine.
 //!
 //! Relocated out of `responses_stream.rs` into a sibling `#[path]` module for
-//! code organization (see the `test-coverage-codecov` spec). Behavior is
+//! code organization (see the sidecar-test convention in `AGENTS.md`). Behavior is
 //! unchanged; `use super::*;` still resolves to the implementation module.
 
 use super::*;

@@ -1,5 +1,5 @@
 //! Unit tests for [`crate::bedrock::translate`], relocated out of the source
-//! module for code organization (see the `test-coverage-codecov` spec).
+//! module for code organization (see the sidecar-test convention in `AGENTS.md`).
 //!
 //! The source file declares this via a `#[path]` mod tests, so the
 //! top-level `use super::*;` resolves to the implementation module.
@@ -904,7 +904,7 @@ async fn reasoning_seam_fields_merge_into_additional() {
         .additional_model_request_fields
         .expect("fields present");
     assert!(fields.get("reasoning_config").is_some());
-    // Tool config is placed verbatim into the slot (task-17 seam).
+    // Tool config is placed verbatim into the slot (the tool seam).
     assert_eq!(args.tool_config, Some(json!({"tools": []})));
 }
 
@@ -1466,11 +1466,6 @@ async fn response_format_absent_is_noop() {
 }
 
 // ---- Property: message-order-preserving --------------------------------
-//
-// Feature: test-coverage-codecov, Property: message-order-preserving
-// (see `.kiro/specs/test-coverage-codecov/design.md`, translate.rs row).
-//
-// Validates: Requirements 1.2
 
 use futures::executor::block_on;
 use proptest::prelude::*;
@@ -1478,7 +1473,7 @@ use proptest::prelude::*;
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 
-    /// Feature: test-coverage-codecov, Property: message-order-preserving.
+    /// Property: message-order-preserving.
     ///
     /// For ANY sequence of user/assistant text messages, `to_converse_args`
     /// preserves order and role:
@@ -1546,7 +1541,7 @@ proptest! {
     }
 }
 
-// ---- Coverage-deepening tests (test-coverage-codecov) -------------------
+// ---- Coverage-deepening tests (see docs/coverage.md) --------------------
 //
 // These flat tests target branches in `to_converse_args` and its helpers that
 // were previously unexercised: `ConverseArgs::to_value`, the `data:`-URI

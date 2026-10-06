@@ -3,11 +3,11 @@ name: bedrock-gateway
 description: An OpenAI-compatible API gateway for AWS Bedrock, deployable on Kubernetes/EKS.
 type: application
 # Chart SemVer — bump on chart changes.
-version: 0.1.0
+version: 0.2.0
 # Mirrors the gateway application version; the image tag falls back to this when
-# image.tag is empty.
-appVersion: "0.8.1"
-home: https://github.com/sunerpy/bedrock-gateway-rust
+# image.tag is empty. release-please updates it with every release (extra-files).
+appVersion: "0.17.0" # x-release-please-version
+home: https://firlab.app/bedrock-gateway/
 sources:
   - https://github.com/sunerpy/bedrock-gateway-rust
 keywords:

@@ -6,7 +6,7 @@
 //! 1. **3-tier API key resolution** with a fixed priority order:
 //!    SSM Parameter Store → Secrets Manager → `API_KEY` env/setting → error.
 //!    The key is resolved **once at boot** and cached in `AppState` by the
-//!    caller (task 24). It is **never** fetched per request.
+//!    server bootstrap. It is **never** fetched per request.
 //! 2. **Bearer authentication** as an axum middleware that compares the
 //!    `Authorization: Bearer <token>` header against the resolved key.
 //!
@@ -26,8 +26,8 @@
 //! return [`AppError::Unauthorized`], whose [`IntoResponse`] renders that
 //! envelope (see [`crate::error`]). Apply it with `route_layer` on the
 //! protected routes so that a wrong HTTP method still yields `405` (not `401`).
-//! `/health` is deliberately left outside the protected subtree (wired in
-//! task 24) and therefore requires no auth.
+//! `/health` is deliberately left outside the protected subtree (the router
+//! mounts it separately) and therefore requires no auth.
 //!
 //! ## Security
 //!

@@ -12,7 +12,7 @@
 # Build:
 #   docker build -f deployment/lambda/Dockerfile -t bedrock-gateway:lambda .
 #
-# Notes on parity with task 26 (the main distroless ECS image): both share the
+# Notes on parity with the main distroless image (`Dockerfile`): both share the
 # musl static-build convention (rust:<ver>-alpine builder + x86_64 musl target)
 # so the produced binary is fully static and runs on the minimal Lambda base.
 # This Dockerfile is intentionally self-contained so it builds even if the ECS

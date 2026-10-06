@@ -17,11 +17,11 @@
 //!   [`crate::bedrock::response::convert_finish_reason`].
 //! - base.py:50-63 SSE framing → the chunk objects carry
 //!   `object = "chat.completion.chunk"`; SSE framing (`data: …\n\n` and the
-//!   `data: [DONE]` line) is the router's responsibility (task 22). This stream
+//!   `data: [DONE]` line) is the router's responsibility. This stream
 //!   yields [`ChatStreamResponse`] items and ENDS; the router appends
 //!   `data: [DONE]` after the stream is exhausted.
 //!
-//! ## Purity & testability (task §4)
+//! ## Purity & testability
 //!
 //! The Bedrock `EventReceiver` is hard to fake, so the intricate logic lives in
 //! [`StreamState`], a synchronous state machine with no I/O. Each Bedrock event
@@ -44,7 +44,7 @@
 //!   the finish-reason chunk on the next event would be lost — so Python returns
 //!   the `</think>` chunk and defers the stop. We reproduce that exactly.
 //!
-//! ## No timeouts (task §5)
+//! ## No timeouts
 //!
 //! No timeout is ever applied to this stream — a timeout would sever the SSE
 //! connection. The async wrapper loops on `recv().await` until the receiver is
@@ -556,7 +556,7 @@ fn now_unix_secs() -> i64 {
 /// ## `[DONE]` representation
 ///
 /// This stream yields [`ChatStreamResponse`] items and then ENDS. The trailing
-/// `data: [DONE]` SSE line (base.py:60-63) is appended by the router (task 22)
+/// `data: [DONE]` SSE line (base.py:60-63) is appended by the router
 /// once the stream is exhausted — it is NOT represented as an item here.
 ///
 /// ## Errors
