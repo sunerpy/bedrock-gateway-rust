@@ -46,7 +46,7 @@ tools cachePoint    → system cachePoint → messages cachePoint
           ↑── 共享 max_cache_checkpoints=4 ──────────────────
 ```
 
-可通过 `extra_body.prompt_caching` 在单次请求内覆盖全局开关：
+可通过请求体里 `extra_body` 对象中的 `prompt_caching` 在单次请求内覆盖全局开关。OpenAI SDK 的 `extra_body` 参数会把内容合并到请求体顶层，所以用 SDK 时要再套一层 `extra_body`：
 
 ```python
 # 只缓存 system，跳过 messages
@@ -54,13 +54,17 @@ response = client.chat.completions.create(
     model="anthropic.claude-3-5-sonnet-20241022-v2:0",
     messages=[...],
     extra_body={
-        "prompt_caching": {
-            "system": True,
-            "messages": False
+        "extra_body": {
+            "prompt_caching": {
+                "system": True,
+                "messages": False
+            }
         }
     }
 )
 ```
+
+Responses API 只读取其中的 `ttl`。
 
 全局关闭：设置 `ENABLE_PROMPT_CACHING=false`。
 
