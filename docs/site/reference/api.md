@@ -111,9 +111,9 @@ gateway sends the prompt to the model as a user message. GPT-5.x and gpt-oss are
 | Titan  | `amazon.titan-embed-text-v1`, `amazon.titan-embed-text-v2:0` | One string per request   |
 | Nova   | `amazon.nova-2-multimodal-embeddings-v1:0`                   | One string per request   |
 
-`encoding_format` is `float` or `base64`. Nova takes `dimensions` of 256, 384, 1024 or 3072, the default. Token
-arrays are decoded to text with the `cl100k_base` encoding first. A model outside the registry gets HTTP 400; add it
-there with its family to serve it.
+Titan and Nova answer HTTP 400 to a list of more than one input. `encoding_format` is `float` or `base64`. Nova
+takes `dimensions` of 256, 384, 1024 or 3072, the default. Token arrays are decoded to text with the `cl100k_base`
+encoding first. A model outside the registry gets HTTP 400; add it there with its family to serve it.
 
 ## Models
 

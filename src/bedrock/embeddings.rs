@@ -222,6 +222,13 @@ impl NovaCodec {
 impl EmbeddingBodyCodec for NovaCodec {
     fn encode(&self, req: &EmbeddingsRequest) -> Result<Value, AppError> {
         let texts = inputs_to_texts(&req.input)?;
+        // SINGLE_EMBEDDING takes one text. Refuse a list instead of embedding
+        // its first entry and returning fewer vectors than the client sent.
+        if texts.len() > 1 {
+            return Err(AppError::BadRequest(
+                "Amazon Nova embedding models support only a single input per request.".to_string(),
+            ));
+        }
         let text = texts
             .into_iter()
             .next()
