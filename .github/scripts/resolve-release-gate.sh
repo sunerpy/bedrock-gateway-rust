@@ -18,9 +18,6 @@
 #   REF_PROTECTED     github.ref_protected (required; must be "true")
 #   RUN_REF           github.ref (defaults to GITHUB_REF)
 #   DEFAULT_BRANCH    expected default branch (defaults to the repository's default branch via the API)
-#   TAG_PREFIX        optional prefix before the v of every release tag, for a release-please
-#                     component tag such as bedrock-gateway-rust-v1.2.3 (TAG_PREFIX=bedrock-gateway-rust-);
-#                     empty for plain vX.Y.Z tags. The version output never carries it.
 #   GATE_PASSTHROUGH  optional space-separated list of env names copied to GITHUB_OUTPUT with
 #                     lowercase keys (for example "BUILD_BINARIES NPM_PUBLISH"), because job-level
 #                     `if:` cannot read workflow env but can read needs.<job>.outputs.*
@@ -38,12 +35,7 @@
 #   https://docs.github.com/en/actions/reference/security/secure-use#principle-of-least-privilege
 set -euo pipefail
 
-tag_prefix=${TAG_PREFIX:-}
-[[ "$tag_prefix" =~ ^[A-Za-z0-9._-]*$ ]] || {
-	echo "::error title=Release gate::TAG_PREFIX may hold only letters, digits, '.', '_' and '-'" >&2
-	exit 1
-}
-semver="^${tag_prefix//./\\.}"'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
 
 fail() {
 	echo "::error title=Release gate::$*" >&2
@@ -58,7 +50,7 @@ require_env() {
 }
 
 require_semver_tag() {
-	[[ "$1" =~ $semver ]] || fail "tag must be ${tag_prefix}v followed by a SemVer such as ${tag_prefix}v1.2.3, got '${1}'"
+	[[ "$1" =~ $semver ]] || fail "tag must be a v-prefixed SemVer such as v1.2.3, got '${1}'"
 }
 
 # Print the commit a tag points at, dereferencing annotated tag objects.
@@ -141,7 +133,7 @@ release_sha=$(peel_tag "$tag")
 if [[ -n "${RELEASE_SHA:-}" && "$RELEASE_SHA" != "$release_sha" ]]; then
 	fail "release-please reported sha ${RELEASE_SHA} but ${tag} peels to ${release_sha}"
 fi
-version=${tag#"${tag_prefix}v"}
+version=${tag#v}
 if [[ -n "${RELEASE_VERSION:-}" && "$RELEASE_VERSION" != "$version" ]]; then
 	fail "release-please reported version ${RELEASE_VERSION} but the tag is ${tag}"
 fi

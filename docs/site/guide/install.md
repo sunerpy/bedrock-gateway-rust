@@ -22,6 +22,27 @@ docker pull sunerpy/bedrock-gateway-rust:0.17.0
 ECR Public needs no login, so an ECS task or Lambda function can pull from it without Docker Hub's rate limits. The
 image listens on port 8080 and runs as a non-root user.
 
+## Install script
+
+On Linux and macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sunerpy/bedrock-gateway-rust/main/scripts/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/sunerpy/bedrock-gateway-rust/main/scripts/install.ps1 | iex
+```
+
+The script downloads the archive of the latest release for your platform and the release's `SHA256SUMS`, refuses to
+install when the checksum differs, and puts the binary in `~/.local/bin`. Set `TOOL_VERSION`, such as
+`TOOL_VERSION=0.18.0`, to install another release, 0.18.0 or later, and `TOOL_INSTALL_DIR` to use another directory.
+It covers Linux x64 and ARM64, macOS on Intel and Apple Silicon, and Windows x64.
+
+The command runs the script as it is on `main`. To read it first, download it and run it locally.
+
 ## Binary
 
 Every [GitHub release](https://github.com/sunerpy/bedrock-gateway-rust/releases) has an archive per platform. Each
@@ -43,7 +64,12 @@ tar -xzf bedrock-gateway-*-x86_64-unknown-linux-musl.tar.gz
 ./bedrock-gateway
 ```
 
-The Linux binaries are statically linked and run on any distribution.
+The Linux binaries are statically linked and run on any distribution. Each release also carries `SHA256SUMS` and a
+build attestation, which the GitHub CLI checks:
+
+```sh
+gh attestation verify bedrock-gateway-0.18.0-x86_64-unknown-linux-musl.tar.gz --repo sunerpy/bedrock-gateway-rust
+```
 
 ## Cargo
 

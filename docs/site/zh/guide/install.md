@@ -19,6 +19,24 @@ docker pull sunerpy/bedrock-gateway-rust:0.17.0
 
 从 ECR Public 拉取不需要登录，因此 ECS 任务或 Lambda 函数从这里拉取镜像不受 Docker Hub 的速率限制。镜像监听 8080 端口，以非 root 用户运行。
 
+## 安装脚本
+
+在 Linux 和 macOS 上：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sunerpy/bedrock-gateway-rust/main/scripts/install.sh | sh
+```
+
+在 Windows 上，于 PowerShell 中运行：
+
+```powershell
+irm https://raw.githubusercontent.com/sunerpy/bedrock-gateway-rust/main/scripts/install.ps1 | iex
+```
+
+脚本会下载当前平台的最新发布版压缩包和该版本的 `SHA256SUMS`，校验和不一致时拒绝安装，校验通过后把二进制文件放到 `~/.local/bin`。设置 `TOOL_VERSION`（例如 `TOOL_VERSION=0.18.0`）可以安装其他版本，需为 0.18.0 或更新的版本；设置 `TOOL_INSTALL_DIR` 可以换安装目录。支持 Linux x64 和 ARM64、Intel 与 Apple Silicon 的 macOS，以及 Windows x64。
+
+这条命令运行的是 `main` 分支上的脚本。想先阅读脚本，可以下载到本地后再运行。
+
 ## 二进制文件
 
 每个 [GitHub release](https://github.com/sunerpy/bedrock-gateway-rust/releases) 都为每个平台提供一个压缩包。压缩包里只有 `bedrock-gateway` 这一个二进制文件（Windows 上为 `bedrock-gateway.exe`），配置已经内置在其中。
@@ -39,7 +57,11 @@ tar -xzf bedrock-gateway-*-x86_64-unknown-linux-musl.tar.gz
 ./bedrock-gateway
 ```
 
-Linux 二进制文件是静态链接的，可以在任何发行版上运行。
+Linux 二进制文件是静态链接的，可以在任何发行版上运行。每个发布版还附带 `SHA256SUMS` 和构建证明，可以用 GitHub CLI 校验：
+
+```sh
+gh attestation verify bedrock-gateway-0.18.0-x86_64-unknown-linux-musl.tar.gz --repo sunerpy/bedrock-gateway-rust
+```
 
 ## Cargo
 

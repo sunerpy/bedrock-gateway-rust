@@ -12,9 +12,11 @@
 # Everything a release promises happens before the last job, so a failure anywhere leaves a
 # draft and nothing half-published on GitHub. The crate goes out last because it cannot be
 # taken back. A stuck draft is rebuilt with workflow_dispatch and its tag; a published release
-# is never rebuilt. Tags carry release-please's component prefix, bedrock-gateway-rust-vX.Y.Z,
-# which TAG_PREFIX tells both release scripts about. Events made with GITHUB_TOKEN start no
-# other workflow, so nothing here relies on a tag or release event.
+# is never rebuilt. Tags are vX.Y.Z; releases up to 0.18.0 were tagged bedrock-gateway-rust-vX.Y.Z,
+# and v0.18.0 also exists as a plain tag on that release's commit so that release-please finds
+# its previous release. The two publish jobs run in the `release` environment, which deploys
+# from main only. Events made with GITHUB_TOKEN start no other workflow, so nothing here relies
+# on a tag or release event.
 name: Release
 
 on:
@@ -23,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Existing draft release tag to rebuild, for example bedrock-gateway-rust-v0.18.0"
+        description: "Existing draft release tag to rebuild, for example v0.19.0"
         required: true
         type: string
 
@@ -38,7 +40,6 @@ env:
   BINARY_NAME: bedrock-gateway
   CRATE_NAME: bedrock-gateway-rust
   DOCKER_IMAGE: sunerpy/bedrock-gateway-rust
-  TAG_PREFIX: bedrock-gateway-rust-
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
 
@@ -533,6 +534,7 @@ jobs:
     if: needs.release-please.outputs.build_artifacts == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    environment: release
     steps:
       - name: Checkout release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -593,6 +595,7 @@ jobs:
     if: needs.release-please.outputs.build_artifacts == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment: release
     permissions:
       contents: write
     steps:

@@ -27,7 +27,11 @@ cargo test --all-features --locked
 
 ## Releases
 
-Everything lands on `main` through a squash-merged pull request whose title is a Conventional Commit; nothing is pushed to `main` directly. release-please (`.github/workflows/release-please.yml`) keeps a release PR open; merging it creates the tag `bedrock-gateway-rust-vX.Y.Z` and a **draft** Release, and the same run verifies the tagged commit, builds and runs the five binaries, attaches them with `SHA256SUMS` and an attestation, writes the git-cliff notes, pushes the image to Docker Hub and ECR Public, publishes the crate, and only then makes the Release public. A failure leaves a draft; rebuild it with `gh workflow run release-please.yml -f tag_name=<tag>`. The release PR is opened by `GITHUB_TOKEN`, so its CI run waits for approval (`gh api -X POST repos/sunerpy/bedrock-gateway-rust/actions/runs/<id>/approve`) before `CI Success` can pass.
+Everything lands on `main` through a squash-merged pull request whose title is a Conventional Commit; nothing is pushed to `main` directly. release-please (`.github/workflows/release.yml`) keeps a release PR open; merging it creates the tag `vX.Y.Z` and a **draft** Release, and the same run verifies the tagged commit, builds and runs the five binaries, attaches them with `SHA256SUMS` and an attestation, writes the git-cliff notes, pushes the image to Docker Hub and ECR Public, publishes the crate, and only then makes the Release public. The two publish jobs run in the `release` environment, which deploys from `main` only. A failure leaves a draft; rebuild it with `gh workflow run release.yml -f tag_name=<tag>`. The release PR is opened by `GITHUB_TOKEN`, so its CI run waits for approval (`gh api -X POST repos/sunerpy/bedrock-gateway-rust/actions/runs/<id>/approve`) before `CI Success` can pass.
+
+- Releases up to 0.18.0 are tagged `bedrock-gateway-rust-vX.Y.Z`; `v0.18.0` also exists as a plain tag on that release's commit so that release-please finds its previous release. Do not delete it.
+- `scripts/install.sh` and `scripts/install.ps1` install a release (0.18.0 or later, the first with `SHA256SUMS`) and accept both tag forms.
+- `.github/scaffold.json` records the github-project-scaffold `rust` profile; `check-rendered-repo.sh --strict .` passes with the files in its `drift_allow`.
 
 ## Where things live
 

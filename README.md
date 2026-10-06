@@ -62,7 +62,7 @@ All endpoints are prefixed by `API_ROUTE_PREFIX` (default `/api/v1`).
 
 - AWS credentials available (instance role, `AWS_PROFILE`, or access key pair)
 - Bedrock model access enabled in your target region
-- Rust 1.80+ (to build from source) or Docker
+- Docker, a release binary, or Rust (the version in `rust-toolchain.toml`) to build from source
 
 ### 30-second start with Docker
 
@@ -76,6 +76,20 @@ docker run \
 ```
 
 Using an EC2 instance or ECS task with an IAM role? Omit `AWS_BEARER_TOKEN_BEDROCK` and the access key pair — the SDK picks up instance credentials automatically.
+
+### Install the binary
+
+The install script downloads the latest release for your platform, checks it against the release's `SHA256SUMS` and puts `bedrock-gateway` in `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sunerpy/bedrock-gateway-rust/main/scripts/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/sunerpy/bedrock-gateway-rust/main/scripts/install.ps1 | iex
+```
+
+`TOOL_VERSION=0.18.0` installs a given release (0.18.0 or later) and `TOOL_INSTALL_DIR` changes the directory. The archives are also on [GitHub Releases](https://github.com/sunerpy/bedrock-gateway-rust/releases), and `cargo install bedrock-gateway-rust` builds the binary from crates.io.
 
 ### Build from source
 

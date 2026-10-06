@@ -62,7 +62,7 @@
 
 - AWS 凭证（实例角色、`AWS_PROFILE`，或访问密钥对）
 - 目标区域已开启 Bedrock 模型访问权限
-- Rust 1.80+（源码构建）或 Docker
+- Docker、发布版二进制文件，或 Rust（版本见 `rust-toolchain.toml`，用于源码构建）
 
 ### 30 秒 Docker 启动
 
@@ -76,6 +76,20 @@ docker run \
 ```
 
 在带 IAM 角色的 EC2 实例或 ECS 任务上运行？省略 `AWS_BEARER_TOKEN_BEDROCK` 和访问密钥对 — SDK 会自动获取实例凭证。
+
+### 安装二进制文件
+
+安装脚本会下载当前平台的最新发布版，用该版本的 `SHA256SUMS` 校验后，把 `bedrock-gateway` 放到 `~/.local/bin`：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sunerpy/bedrock-gateway-rust/main/scripts/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/sunerpy/bedrock-gateway-rust/main/scripts/install.ps1 | iex
+```
+
+`TOOL_VERSION=0.18.0` 安装指定版本（0.18.0 及以后），`TOOL_INSTALL_DIR` 指定安装目录。归档也可以从 [GitHub Releases](https://github.com/sunerpy/bedrock-gateway-rust/releases) 下载，或用 `cargo install bedrock-gateway-rust` 从 crates.io 构建。
 
 ### 源码构建
 

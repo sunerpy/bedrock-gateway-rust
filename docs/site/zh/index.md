@@ -265,6 +265,10 @@ Claude、Bedrock 上的 OpenAI GPT 模型、Amazon Nova、DeepSeek 以及你模�
 
 ::: code-group
 
+```sh [脚本]
+curl -fsSL https://raw.githubusercontent.com/sunerpy/bedrock-gateway-rust/main/scripts/install.sh | sh
+```
+
 ```sh [Docker]
 docker run -p 8080:8080 -e API_KEY -e AWS_REGION=us-east-1 -e AWS_BEARER_TOKEN_BEDROCK sunerpy/bedrock-gateway-rust
 ```

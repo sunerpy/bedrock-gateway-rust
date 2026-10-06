@@ -1,0 +1,25 @@
+{
+  "profile": "rust",
+  "addons": ["git-cliff"],
+  "placeholders": {
+    "BINARY": "bedrock-gateway",
+    "CRATE": "bedrock-gateway-rust",
+    "PACKAGE_NAME": "bedrock-gateway-rust",
+    "CURRENT_VERSION": "0.18.0",
+    "DEFAULT_BRANCH": "main",
+    "OWNER": "sunerpy",
+    "REPO": "bedrock-gateway-rust",
+    "RUST_TOOLCHAIN": "1.98.0"
+  },
+  "drift_allow": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
+    ".oxfmtignore",
+    ".release-please-manifest.json",
+    "Makefile",
+    "cliff.toml",
+    "release-please-config.json",
+    "scripts/install.ps1",
+    "scripts/install.sh"
+  ]
+}
