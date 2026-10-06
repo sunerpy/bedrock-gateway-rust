@@ -3,8 +3,10 @@
 //! Thin composition glue only: initialize telemetry, load settings, then hand
 //! off to [`bedrock_gateway_rust::server::serve`]. No business logic lives here.
 //!
-//! Special mode: `--health-check` flag performs a self-probe without starting
-//! the server. This is used by container health checks (distroless has no shell/curl).
+//! Special modes:
+//! - `--version` / `-V` print the binary name and version and exit.
+//! - `--health-check` performs a self-probe without starting the server. This is
+//!   used by container health checks (distroless has no shell/curl).
 
 use anyhow::{Context, Result};
 use std::process;
@@ -14,6 +16,16 @@ use bedrock_gateway_rust::{server, telemetry};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // --version reads no configuration, so it works without an API key; the
+    // release workflow runs it on every packaged binary.
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--version" || arg == "-V")
+    {
+        println!("{} {}", env!("CARGO_BIN_NAME"), env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // Check for --health-check flag (must come before any logging/config setup)
     if std::env::args().any(|arg| arg == "--health-check") {
         return health_check().await;

@@ -212,9 +212,9 @@ impl ResponsesProvider for MantleResponsesProvider {
                     reasoning_used,
                     reasoning_tokens,
                     reasoning_usage_available = terminal.reasoning_tokens.is_some(),
-                    input_tokens = ?terminal.input_tokens,
-                    output_tokens = ?terminal.output_tokens,
-                    total_tokens = ?terminal.total_tokens,
+                    input_tokens = terminal.input_tokens,
+                    output_tokens = terminal.output_tokens,
+                    total_tokens = terminal.total_tokens,
                     duration_ms = started_at.elapsed().as_millis(),
                     "responses raw streaming failed"
                 );
@@ -228,9 +228,9 @@ impl ResponsesProvider for MantleResponsesProvider {
                     reasoning_used,
                     reasoning_tokens,
                     reasoning_usage_available = terminal.reasoning_tokens.is_some(),
-                    input_tokens = ?terminal.input_tokens,
-                    output_tokens = ?terminal.output_tokens,
-                    total_tokens = ?terminal.total_tokens,
+                    input_tokens = terminal.input_tokens,
+                    output_tokens = terminal.output_tokens,
+                    total_tokens = terminal.total_tokens,
                     duration_ms = started_at.elapsed().as_millis(),
                     "responses raw streaming completed"
                 );

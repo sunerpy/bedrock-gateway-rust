@@ -62,7 +62,9 @@ use crate::openai::schema::{ChatRequest, ContentInput, EmbeddingsRequest, Messag
 use crate::server::auth::require_bearer;
 use crate::server::state::AppState;
 
-/// Response header carrying the resolved foundation model id back to the client.
+/// Response header naming the model that served a Responses request. It repeats
+/// the ID the client sent: Codex CLI reads a different value as a server-side
+/// model reroute and warns the user about it on every turn.
 const OPENAI_MODEL_HEADER: &str = "openai-model";
 
 /// Request header a client may use to supply its own correlation id.
@@ -246,7 +248,7 @@ pub async fn chat_completions(
                 tracing::info!(
                     request_id = %request_id,
                     model = %client_model,
-                    finish_reason = ?finish_reason,
+                    finish_reason,
                     prompt_tokens = response.usage.prompt_tokens,
                     completion_tokens = response.usage.completion_tokens,
                     total_tokens = response.usage.total_tokens,
@@ -417,7 +419,7 @@ pub async fn completions(
                 tracing::info!(
                     request_id = %request_id,
                     model = %client_model,
-                    finish_reason = ?finish_reason,
+                    finish_reason,
                     prompt_tokens,
                     completion_tokens,
                     total_tokens,
@@ -730,7 +732,7 @@ pub async fn responses(
             );
             return Ok(with_model_header(
                 responses_raw_sse_response(raw),
-                &resolved_model,
+                &client_model,
             ));
         }
         match state.responses.respond_stream(&normalized).await {
@@ -743,7 +745,7 @@ pub async fn responses(
                 );
                 Ok(with_model_header(
                     responses_sse_response(stream),
-                    &resolved_model,
+                    &client_model,
                 ))
             }
             Err(e) => {
@@ -791,7 +793,7 @@ pub async fn responses(
                 );
                 Ok(with_model_header(
                     Json(response).into_response(),
-                    &resolved_model,
+                    &client_model,
                 ))
             }
             Err(e) => {
@@ -873,9 +875,9 @@ fn responses_event_frame(event: &ResponseStreamEvent) -> Event {
     }
 }
 
-/// Attach the `openai-model` response header carrying the resolved model id.
-fn with_model_header(mut response: Response, resolved_model: &str) -> Response {
-    if let Ok(value) = axum::http::HeaderValue::from_str(resolved_model) {
+/// Attach the `openai-model` response header with the model ID the client sent.
+fn with_model_header(mut response: Response, client_model: &str) -> Response {
+    if let Ok(value) = axum::http::HeaderValue::from_str(client_model) {
         response.headers_mut().insert(OPENAI_MODEL_HEADER, value);
     }
     response
@@ -1954,6 +1956,63 @@ mod tests {
             !text.contains("[DONE]"),
             "Responses SSE must not emit [DONE]"
         );
+    }
+
+    /// Codex CLI compares `openai-model` with the model it asked for and, when
+    /// the two differ, reports the turn as rerouted for "high-risk cyber
+    /// activity". A cross-region profile resolves to its foundation model
+    /// internally, but the header must repeat the ID the client sent, on the
+    /// non-streaming, typed-stream and raw-passthrough paths alike.
+    #[tokio::test]
+    async fn responses_model_header_repeats_the_requested_profile_id() {
+        let profile = "us.anthropic.claude-3-sonnet-v1:0";
+        let caps: Arc<dyn ModelCapabilities> = Arc::new(
+            crate::bedrock::capabilities::ConfigModelCapabilities::with_profiles(
+                ModelCapabilityConfig::load("config/models.toml").expect("load models.toml"),
+                std::collections::HashMap::from([(
+                    profile.to_string(),
+                    "anthropic.claude-3-sonnet-v1:0".to_string(),
+                )]),
+            ),
+        );
+        assert_eq!(
+            caps.resolve_foundation(profile),
+            "anthropic.claude-3-sonnet-v1:0",
+            "the test needs a profile that resolves to another ID"
+        );
+        let providers: [(&str, Arc<dyn ResponsesProvider>, bool); 3] = [
+            ("non-stream", Arc::new(MockResponses), false),
+            ("typed stream", Arc::new(MockResponses), true),
+            ("raw stream", Arc::new(MockRawResponses), true),
+        ];
+        for (path, responses, stream) in providers {
+            let state = AppState::new(
+                Arc::new(MockChat),
+                responses,
+                Arc::new(MockEmbeddings),
+                Arc::new(RwLock::new(catalog())),
+                caps.clone(),
+                Arc::new(KEY.to_string()),
+                Arc::new(settings()),
+                Arc::new(crate::bedrock::cache_support::CacheSupportRegistry::new()),
+            );
+            let body = format!(r#"{{"model":"{profile}","input":"hi","stream":{stream}}}"#);
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/v1/responses")
+                .header(AUTHORIZATION, auth())
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap();
+            let resp = build_router(state, PREFIX).oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{path}");
+            let model_header = resp
+                .headers()
+                .get(OPENAI_MODEL_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            assert_eq!(model_header.as_deref(), Some(profile), "{path}");
+        }
     }
 
     /// When the provider offers a raw passthrough stream, the handler forwards
