@@ -1,6 +1,6 @@
 //! Unit and property-based tests for [`crate::bedrock::mantle_provider`],
 //! relocated out of the source module for code organization (see the
-//! `test-coverage-codecov` spec). The source file declares this via a
+//! sidecar-test convention in `AGENTS.md`). The source file declares this via a
 //! `#[path]` mod tests, so the top-level `use super::*;` resolves to the
 //! implementation module. Property 4 (mantle model-name rewrite minimality)
 //! lives in the nested `prop_tests` submodule.
@@ -374,10 +374,7 @@ async fn malformed_body_rejected_before_http() {
 
 /// Property-based tests for the mantle model-name rewrite minimality.
 ///
-/// Feature: test-coverage-codecov, Property 4: Mantle 模型名改写的最小性
-/// (see `.kiro/specs/test-coverage-codecov/design.md`).
-///
-/// Validates: Requirements 1.2
+/// Property 4: Mantle 模型名改写的最小性.
 mod prop_tests {
     use super::*;
     use proptest::prelude::*;
@@ -419,7 +416,7 @@ mod prop_tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
 
-        /// Feature: test-coverage-codecov, Property 4: Mantle 模型名改写的最小性.
+        /// Property 4: Mantle 模型名改写的最小性.
         ///
         /// For any Responses request body (a JSON object) forwarded to the
         /// mantle backend, `rewrite_model` patches ONLY the top-level `"model"`

@@ -2,8 +2,8 @@
 //!
 //! This module is the composition root for the running service. It assembles
 //! the concrete Bedrock-backed providers, the model catalog, and the resolved
-//! API key into the shared [`state::AppState`], builds the router (task 22's
-//! [`routers::build_router`]), wraps it with the cross-cutting HTTP layers
+//! API key into the shared [`state::AppState`], builds the router
+//! ([`routers::build_router`]), wraps it with the cross-cutting HTTP layers
 //! ([`TraceLayer`] for request tracing and a permissive [`CorsLayer`] for parity
 //! with the legacy FastAPI CORS middleware), binds the listener, and serves with
 //! a SIGTERM/Ctrl-C-aware graceful shutdown.

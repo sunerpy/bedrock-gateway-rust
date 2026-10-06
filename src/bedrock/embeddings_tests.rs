@@ -1,7 +1,7 @@
 //! Unit and property-based tests for the Bedrock embedding codecs and provider.
 //!
 //! Relocated out of `embeddings.rs` for code organization (see the
-//! `test-coverage-codecov` spec, Task 3.8). Behavior is unchanged; the flat
+//! sidecar-test convention in `AGENTS.md`). Behavior is unchanged; the flat
 //! example/unit tests live at the top of this module and the property tests are
 //! preserved verbatim in the nested `prop_tests` submodule so the source file
 //! references exactly one `mod tests;`.
@@ -430,10 +430,7 @@ fn estimate_tokens_sums_across_inputs() {
 
 /// Property-based tests for the per-family embedding codec round-trips.
 ///
-/// Feature: test-coverage-codecov, Property: embedding-codec-roundtrip
-/// (see `.kiro/specs/test-coverage-codecov/design.md`, Task 3.8).
-///
-/// Validates: Requirements 1.2
+/// Property: embedding-codec-roundtrip.
 mod prop_tests {
     use super::super::*;
     use proptest::prelude::*;
@@ -456,7 +453,7 @@ mod prop_tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
-        /// Feature: test-coverage-codecov, Property: embedding-codec-roundtrip
+        /// Property: embedding-codec-roundtrip
         ///
         /// For any embedding matrix serialized into the Cohere response body
         /// shape `{"embeddings":[[...],...]}`, decoding with [`CohereCodec`]
@@ -469,7 +466,7 @@ mod prop_tests {
             prop_assert_eq!(decoded, embeddings);
         }
 
-        /// Feature: test-coverage-codecov, Property: embedding-codec-roundtrip
+        /// Property: embedding-codec-roundtrip
         ///
         /// For any single embedding vector serialized into the Titan response
         /// body shape `{"embedding":[...], "inputTextTokenCount":n}`, decoding
@@ -489,7 +486,7 @@ mod prop_tests {
             prop_assert_eq!(decoded, vec![embedding]);
         }
 
-        /// Feature: test-coverage-codecov, Property: embedding-codec-roundtrip
+        /// Property: embedding-codec-roundtrip
         ///
         /// For any single embedding vector serialized into the Nova response
         /// body shape `{"embeddings":[{"embeddingType":"TEXT","embedding":[...]}]}`,

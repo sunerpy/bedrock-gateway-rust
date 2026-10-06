@@ -55,7 +55,7 @@ fn test_opus_4_8_capabilities() {
 fn test_sonnet_4_5_capabilities() {
     // Parity with Python MODEL_CAPABILITIES (bedrock.py:148):
     // "claude-sonnet-4-5": {"temperature_topp_conflict"}. The 4.5-gen family
-    // also declares cache_ttl_1h (PR-G): 1h prompt-cache retention support.
+    // also declares cache_ttl_1h: 1h prompt-cache retention support.
     let cfg = load_project_config();
     let entry = cfg
         .entry_for_match("claude-sonnet-4-5")

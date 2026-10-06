@@ -4,7 +4,7 @@
 replicaCount: 1
 
 image:
-  # Release image from public ECR (see PR-A). Override repository/tag to pin a
+  # Release image from public ECR. Override repository/tag to pin a
   # private mirror or a specific version.
   repository: public.ecr.aws/k5i7b1e0/bedrock-gateway-rust
   # Empty tag falls back to .Chart.AppVersion.

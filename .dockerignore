@@ -1,8 +1,10 @@
 # Build artifacts
 target/
+dist/
 *.o
 *.a
 *.so
+**/__pycache__
 
 # Version control
 .git
@@ -20,6 +22,14 @@ target/
 .omo/
 .pre-commit-config.yaml
 
+# Local tooling and agent state
+.zuno/
+.claude/
+.codex/
+.codegraph/
+.kiro/
+.sisyphus/
+
 # Legacy code
 .legacy-python/
 
@@ -35,7 +45,7 @@ README*.md
 
 # Development
 .env
-.env.local
+.env.*
 docker-compose.yml
 tests/
 scripts/

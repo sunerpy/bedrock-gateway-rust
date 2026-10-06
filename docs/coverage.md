@@ -56,7 +56,7 @@ make coverage-clean
 
 ### `src/main.rs` 的排除理由
 
-`src/main.rs` 仅是组合胶水（`#[tokio::main]` 引导 + `--health-check` 自探针，内部调用 `process::exit`），无业务逻辑且无法在进程内测试框架下执行。因此它在 Codecov 侧被排除——见 `codecov.yml` 的 `ignore` 列表。（`src/api/` 是遗留 Python 参考制品，不属于 Rust crate，本就不会被编译或插桩，无需特殊处理。）
+`src/main.rs` 仅是组合胶水（`#[tokio::main]` 引导 + `--health-check` 自探针，内部调用 `process::exit`），无业务逻辑且无法在进程内测试框架下执行。因此它在 Codecov 侧被排除——见 `codecov.yml` 的 `ignore` 列表。
 
 ## 5. 门禁策略
 

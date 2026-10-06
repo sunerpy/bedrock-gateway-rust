@@ -3,7 +3,6 @@
 # with oxfmt's expected formatting and trips format-check on every PR between
 # two releases.
 CHANGELOG.md
-changelog/
 .release-please-manifest.json
 release-please-config.json
 

@@ -1,7 +1,7 @@
 //! Unit tests for the Bedrock model catalog assembly + rendering.
 //!
 //! Relocated out of `models.rs` into this sibling file for code organization
-//! (see the `test-coverage-codecov` spec). Behavior is unchanged: the original
+//! (see the sidecar-test convention in `AGENTS.md`). Behavior is unchanged: the original
 //! inline tests are preserved verbatim as FLAT functions here, and the module
 //! is referenced from `models.rs` via a single
 //! `#[cfg(test)] #[path = "models_tests.rs"] mod tests;` declaration.
@@ -581,7 +581,7 @@ fn apply_allow_list_matches_extra_model_ids() {
     assert!(filtered.get("anthropic.claude-3-v1:0").is_none());
 }
 
-// ─── Supplementary coverage (task 6.2) ──────────────────────────────────
+// ─── Supplementary coverage ─────────────────────────────────────────────
 
 #[test]
 fn default_catalog_is_empty_on_all_surfaces() {

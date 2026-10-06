@@ -1,5 +1,5 @@
 //! Unit tests for [`crate::bedrock::provider`], relocated out of the source
-//! module for code organization (see the `test-coverage-codecov` spec). The
+//! module for code organization (see the sidecar-test convention in `AGENTS.md`). The
 //! source file declares this via a `#[path]` mod tests, so the top-level
 //! `use super::*;` resolves to the implementation module.
 

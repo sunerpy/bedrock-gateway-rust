@@ -1,7 +1,7 @@
 //! Unit tests for the OTLP (`otel`) telemetry module.
 //!
 //! Relocated out of `otel.rs` for code organization (see the
-//! `test-coverage-codecov` spec). Behavior is unchanged; `use super::*`
+//! sidecar-test convention in `AGENTS.md`). Behavior is unchanged; `use super::*`
 //! continues to resolve to the parent `otel` module since this file is
 //! declared as its child `mod tests;`. The whole `otel` module (and hence
 //! this file) is compiled only under the `otel` Cargo feature.

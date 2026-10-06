@@ -1,6 +1,6 @@
 //! Unit and property-based tests for [`crate::server::composite`], relocated
 //! out of the source module for code organization (see the
-//! `test-coverage-codecov` spec). The source file declares this via a
+//! sidecar-test convention in `AGENTS.md`). The source file declares this via a
 //! `#[path]` mod tests, so the top-level `use super::*;` resolves to the
 //! implementation module. The composite-dispatch property lives in the nested
 //! `prop_tests` submodule.
@@ -426,7 +426,7 @@ mod prop_tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
-        /// Feature: test-coverage-codecov, Property: composite-dispatch.
+        /// Property: composite-dispatch.
         /// 对任意 model 字符串，`CompositeResponsesProvider::respond` 分发到的
         /// inner provider 与 `caps.responses_backend(model)` 选定的后端一致
         /// （分发一致性）。使用 stub `ResponsesProvider` + stub `ModelCapabilities`，

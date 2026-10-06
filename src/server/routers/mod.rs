@@ -34,7 +34,7 @@
 //!
 //! The chat route (which may stream) carries NO timeout layer — a timeout would
 //! sever an in-flight SSE connection. The router here adds no timeout at all;
-//! the bootstrap layer (task 24) may add a timeout to the non-streaming routes
+//! the bootstrap layer may add a timeout to the non-streaming routes
 //! only if desired, but never to chat.
 
 use std::convert::Infallible;

@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/sunerpy/bedrock-gateway-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/sunerpy/bedrock-gateway-rust/actions/workflows/ci.yml)
 [![Docker Pulls](https://img.shields.io/docker/pulls/sunerpy/bedrock-gateway-rust)](https://hub.docker.com/r/sunerpy/bedrock-gateway-rust)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT-0](https://img.shields.io/badge/License-MIT--0-yellow.svg)](LICENSE)
 
-**A 100% Rust, OpenAI-compatible API gateway for AWS Bedrock — drop-in, single-binary, blazingly fast.**
+**An OpenAI-compatible HTTP gateway for Amazon Bedrock: Chat Completions, Responses, Completions and Embeddings from one Rust binary.**
 
-> 📖 [中文文档 / Chinese README](docs/readme/README_CN.md)
+> 🌐 Website: [firlab.app/bedrock-gateway](https://firlab.app/bedrock-gateway/) · 📖 [中文文档 / Chinese README](docs/readme/README_CN.md)
 
 Point any OpenAI SDK, tool, or agent at this gateway and it routes requests to AWS Bedrock without a single line of client-side changes. The runtime is **axum + tokio + aws-sdk-bedrockruntime** — fully async, no GC pauses, no Python dependency. It replaces an earlier Python/FastAPI implementation while preserving wire-exact OpenAI API compatibility.
 
@@ -410,24 +410,24 @@ Adding a model requires only a `config/models.toml` entry and no recompile.
 
 ```bash
 cargo build --release          # release binary → target/release/bedrock-gateway
-cargo test                     # unit + golden replay tests (no AWS credentials needed)
+cargo test --all-features      # unit + golden replay tests (no AWS credentials needed)
 cargo clippy --all-targets --all-features -- -D warnings
-cargo fmt
+cargo fmt --all
 ```
 
-**Pre-commit gate (mandatory before every commit):**
+**Gate before every push (`make hooks` runs it on `git push`):**
 
 ```bash
-cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test
+cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features
 ```
 
 Golden fixtures in `tests/golden/` are pinned offline and run in CI without AWS credentials. Live integration tests require real credentials:
 
 ```bash
-BEDROCK_INTEGRATION=1 AWS_PROFILE=us cargo test -- --ignored
+BEDROCK_INTEGRATION=1 AWS_PROFILE=<your-profile> cargo test -- --ignored
 ```
 
-See the [Contributing Guide](docs/readme/CONTRIBUTING.md) for contributor guidelines.
+See the [Contributing Guide](.github/CONTRIBUTING.md) for contributor guidelines.
 
 ---
 
@@ -436,8 +436,8 @@ See the [Contributing Guide](docs/readme/CONTRIBUTING.md) for contributor guidel
 | Resource                   | Link                                                           |
 | -------------------------- | -------------------------------------------------------------- |
 | 中文文档 / Chinese README  | [Read in Chinese](docs/readme/README_CN.md)                    |
-| Contributing               | [Contributing Guide](docs/readme/CONTRIBUTING.md)              |
-| Code of Conduct            | [Code of Conduct](docs/readme/CODE_OF_CONDUCT.md)              |
+| Contributing               | [Contributing Guide](.github/CONTRIBUTING.md)                  |
+| Code of Conduct            | [Code of Conduct](.github/CODE_OF_CONDUCT.md)                  |
 | Caching and reasoning      | [Caching & Reasoning deep dive](docs/caching-and-reasoning.md) |
 | Docker deployment          | [Deploy → Docker](docs/deploy/docker.md)                       |
 | ECS/Fargate deployment     | [Deploy → ECS / Fargate](docs/deploy/ecs.md)                   |
@@ -448,7 +448,7 @@ See the [Contributing Guide](docs/readme/CONTRIBUTING.md) for contributor guidel
 
 ## License
 
-[MIT](LICENSE)
+[MIT-0](LICENSE)
 
 ---
 

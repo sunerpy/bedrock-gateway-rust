@@ -1,4 +1,4 @@
-//! Golden corpus tests (task 32).
+//! Golden corpus tests.
 //!
 //! This module wires the static fixtures under `tests/golden/fixtures/` into the
 //! Tier-1 offline parity suite. Each test loads a fixture pair and drives the
@@ -10,8 +10,8 @@
 //! JSON; the streaming path drives the pure `StreamState::map_event` state
 //! machine using SDK events reconstructed from a compact JSONL fixture shape.
 //!
-//! The fixtures encode the AGREED behaviour ported line-by-line from the pinned
-//! Python reference (`.legacy-python/src/api/models/bedrock.py`, SHA `9a3e752`).
+//! The fixtures encode the AGREED behaviour ported line-by-line from the
+//! Python reference (`.legacy-python/src/api/models/bedrock.py`).
 //! See `tests/golden/README.md` for the directory layout and the documented
 //! intentional divergences (error envelope, cacheWrite-dropped).
 

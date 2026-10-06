@@ -90,7 +90,7 @@ pub fn gen_request_id() -> String {
 /// This is the minimal intermediate the protocol layer produces before handing
 /// work to a [`ChatProvider`]: the original OpenAI-shaped [`ChatRequest`] plus
 /// the resolved foundation model id (after profile/alias resolution). It is
-/// deliberately provider-agnostic — task 15's Bedrock translation consumes a
+/// deliberately provider-agnostic — the Bedrock translation layer consumes a
 /// `NormalizedChatRequest` and turns it into a Bedrock Converse payload, but
 /// nothing here references Bedrock or the AWS SDK.
 #[derive(Debug, Clone)]

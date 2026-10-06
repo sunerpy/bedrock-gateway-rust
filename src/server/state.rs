@@ -2,8 +2,8 @@
 //!
 //! [`AppState`] is the dependency container threaded through every axum handler
 //! via [`axum::extract::State`]. It is intentionally defined here (not in the
-//! router module) so that task 24's server bootstrap can construct and own it
-//! while the routers (task 22) consume it — both depend on this one shared
+//! router module) so that the server bootstrap can construct and own it
+//! while the routers consume it — both depend on this one shared
 //! shape rather than redefining it.
 //!
 //! Every field is an `Arc` (or holds `Arc`-backed clients) so the whole state
@@ -61,7 +61,7 @@ pub struct AppState {
 impl AppState {
     /// Construct the application state from its collaborators.
     ///
-    /// The caller (task 24's bootstrap) builds the concrete providers, refreshes
+    /// The caller (the server bootstrap) builds the concrete providers, refreshes
     /// the catalog, resolves the API key, and passes everything in here.
     // This is a plain dependency-injection sink: each argument is a distinct
     // collaborator stored verbatim, so grouping them into a struct would only

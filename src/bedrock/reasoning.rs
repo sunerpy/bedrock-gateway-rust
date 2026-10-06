@@ -50,7 +50,7 @@ const COMPLETION_HEADROOM_TOKENS: i32 = 256;
 
 /// The result of mapping a `reasoning_effort` for a given model.
 ///
-/// This is what a translation layer (task 15) consumes: the Bedrock
+/// This is what the translation layer consumes: the Bedrock
 /// `additionalModelRequestFields` object (empty when reasoning is unsupported),
 /// an optional `maxTokens` override the caller must apply to `inferenceConfig`,
 /// and a `drop_top_p` flag instructing the caller to remove `topP`

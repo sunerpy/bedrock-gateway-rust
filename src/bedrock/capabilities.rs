@@ -2,7 +2,7 @@
 //!
 //! This is the RUNTIME ENGINE for model capability detection. It implements the
 //! [`crate::domain::ModelCapabilities`] trait over the loaded
-//! [`crate::config::ModelCapabilityConfig`] (task 4's `config/models.toml`).
+//! [`crate::config::ModelCapabilityConfig`] (loaded from `config/models.toml`).
 //!
 //! DE-HARDCODING CONTRACT (mirrors `src/config/capabilities.rs`):
 //! This file contains ONLY the matching/resolution ALGORITHM. It MUST NOT
@@ -90,13 +90,13 @@ fn alias_map(config: &ModelCapabilityConfig) -> HashMap<String, String> {
 /// substring algorithm; no model knowledge is baked into this type.
 ///
 /// The `profile_map` maps an inference-profile id / ARN to its underlying
-/// foundation model id. It is populated at runtime (task 23's model listing);
+/// foundation model id. It is populated at runtime from the model listing;
 /// constructing without it (an empty map) is valid and means "no profiles known
 /// yet — pass ids through unchanged". The periodic catalog refresh swaps it via
 /// [`Self::replace_profiles`], so it sits behind a lock; clones share it.
 #[derive(Debug, Clone)]
 pub struct ConfigModelCapabilities {
-    /// The externalized model-capability registry (task 4 data).
+    /// The externalized model-capability registry (`config/models.toml`).
     config: ModelCapabilityConfig,
     /// Inference-profile-id/ARN → underlying foundation model id.
     profile_map: Arc<RwLock<HashMap<String, String>>>,

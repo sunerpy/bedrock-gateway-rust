@@ -1,7 +1,7 @@
 //! Unit and property-based tests for the streaming state machine.
 //!
 //! Relocated out of `stream.rs` for code organization (see the
-//! `test-coverage-codecov` spec, task 5.2). The original inline `#[test]`
+//! sidecar-test convention in `AGENTS.md`). The original inline `#[test]`
 //! functions are preserved verbatim as FLAT functions here; `use super::*;`
 //! resolves to the implementation `stream` module exactly as the inline
 //! `mod tests` did before the move. New augmenting unit tests and a
@@ -746,7 +746,7 @@ fn full_reasoning_sequence_think_wrapped() {
 }
 
 // ===========================================================================
-// Augmenting unit tests (task 5.2) — edge cases in the pure state machine.
+// Augmenting unit tests — edge cases in the pure state machine.
 // ===========================================================================
 
 #[test]
@@ -1212,14 +1212,12 @@ fn capsule_mode_propagates_encoder_oversize_as_internal_error() {
 }
 
 // ===========================================================================
-// Property-based tests (task 5.2) — universal invariants of the state machine.
+// Property-based tests — universal invariants of the state machine.
 //
-// Feature: test-coverage-codecov. These support the Requirement 1.2 coverage
-// goal for `bedrock/stream.rs`; they are coverage-supporting properties of the
-// pure state machine, not one of the design's numbered Correctness Properties
-// (1–4). All run offline with in-memory SDK events and no `sleep`.
-//
-// Validates: Requirements 1.2
+// These support the coverage goal for `bedrock/stream.rs` (see
+// `docs/coverage.md`); they are coverage-supporting properties of the pure
+// state machine, not one of the numbered properties (1–4) used elsewhere in
+// the test suite. All run offline with in-memory SDK events and no `sleep`.
 // ===========================================================================
 mod prop_tests {
     use super::*;
@@ -1259,7 +1257,7 @@ mod prop_tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
-        /// Feature: test-coverage-codecov — `<think>` tags are always balanced.
+        /// Property: `<think>` tags are always balanced.
         ///
         /// For ANY sequence of reasoning/text/signature deltas terminated by a
         /// `messageStop`, the concatenation of every emitted `content` string
@@ -1326,7 +1324,7 @@ mod prop_tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
-        /// Feature: test-coverage-codecov — plain text passes through verbatim.
+        /// Property: plain text passes through verbatim.
         ///
         /// On a FRESH state (no open `<think>`), a single text delta is emitted
         /// unchanged: same content, no role, no tool_calls, no finish_reason.
@@ -1347,7 +1345,7 @@ mod prop_tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
-        /// Feature: test-coverage-codecov — synthesized tool indices are a
+        /// Property: synthesized tool indices are a
         /// contiguous 0..n in first-seen order.
         ///
         /// For ANY sequence of `contentBlockStart(toolUse)` events on arbitrary

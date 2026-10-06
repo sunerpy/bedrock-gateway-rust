@@ -4,10 +4,8 @@
 
 日期：2026-07-17
 
-关联历史方案：`docs/chat-reasoning-tool-replay.md`
-
-历史方案保留原文用于追溯，不在本次修改范围内。历史方案最初描述的是未认证的
-两段式 token；实际实现采用三段式 HMAC capsule。两者不一致时，以本文和代码为准。
+早期方案曾设想未认证的两段式 token；实际实现采用三段式 HMAC capsule。以本文和
+代码为准。
 
 ## 一、结论
 
@@ -159,7 +157,7 @@ HMAC 覆盖 capsule 前缀和 payload。客户端可以透明保存并回传 cap
 body 开头不是 `{`，而是另一条完整请求行：
 
 ```text
-POST http://code-server:18080/api/v1/chat/completions HTTP/1.1
+POST http://localhost:8080/api/v1/chat/completions HTTP/1.1
 ```
 
 因此 JSON 在第 1 列解析失败是正确行为。Hyper 也只能遵守外层 `Content-Length`，
@@ -312,7 +310,7 @@ capsule，原始工具 ID 是合法结果；但它仍必须遵守只在 start ch
 
 ## 七、为什么当前差异仍有两千余行
 
-按最终工作区差异的文件口径统计，排除未修改的历史方案文档后，增量大致分为：
+按文件口径统计，增量大致分为：
 
 | 分类 | 增加 | 删除 | 说明 |
 | --- | ---: | ---: | --- |
@@ -323,10 +321,6 @@ capsule，原始工具 ID 是合法结果；但它仍必须遵守只在 start ch
 因此，“数千行”不等于数千行业务实现。生产实现约占三成，测试约占六成。测试数量较大
 是因为该功能同时跨越安全边界和有序流协议：HMAC 校验、首个工具 ID 的发送时机以及
 Bedrock 续轮块顺序都无法由同一个正常路径测试代替。
-
-`docs/chat-reasoning-tool-replay.md` 当前也是未跟踪文件，共 301 行，但它是此前他人的
-历史方案，本轮始终未修改，也不属于本次建议提交的文件集合。建议提交范围只包含本文、
-上表列出的 capsule 实现与对应测试。
 
 ## 八、安全与部署约束
 
@@ -398,24 +392,15 @@ cargo test --all-features
 git diff --check
 ```
 
-### 9.1 US 临时部署验证（未发版）
+### 9.1 部署环境复验（未发版）
 
-2026-07-18 将当前工作区构建为静态 `linux/amd64` musl 二进制，以正式 `0.14.1`
-镜像为基础，仅覆盖网关二进制和 `config/models.toml`，推送到 US 私有 ECR。此次验证
-没有创建 Git tag、GitHub Release 或正式版本镜像。
+修复构建曾临时部署到一套 ECS 环境中复验，未创建 Git tag、GitHub Release 或正式版本镜像：
 
-- ECS task definition：`bedrock-rust-us-api:47`；
-- 临时镜像 digest：
-  `sha256:aef3cd75cada21bd317ad1f0a392c5f8d5db3835e0a950140da35ad12dcef323`；
-- 两个新任务均为 `RUNNING/HEALTHY`，ALB 只保留两个 healthy target；
-- Service Connect 保持 `idleTimeoutSeconds=300`、
-  `perRequestTimeoutSeconds=0`，ALB deregistration delay 保持 120 秒；
 - TypeScript `openai` SDK 6.48.0 首轮只组装出一个名称严格等于
   `lookup_weather` 的工具调用，续轮正常返回最终答案；
 - OpenAI Agents SDK 0.13.4 的工具执行计数严格为 1，并正常返回最终答案；
 - 本轮 Bedrock 未返回签名 reasoning block，因此首轮使用普通 `tooluse_*` ID。
-  这正好覆盖此前会重复发送 `id/name` 的无 capsule 路径；
-- CloudWatch 中上述四次流式请求均记录为 `chat streaming completed`。
+  这正好覆盖此前会重复发送 `id/name` 的无 capsule 路径。
 
 ## 十、不属于本次提交的内容
 

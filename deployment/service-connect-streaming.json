@@ -1,14 +1,14 @@
 {
   "enabled": true,
-  "namespace": "caela.internal",
+  "namespace": "example.internal",
   "services": [
     {
       "portName": "api-port",
-      "discoveryName": "bedrock-rust",
+      "discoveryName": "bedrock-gateway",
       "clientAliases": [
         {
           "port": 8080,
-          "dnsName": "bedrock-rust"
+          "dnsName": "bedrock-gateway"
         }
       ],
       "timeout": {

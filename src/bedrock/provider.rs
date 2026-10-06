@@ -1,7 +1,7 @@
 //! Concrete [`ChatProvider`] for Amazon Bedrock — the COMPOSITION layer.
 //!
 //! Everything the gateway needs to talk to Bedrock Converse already exists as
-//! small, pure, individually-tested pieces (Wave 3):
+//! small, pure, individually-tested pieces:
 //! - [`crate::bedrock::translate`] — OpenAI → Converse `ConverseArgs` (messages,
 //!   system, inferenceConfig, additionalModelRequestFields, the reasoning/tool
 //!   seam via [`ConverseExtras`]).

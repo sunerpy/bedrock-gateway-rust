@@ -31,7 +31,7 @@
 //! No model-id literals appear here. The `model` string flows through verbatim
 //! from the caller (echoed into the response `model` field).
 //!
-//! ## Metis FIX — `cacheWriteInputTokens` divergence
+//! ## Intentional FIX — `cacheWriteInputTokens` divergence
 //!
 //! Bedrock reports both `cacheReadInputTokens` (cache hits) and
 //! `cacheWriteInputTokens` (tokens written into the cache). OpenAI's usage
