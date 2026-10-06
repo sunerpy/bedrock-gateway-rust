@@ -5,9 +5,7 @@
 #   publish-release-draft.sh (--verify-only | --publish) [--checksums FILE]
 #       [--asset PATH]... [--expect-name NAME]... [--exact]
 #
-# Environment: GH_TOKEN (contents: write; drafts are invisible otherwise), REPO, TAG, and
-# TAG_PREFIX (optional): the text before the v of a release-please component tag, such as
-# bedrock-gateway-rust- for bedrock-gateway-rust-v1.2.3.
+# Environment: GH_TOKEN (contents: write; drafts are invisible otherwise), REPO, TAG
 #
 # Verification (every listed expectation must hold, otherwise exit 1 and the
 # draft is left untouched):
@@ -36,12 +34,7 @@
 #   https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases
 set -euo pipefail
 
-tag_prefix=${TAG_PREFIX:-}
-[[ "$tag_prefix" =~ ^[A-Za-z0-9._-]*$ ]] || {
-	echo "::error title=Publication::TAG_PREFIX may hold only letters, digits, '.', '_' and '-'" >&2
-	exit 1
-}
-semver="^${tag_prefix//./\\.}"'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
 
 fail() {
 	echo "::error title=Publication::$*" >&2
@@ -97,7 +90,7 @@ done
 for name in GH_TOKEN REPO TAG; do
 	[[ -n "${!name:-}" ]] || fail "environment variable ${name} is required"
 done
-[[ "$TAG" =~ $semver ]] || fail "TAG must be ${tag_prefix}v followed by a SemVer, got '${TAG}'"
+[[ "$TAG" =~ $semver ]] || fail "TAG must be a v-prefixed SemVer, got '${TAG}'"
 
 # --- resolve the draft --------------------------------------------------------
 release=$(gh release view "$TAG" --repo "$REPO" --json databaseId,isDraft,isPrerelease,tagName,assets) \

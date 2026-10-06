@@ -271,6 +271,10 @@ so a new model needs an entry there and no new release.
 
 ::: code-group
 
+```sh [Script]
+curl -fsSL https://raw.githubusercontent.com/sunerpy/bedrock-gateway-rust/main/scripts/install.sh | sh
+```
+
 ```sh [Docker]
 docker run -p 8080:8080 -e API_KEY -e AWS_REGION=us-east-1 -e AWS_BEARER_TOKEN_BEDROCK sunerpy/bedrock-gateway-rust
 ```
