@@ -2,14 +2,17 @@
 name = "bedrock-gateway-rust"
 version = "0.17.0"
 edition = "2021"
-description = "A 100% Rust, OpenAI-compatible API gateway for AWS Bedrock — drop-in, single-binary, blazingly fast."
+description = "OpenAI-compatible HTTP gateway for Amazon Bedrock: Chat Completions, Responses, Completions and Embeddings from one Rust binary."
 license = "MIT-0"
 repository = "https://github.com/sunerpy/bedrock-gateway-rust"
-homepage = "https://github.com/sunerpy/bedrock-gateway-rust"
-documentation = "https://github.com/sunerpy/bedrock-gateway-rust"
+homepage = "https://firlab.app/bedrock-gateway/"
+documentation = "https://firlab.app/bedrock-gateway/"
 readme = "README.md"
 keywords = ["bedrock", "openai", "gateway", "aws", "llm"]
-categories = ["api-bindings", "web-programming::http-server"]
+categories = ["web-programming::http-server", "command-line-utilities"]
+# The published crate holds what `cargo install` needs to build the binary: the sources and the
+# model registry files that src/config embeds with include_str!.
+include = ["/src/**/*.rs", "/config/*.toml", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE"]
 
 [[bin]]
 name = "bedrock-gateway"

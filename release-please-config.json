@@ -5,7 +5,9 @@
       "release-type": "rust",
       "bump-minor-pre-major": true,
       "include-v-in-tag": true,
-      "skip-changelog": true
+      "skip-changelog": true,
+      "draft": true,
+      "force-tag-creation": true
     }
   }
 }
