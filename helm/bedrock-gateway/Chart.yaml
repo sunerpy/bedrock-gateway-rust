@@ -6,7 +6,7 @@ type: application
 version: 0.2.0
 # Mirrors the gateway application version; the image tag falls back to this when
 # image.tag is empty. release-please updates it with every release (extra-files).
-appVersion: "0.18.1" # x-release-please-version
+appVersion: "0.18.2" # x-release-please-version
 home: https://firlab.app/bedrock-gateway/
 sources:
   - https://github.com/sunerpy/bedrock-gateway-rust
