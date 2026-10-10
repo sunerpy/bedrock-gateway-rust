@@ -824,7 +824,7 @@ pub async fn to_converse_args(
         }
     }
 
-    let output_config = build_output_config(req, caps)?;
+    let output_config = build_output_config(req)?;
     if output_config.is_some() && wants_strict_text_format(req, caps) {
         merge_strict_text_format(&mut additional);
     }
@@ -854,15 +854,12 @@ pub async fn to_converse_args(
 /// Build the Bedrock `outputConfig` from an OpenAI `response_format`.
 ///
 /// Returns `None` for an absent or `text` (passthrough) format — byte-stable
-/// with the pre-feature behavior. For `json_object` / `json_schema`, gates on
-/// [`Capability::StructuredOutput`] (clean 400 when unsupported) and emits a
+/// with the pre-feature behavior. For `json_object` / `json_schema` it emits a
 /// native `outputConfig.textFormat` with the JSON schema STRINGIFIED into the
 /// `jsonSchema.schema` string slot (grammar-constrained decoding — not
-/// tool-coercion).
-fn build_output_config(
-    req: &ChatRequest,
-    caps: &dyn ModelCapabilities,
-) -> Result<Option<Value>, AppError> {
+/// tool-coercion), for every model: Bedrock decides whether the model takes
+/// it and answers with its own 400 when it does not.
+fn build_output_config(req: &ChatRequest) -> Result<Option<Value>, AppError> {
     let (schema, name) = match &req.response_format {
         None | Some(ResponseFormat::Text) => return Ok(None),
         Some(ResponseFormat::JsonObject) => (json_object_schema(), None),
@@ -874,15 +871,7 @@ fn build_output_config(
             json_schema.name.as_deref(),
         ),
     };
-    json_output_config(
-        &req.model,
-        &req.model,
-        "response_format",
-        &schema,
-        name,
-        caps,
-    )
-    .map(Some)
+    json_output_config("response_format", &schema, name).map(Some)
 }
 
 /// The schema a `json_object` request decodes against: any JSON object.
@@ -894,37 +883,25 @@ pub(crate) fn json_object_schema() -> Value {
 /// Build `outputConfig.textFormat` for a JSON output request, shared by the
 /// chat `response_format` and the Responses `text.format` translations.
 ///
-/// Gates on [`Capability::StructuredOutput`] for `caps_model` (clean 400 naming
-/// `display_model` and the request `field` when unsupported). An
-/// OpenAI-text-format model gets a default `jsonSchema.name` when the request
-/// carries none, because its upstream rejects an unnamed schema.
+/// Sent for every model: whether a model supports structured output is
+/// Bedrock's decision, and its 400 reaches the client unchanged. A request
+/// without a schema name (always so for `json_object`) gets
+/// [`DEFAULT_JSON_SCHEMA_NAME`], because Bedrock's OpenAI-compatible model
+/// backends reject an unnamed schema and Claude accepts a named one.
 pub(crate) fn json_output_config(
-    caps_model: &str,
-    display_model: &str,
     field: &str,
     schema: &Value,
     name: Option<&str>,
-    caps: &dyn ModelCapabilities,
 ) -> Result<Value, AppError> {
-    if !caps.has(caps_model, Capability::StructuredOutput) {
-        return Err(AppError::BadRequest(format!(
-            "model `{display_model}` does not support {field} (structured output)"
-        )));
-    }
-
-    let name = name.map(str::to_string).or_else(|| {
-        caps.has(caps_model, Capability::OpenaiTextFormat)
-            .then(|| DEFAULT_JSON_SCHEMA_NAME.to_string())
-    });
-
     let schema_string = serde_json::to_string(schema)
         .map_err(|e| AppError::Internal(format!("failed to stringify {field} schema: {e}")))?;
 
     let mut json_schema = Map::new();
     json_schema.insert("schema".to_string(), Value::String(schema_string));
-    if let Some(name) = name {
-        json_schema.insert("name".to_string(), Value::String(name));
-    }
+    json_schema.insert(
+        "name".to_string(),
+        Value::String(name.unwrap_or(DEFAULT_JSON_SCHEMA_NAME).to_string()),
+    );
 
     Ok(json!({
         "textFormat": {
@@ -934,8 +911,8 @@ pub(crate) fn json_output_config(
     }))
 }
 
-/// `jsonSchema.name` sent for an OpenAI-text-format model when the request
-/// names no schema (always the case for `json_object`). Protocol filler only.
+/// `jsonSchema.name` sent when the request names no schema (always the case
+/// for `json_object`). Protocol filler only.
 const DEFAULT_JSON_SCHEMA_NAME: &str = "response";
 
 /// Whether a strict JSON-schema request must also carry

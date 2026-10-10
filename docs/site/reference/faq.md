@@ -34,11 +34,12 @@ The message says which of these applies:
 - `is only available on the /responses endpoint` or `on the /chat/completions endpoint`: the Completions route does
   not serve GPT-5.x and gpt-oss. Send the request to Chat Completions or Responses.
 
-### `response_format` answers 400 on a Claude model
+### `response_format` or `text.format` answers 400
 
-Bedrock supports structured output on Claude Sonnet 4.5 and 4.6, Haiku 4.5 and Opus 4.5 and 4.6 only. On the other
-versions the gateway refuses the request instead of sending one that Bedrock would reject. Ask for JSON in the prompt
-on those versions, or use a model that has it.
+The gateway sends structured output to Bedrock for every model, so the 400 is Bedrock's. It comes when the model does
+not support structured output, as with Amazon Nova and Meta Llama (`This model doesn't support the outputConfig
+field`) or Claude Fable 5, or when the model cannot enforce the schema: Claude requires `additionalProperties: false`
+on every object. On such a model, leave out `response_format` and ask for a JSON object in the system prompt.
 
 ### A Claude answer has no reasoning when tools are in the request
 

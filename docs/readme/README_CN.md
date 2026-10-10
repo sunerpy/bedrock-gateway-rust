@@ -400,9 +400,10 @@ src/
 
 权威列表在 `config/models.toml` 和实时 `GET /api/v1/models` 端点。注册表当前覆盖：
 
-- **Claude** — Sonnet 4.x / 5 / 5.5、Haiku 4.5、Opus 4.x / 5 / 5.5、Fable 5 / 5.1（通过 `global.anthropic.claude-sonnet-5-5` 这类跨区域 inference profile）。`response_format` 与 Responses `text.format` 只对 AWS 支持结构化输出的型号生效（Sonnet 4.5/4.6、Haiku 4.5、Opus 4.5/4.6），其余 Claude 型号对它返回 400
+- **Claude** — Sonnet 4.x / 5 / 5.5、Haiku 4.5 / 5.5、Opus 4.x / 5 / 5.5、Fable 5 / 5.1（通过 `global.anthropic.claude-sonnet-5-5` 这类跨区域 inference profile）。`response_format` 与 Responses `text.format` 对所有模型都作为结构化输出发给 Bedrock，不支持的模型（例如 Fable 5）由 Bedrock 返回 400
 - **Amazon Nova** — 多模态和文本模型
 - **DeepSeek** — v3（字符串形式推理路径）
+- **xAI Grok 4、Moonshot Kimi K3** — 会丢弃 `temperature` / `top_p`（模型不接受）
 - **GPT-5.x** — `gpt-5.4`、`gpt-5.5` 和 `gpt-5.6-sol/terra/luna`，支持 `/api/v1/responses` 以及适配后的 `/api/v1/chat/completions`，通过 AWS Bedrock Mantle Responses 上游提供。区域范围由 `config/models.toml` 声明。需要设置 `AWS_BEARER_TOKEN_BEDROCK`；reasoning 与工具同时续轮还需要共享的 `CHAT_REASONING_CAPSULE_*` keyring。
 - **GPT-6.x** — `gpt-6.1-sol`、`gpt-6-sol`、`gpt-6-luna`、`gpt-6-astra`，经 Bedrock Converse 同时支持 `/api/v1/chat/completions` 与 `/api/v1/responses`。裸名是 `global.openai.*` 跨区域 inference profile 的别名，`us.` / `global.` profile ID 也可直接使用。`reasoning_effort` 映射为 `reasoning.effort`，`temperature` / `top_p` 会被丢弃（模型不接受），`response_format`（chat）与 `text.format`（Responses）按 OpenAI `text.format` 形状下发（支持 strict schema）
 - 账户中可访问的任何 Bedrock 基础模型或 inference profile — 模型目录在启动时从控制面拉取，并每隔 `MODEL_CATALOG_REFRESH_SECS` 秒重新拉取

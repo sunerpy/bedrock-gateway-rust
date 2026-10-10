@@ -1443,15 +1443,22 @@ async fn response_format_json_schema_stringifies_schema() {
 }
 
 #[tokio::test]
-async fn response_format_unsupported_model_is_400() {
+async fn response_format_on_a_model_without_registry_flags_is_forwarded() {
+    // DeepSeek's entry declares no structured-output knowledge; the request is
+    // still sent, and Bedrock (which serves structured output on DeepSeek
+    // V3.2) decides.
     let mut req = base_request("deepseek.v3", vec![user_text("hi")]);
     req.response_format = Some(ResponseFormat::JsonObject);
     let c = caps();
     let r = resolver(false);
-    let err = to_converse_args(&req, &c, &r, &ConverseExtras::default())
+    let args = to_converse_args(&req, &c, &r, &ConverseExtras::default())
         .await
-        .expect_err("must reject unsupported model");
-    assert!(matches!(err, AppError::BadRequest(_)));
+        .expect("forwarded");
+    let oc = args.output_config.expect("output_config present");
+    assert_eq!(
+        oc["textFormat"]["structure"]["jsonSchema"]["name"],
+        "response"
+    );
 }
 
 #[tokio::test]
@@ -1923,10 +1930,11 @@ async fn response_format_json_schema_without_schema_defaults_to_object() {
         .expect("schema string");
     let parsed: Value = serde_json::from_str(schema_str).expect("valid JSON");
     assert_eq!(parsed["type"], "object");
-    // No name was supplied, so the jsonSchema slot omits `name`.
-    assert!(oc["textFormat"]["structure"]["jsonSchema"]
-        .get("name")
-        .is_none());
+    // No name was supplied, so the default fills the slot.
+    assert_eq!(
+        oc["textFormat"]["structure"]["jsonSchema"]["name"],
+        "response"
+    );
 }
 
 #[tokio::test]
@@ -2098,8 +2106,7 @@ async fn strict_text_format_merges_with_client_text_fields() {
 
 #[tokio::test]
 async fn claude_structured_output_never_gets_openai_fields() {
-    // Claude takes strictness from grammar decoding, not a `text` field, and
-    // an unnamed schema stays unnamed (Bedrock accepts it).
+    // Claude takes strictness from grammar decoding, not a `text` field.
     let mut req = base_request("global.anthropic.claude-sonnet-4-6", vec![user_text("hi")]);
     req.response_format = Some(strict_schema_format(Some(true)));
     let args = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
@@ -2107,37 +2114,60 @@ async fn claude_structured_output_never_gets_openai_fields() {
         .expect("translate");
     assert!(args.output_config.is_some());
     assert!(args.additional_model_request_fields.is_none());
-
-    let mut req = base_request("global.anthropic.claude-sonnet-4-6", vec![user_text("hi")]);
-    req.response_format = Some(ResponseFormat::JsonObject);
-    let args = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
-        .await
-        .expect("translate");
-    let oc = args.output_config.expect("output_config present");
-    assert!(oc["textFormat"]["structure"]["jsonSchema"]
-        .get("name")
-        .is_none());
 }
 
 #[tokio::test]
-async fn claude_5_generation_response_format_is_a_gateway_400() {
-    // AWS rejects outputConfig for these ids upstream; the gateway now says so
-    // itself instead of forwarding the request.
+async fn unnamed_schema_gets_the_default_name_on_every_model() {
+    // Bedrock's OpenAI-compatible model backends (Qwen, DeepSeek, MiniMax, GLM,
+    // Grok) reject a json_schema without a name ("missing field `name`"), and
+    // Claude accepts a named one, so a `json_object` request, which carries no
+    // name, always sends the default.
     for model in [
-        "global.anthropic.claude-sonnet-5-5",
-        "global.anthropic.claude-opus-5-5",
-        "global.anthropic.claude-sonnet-5",
-        "global.anthropic.claude-opus-4-7",
+        "global.anthropic.claude-sonnet-4-6",
+        "us.anthropic.claude-opus-5",
+        "qwen.qwen3-235b-a22b-2507-v1:0",
+        "us.xai.grok-4.7",
     ] {
         let mut req = base_request(model, vec![user_text("hi")]);
         req.response_format = Some(ResponseFormat::JsonObject);
-        let err = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
+        let args = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
             .await
-            .expect_err("must reject");
-        assert!(
-            matches!(&err, AppError::BadRequest(m) if m.contains("does not support response_format")),
-            "{model}: {err:?}"
+            .unwrap_or_else(|e| panic!("{model}: {e:?}"));
+        let oc = args.output_config.expect("output_config present");
+        assert_eq!(
+            oc["textFormat"]["structure"]["jsonSchema"]["name"], "response",
+            "{model}"
         );
+    }
+}
+
+#[tokio::test]
+async fn response_format_is_forwarded_to_bedrock_for_every_model() {
+    // Whether a model supports structured output is Bedrock's decision: the
+    // gateway sends outputConfig for every model and passes Bedrock's own 400
+    // back when the model rejects it. Live 2026-10-10: Claude Opus 4.7+, the 5
+    // generation and Haiku 5.5 accept it; Fable 5, Nova and Llama do not.
+    for model in [
+        "us.anthropic.claude-opus-5",
+        "us.anthropic.claude-sonnet-5",
+        "global.anthropic.claude-sonnet-5-5",
+        "global.anthropic.claude-opus-5-5",
+        "global.anthropic.claude-haiku-5-5",
+        "global.anthropic.claude-opus-4-7",
+        "global.anthropic.claude-fable-5",
+        "us.amazon.nova-pro-v1:0",
+        "qwen.qwen3-235b-a22b-2507-v1:0",
+        "acme.unlisted-model-v1:0",
+    ] {
+        let mut req = base_request(model, vec![user_text("hi")]);
+        req.response_format = Some(ResponseFormat::JsonObject);
+        let args = to_converse_args(&req, &caps(), &resolver(false), &ConverseExtras::default())
+            .await
+            .unwrap_or_else(|e| panic!("{model}: {e:?}"));
+        let oc = args
+            .output_config
+            .unwrap_or_else(|| panic!("{model}: no outputConfig"));
+        assert_eq!(oc["textFormat"]["type"], "json_schema", "{model}");
     }
 }
 

@@ -59,7 +59,7 @@ endpoint, which serves GPT-5.x and gpt-oss, keeps the status and the error objec
 | `max_completion_tokens`, `max_tokens`  | The output limit; `max_completion_tokens` wins when both are set                                 |
 | `temperature`, `top_p`, `stop`         | Passed to Bedrock, except on the models that reject sampling parameters                          |
 | `tools`, `tool_choice`                 | Function tools; `tool_choice` can be `auto`, `none`, `required` or one function                   |
-| `response_format`                      | `json_schema` and `json_object` on the models with structured output; HTTP 400 on the others     |
+| `response_format`                      | `json_schema` and `json_object`, sent to Bedrock as structured output; a model without it answers HTTP 400 |
 | `reasoning_effort`                     | Mapped to each model's reasoning; see [Caching and reasoning](../guide/caching-and-reasoning.md#reasoning) |
 | `extra_body`                           | `prompt_caching` controls the cache; every other key goes to Bedrock with the request            |
 | `n`, `frequency_penalty`, `presence_penalty`, `user` | Accepted and ignored                                                               |
@@ -85,7 +85,7 @@ field for.
 | `max_output_tokens`                    | The output limit; an answer cut by it ends as `incomplete`                                        |
 | `temperature`, `top_p`                 | Passed to Bedrock, except on the models that reject them                                         |
 | `reasoning.effort`                     | Mapped to each model's reasoning                                                                 |
-| `text.format`                          | `json_schema` and `json_object` on the models with structured output                             |
+| `text.format`                          | `json_schema` and `json_object`, sent to Bedrock as structured output                           |
 | `include`                              | `reasoning.encrypted_content` returns the reasoning in a form the client sends back on the next turn |
 | `store`, `previous_response_id`        | Accepted and ignored: the client sends the whole conversation each time                          |
 

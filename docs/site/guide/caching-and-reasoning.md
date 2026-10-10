@@ -71,7 +71,7 @@ The gateway turns the effort into the form the model takes:
 | Models                                            | What the model receives                                     |
 | ------------------------------------------------- | ----------------------------------------------------------- |
 | Claude Sonnet 4.5 and 4.6, Haiku 4.5, Opus 4.5    | a thinking budget, worked out from `max_tokens`             |
-| Claude Opus 4.6 and later, Sonnet 5 and later, Fable | adaptive thinking with that effort                      |
+| Claude Opus 4.6 and later, Sonnet 5 and later, Haiku 5.5, Fable | adaptive thinking with that effort           |
 | GPT-6.x                                           | `reasoning.effort`                                          |
 | GPT-5.x and gpt-oss                               | the request as the client sent it                           |
 | DeepSeek V3                                       | the effort as a string                                      |

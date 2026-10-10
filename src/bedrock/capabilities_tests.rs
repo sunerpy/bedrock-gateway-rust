@@ -53,11 +53,6 @@ fn fable_5_1_has_adaptive_thinking_and_required_capabilities() {
     // params must be unset (temperature 1.0 / top_p 0.99 only), and prompt
     // caching with a 512-token floor plus 5m + 1h TTL support. The 1M context is
     // native, so NO `context_1m_beta` opt-in header is injected (same as Fable 5).
-    // StructuredOutput resolves false: the structured-outputs doc enumerates only
-    // Sonnet 4.5, Sonnet 4.6, Haiku 4.5, Opus 4.5 and Opus 4.6, and the live
-    // upstream rejects outputConfig for this id. `has()` unions the flags of
-    // EVERY entry whose match is a substring of the id, so neither
-    // `claude-fable-5` nor the `anthropic.claude` catch-all may declare it.
     let c = caps();
     assert_eq!(
         c.reasoning_path(FULL_FABLE_5_1),
@@ -66,7 +61,6 @@ fn fable_5_1_has_adaptive_thinking_and_required_capabilities() {
     assert!(c.has(FULL_FABLE_5_1, Capability::AdaptiveThinking));
     assert!(c.has(FULL_FABLE_5_1, Capability::DropSamplingParams));
     assert!(c.has(FULL_FABLE_5_1, Capability::NoAssistantPrefill));
-    assert!(!c.has(FULL_FABLE_5_1, Capability::StructuredOutput));
     assert!(c.has(FULL_FABLE_5_1, Capability::CacheTtl1h));
     assert!(!c.has(FULL_FABLE_5_1, Capability::Context1mBeta));
     assert_eq!(c.cache_min_tokens(FULL_FABLE_5_1), Some(512));
@@ -712,36 +706,61 @@ fn claude_5_5_entries_win_params_over_their_5_parents() {
         assert!(c.has(model, Capability::DropSamplingParams), "{model}");
         assert!(c.has(model, Capability::NoAssistantPrefill), "{model}");
         assert!(c.has(model, Capability::CacheTtl1h), "{model}");
-        assert!(!c.has(model, Capability::StructuredOutput), "{model}");
         assert!(!c.has(model, Capability::Context1mBeta), "{model}");
     }
 }
 
 #[test]
-fn structured_output_resolves_only_for_aws_documented_claude_models() {
+fn haiku_5_5_resolves_adaptive_thinking_and_the_512_token_floor() {
+    // Live 2026-10-10 on `global.anthropic.claude-haiku-5-5`: temperature and
+    // top_p are "deprecated for this model", assistant prefill is refused,
+    // `thinking.type.enabled` is refused while adaptive thinking takes every
+    // effort from low to max. AWS prompt-caching table: 512 tokens per
+    // checkpoint with 5m and 1h TTL. It must not fall to the `anthropic.claude`
+    // catch-all, whose 4,096 floor would skip most cache points.
     let c = caps();
     for model in [
-        "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "global.anthropic.claude-sonnet-4-6",
-        "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-        "global.anthropic.claude-opus-4-5-20251101-v1:0",
-        "global.anthropic.claude-opus-4-6-v1",
+        "global.anthropic.claude-haiku-5-5",
+        "us.anthropic.claude-haiku-5-5",
+        "anthropic.claude-haiku-5-5",
     ] {
-        assert!(c.has(model, Capability::StructuredOutput), "{model}");
+        assert_eq!(
+            c.reasoning_path(model),
+            ReasoningPath::AdaptiveThinking,
+            "{model}"
+        );
+        assert!(c.has(model, Capability::AdaptiveThinking), "{model}");
+        assert!(c.has(model, Capability::DropSamplingParams), "{model}");
+        assert!(c.has(model, Capability::NoAssistantPrefill), "{model}");
+        assert!(c.has(model, Capability::CacheTtl1h), "{model}");
+        assert!(
+            !c.has(model, Capability::TemperatureToppConflict),
+            "{model}"
+        );
+        assert_eq!(c.cache_min_tokens(model), Some(512), "{model}");
     }
+    // Haiku 4.5 keeps its own entry.
+    assert_eq!(
+        c.reasoning_path("global.anthropic.claude-haiku-4-5-20251001-v1:0"),
+        ReasoningPath::BudgetTokens
+    );
+}
+
+#[test]
+fn grok_4_and_kimi_k3_drop_sampling_params() {
+    // Live 2026-10-10: these models answer "This model doesn't support the
+    // temperature field" (and the topP field) on Converse, so both are dropped.
+    // Kimi K2.5 accepts them and keeps the defaults.
+    let c = caps();
     for model in [
-        "global.anthropic.claude-opus-4-7",
-        FULL_OPUS_4_8,
-        FULL_OPUS_5,
-        "global.anthropic.claude-sonnet-5",
-        FULL_SONNET_5_5,
-        FULL_OPUS_5_5,
-        "global.anthropic.claude-fable-5",
-        FULL_FABLE_5_1,
-        "us.anthropic.claude-3-haiku-20240307-v1:0",
+        "us.xai.grok-4.7",
+        "us.xai.grok-4.6",
+        "us.moonshotai.kimi-k3",
     ] {
-        assert!(!c.has(model, Capability::StructuredOutput), "{model}");
+        assert!(c.has(model, Capability::DropSamplingParams), "{model}");
+        assert_eq!(c.cache_min_tokens(model), None, "{model}");
     }
+    assert!(!c.has("moonshotai.kimi-k2.5", Capability::DropSamplingParams));
 }
 
 #[test]
@@ -761,7 +780,6 @@ fn gpt_6_aliases_target_global_profiles_and_resolve_converse_capabilities() {
                 "{model}"
             );
             assert!(c.has(model, Capability::DropSamplingParams), "{model}");
-            assert!(c.has(model, Capability::StructuredOutput), "{model}");
             assert!(c.has(model, Capability::OpenaiTextFormat), "{model}");
             assert!(!c.has(model, Capability::NoAssistantPrefill), "{model}");
             assert_eq!(c.cache_min_tokens(model), None, "{model}");

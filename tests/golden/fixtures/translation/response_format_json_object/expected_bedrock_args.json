@@ -8,7 +8,8 @@
       "type": "json_schema",
       "structure": {
         "jsonSchema": {
-          "schema": "{\"additionalProperties\":false,\"type\":\"object\"}"
+          "schema": "{\"additionalProperties\":false,\"type\":\"object\"}",
+          "name": "response"
         }
       }
     }
