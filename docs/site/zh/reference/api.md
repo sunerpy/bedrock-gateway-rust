@@ -51,7 +51,7 @@
 | `max_completion_tokens`、`max_tokens`                | 输出上限；两者都设置时以 `max_completion_tokens` 为准                                  |
 | `temperature`、`top_p`、`stop`                       | 传给 Bedrock，拒绝采样参数的模型除外                                                   |
 | `tools`、`tool_choice`                               | 函数工具；`tool_choice` 可以是 `auto`、`none`、`required` 或某一个函数                 |
-| `response_format`                                    | 在支持结构化输出的模型上支持 `json_schema` 和 `json_object`；其他模型返回 HTTP 400     |
+| `response_format`                                    | `json_schema` 和 `json_object`，作为结构化输出发给 Bedrock；不支持的模型返回 HTTP 400 |
 | `reasoning_effort`                                   | 映射为每个模型的推理方式，见[缓存与推理](../guide/caching-and-reasoning.md#推理)       |
 | `extra_body`                                         | `prompt_caching` 控制缓存；其他所有键随请求一起发给 Bedrock                            |
 | `n`、`frequency_penalty`、`presence_penalty`、`user` | 接受但忽略                                                                             |
@@ -73,7 +73,7 @@
 | `max_output_tokens`             | 输出上限；因它而截断的回答以 `incomplete` 结束                                                                                    |
 | `temperature`、`top_p`          | 传给 Bedrock，拒绝这两个参数的模型除外                                                                                            |
 | `reasoning.effort`              | 映射为每个模型的推理方式                                                                                                          |
-| `text.format`                   | 在支持结构化输出的模型上支持 `json_schema` 和 `json_object`                                                                       |
+| `text.format`                   | `json_schema` 和 `json_object`，作为结构化输出发给 Bedrock                                                                        |
 | `include`                       | `reasoning.encrypted_content` 以客户端可以在下一轮发回的形式返回推理内容                                                          |
 | `store`、`previous_response_id` | 接受但忽略：客户端每次都发送完整对话                                                                                              |
 

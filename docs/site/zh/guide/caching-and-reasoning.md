@@ -55,7 +55,7 @@ client.chat.completions.create(
 | 模型                                                   | 模型收到的内容                     |
 | ------------------------------------------------------ | ---------------------------------- |
 | Claude Sonnet 4.5 和 4.6、Haiku 4.5、Opus 4.5          | 根据 `max_tokens` 计算出的思考预算 |
-| Claude Opus 4.6 及更高版本、Sonnet 5 及更高版本、Fable | 使用该推理强度的自适应思考         |
+| Claude Opus 4.6 及更高版本、Sonnet 5 及更高版本、Haiku 5.5、Fable | 使用该推理强度的自适应思考 |
 | GPT-6.x                                                | `reasoning.effort`                 |
 | GPT-5.x 和 gpt-oss                                     | 客户端发送的原始请求               |
 | DeepSeek V3                                            | 字符串形式的推理强度               |

@@ -37,28 +37,25 @@ pub enum Capability {
     /// with HTTP 400).
     AdaptiveThinking,
     /// Drop BOTH `temperature` and `topP` from `inferenceConfig` — this model
-    /// deprecates all sampling parameters and returns HTTP 400 if any
-    /// non-default value is sent (Claude Opus 4.7+, Sonnet 5, Fable/Mythos 5).
+    /// deprecates or rejects all sampling parameters and returns HTTP 400 if
+    /// any is sent (Claude Opus 4.7+, Sonnet 5, Haiku 5.5, Fable/Mythos 5, Grok
+    /// 4, Kimi K3).
     /// Stronger than [`Capability::TemperatureToppConflict`], which only drops
     /// `topP` and only when `temperature` is also present.
     DropSamplingParams,
     /// Auto-inject the 1M-context beta header.
     #[serde(rename = "context_1m_beta")]
     Context1mBeta,
-    /// This model supports native structured output via Bedrock Converse
-    /// `outputConfig.textFormat` (grammar-constrained decoding). When set, the
-    /// gateway honors an OpenAI `response_format` (`json_object` / `json_schema`)
-    /// by emitting an `outputConfig`; when a model lacks this flag, a
-    /// `response_format` request is rejected with HTTP 400 rather than silently
-    /// ignored.
+    /// Retired. Still accepted so an older registry keeps parsing, but read
+    /// nowhere: the gateway sends every `response_format` / `text.format` to
+    /// Bedrock as `outputConfig.textFormat`, and Bedrock decides per model
+    /// whether it takes structured output.
     StructuredOutput,
     /// This model's Converse structured output follows the OpenAI `text.format`
-    /// contract (OpenAI GPT models on Bedrock): `jsonSchema.name` is required,
-    /// so the gateway supplies a default when the request carries none (always
-    /// the case for `json_object`), and a `json_schema` request with
+    /// contract (OpenAI GPT models on Bedrock): a `json_schema` request with
     /// `strict: true` is forwarded as
     /// `additionalModelRequestFields.text.format.strict = true`. Only shapes the
-    /// request; [`Capability::StructuredOutput`] still gates it.
+    /// request.
     OpenaiTextFormat,
     /// This model supports a 1-hour prompt-cache `cachePoint.ttl`. When set, a
     /// per-request or configured `1h` cache TTL is honored; when a model lacks

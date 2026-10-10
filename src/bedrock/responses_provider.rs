@@ -145,7 +145,7 @@ impl BedrockResponsesProvider {
         let inference_config = Value::Object(inference);
 
         // Structured output from `text.format`, translated exactly like chat
-        // `response_format` (gated on StructuredOutput, OpenAI naming/strict).
+        // `response_format` (sent for every model, OpenAI strict field).
         let output_format = responses_output_format(req, resolved, caps)?;
         let mut additional = reasoning.additional_model_request_fields;
         if output_format.as_ref().is_some_and(|f| f.strict_field) {

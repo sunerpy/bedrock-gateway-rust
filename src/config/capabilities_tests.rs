@@ -30,10 +30,7 @@ fn test_context_1m_beta_header_value() {
 fn test_opus_4_8_capabilities() {
     // Opus 4.7+ deprecate all sampling params (drop_sampling_params) on top
     // of the adaptive-thinking + no-prefill flags. The AWS prompt-caching table
-    // also lists a 1-hour TTL for `anthropic.claude-opus-4-8`. No
-    // structured_output: AWS does not list Opus 4.8 for structured outputs and
-    // a live outputConfig request returns "output_config.format: Extra inputs
-    // are not permitted".
+    // also lists a 1-hour TTL for `anthropic.claude-opus-4-8`.
     let cfg = load_project_config();
     let entry = cfg
         .entry_for_match("claude-opus-4-8")
@@ -52,6 +49,48 @@ fn test_opus_4_8_capabilities() {
 }
 
 #[test]
+fn test_haiku_5_5_capabilities() {
+    // Live 2026-10-10: temperature and top_p are deprecated, assistant prefill
+    // is refused, thinking takes only the adaptive form. AWS prompt-caching
+    // table: 512 tokens per checkpoint, 5m and 1h TTL.
+    let cfg = load_project_config();
+    let entry = cfg
+        .entry_for_match("claude-haiku-5-5")
+        .expect("claude-haiku-5-5 entry must exist");
+    let caps: HashSet<Capability> = entry.capabilities.iter().copied().collect();
+    let expected: HashSet<Capability> = [
+        Capability::NoAssistantPrefill,
+        Capability::AdaptiveThinking,
+        Capability::DropSamplingParams,
+        Capability::CacheTtl1h,
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(caps, expected);
+    assert_eq!(entry.params.cache_min_tokens, Some(512));
+    assert_eq!(
+        entry.params.reasoning_path,
+        Some(ReasoningPath::AdaptiveThinking)
+    );
+}
+
+#[test]
+fn no_registry_entry_declares_the_retired_structured_output_flag() {
+    // `structured_output` still parses, so an older registry keeps loading, but
+    // it gates nothing: the gateway forwards every response_format and
+    // text.format and Bedrock decides per model. Declaring it would suggest
+    // otherwise.
+    let cfg = load_project_config();
+    for entry in &cfg.models {
+        assert!(
+            !entry.has_capability(Capability::StructuredOutput),
+            "{} still declares structured_output",
+            entry.match_pattern
+        );
+    }
+}
+
+#[test]
 fn test_sonnet_4_5_capabilities() {
     // Parity with Python MODEL_CAPABILITIES (bedrock.py:148):
     // "claude-sonnet-4-5": {"temperature_topp_conflict"}. The 4.5-gen family
@@ -61,13 +100,10 @@ fn test_sonnet_4_5_capabilities() {
         .entry_for_match("claude-sonnet-4-5")
         .expect("claude-sonnet-4-5 entry must exist");
     let caps: HashSet<Capability> = entry.capabilities.iter().copied().collect();
-    let expected: HashSet<Capability> = [
-        Capability::TemperatureToppConflict,
-        Capability::StructuredOutput,
-        Capability::CacheTtl1h,
-    ]
-    .into_iter()
-    .collect();
+    let expected: HashSet<Capability> =
+        [Capability::TemperatureToppConflict, Capability::CacheTtl1h]
+            .into_iter()
+            .collect();
     assert_eq!(caps, expected);
 }
 
@@ -122,9 +158,6 @@ fn test_fable_5_1_capabilities_and_cache_floor() {
     // AWS model card (Claude Fable 5.1): adaptive thinking is always on and
     // cannot be disabled, all sampling params must be unset, prompt caching has
     // a 512-token minimum per checkpoint and supports both 5m and 1h TTL.
-    // No `structured_output`: the structured-outputs doc names only Sonnet 4.5,
-    // Sonnet 4.6, Haiku 4.5, Opus 4.5 and Opus 4.6, and a live outputConfig
-    // request returns "output_config.format: Extra inputs are not permitted".
     let cfg = load_project_config();
     let entry = cfg
         .entry_for_match("claude-fable-5-1")
@@ -527,13 +560,10 @@ fn gpt_6_family_entries_and_aliases() {
             .entry_for_match(canonical)
             .unwrap_or_else(|| panic!("{canonical} entry must exist"));
         let caps: HashSet<Capability> = entry.capabilities.iter().copied().collect();
-        let expected: HashSet<Capability> = [
-            Capability::DropSamplingParams,
-            Capability::StructuredOutput,
-            Capability::OpenaiTextFormat,
-        ]
-        .into_iter()
-        .collect();
+        let expected: HashSet<Capability> =
+            [Capability::DropSamplingParams, Capability::OpenaiTextFormat]
+                .into_iter()
+                .collect();
         assert_eq!(caps, expected, "{canonical}");
         assert_eq!(
             entry.params.reasoning_path,

@@ -1353,17 +1353,37 @@ fn text_format_on_claude_keeps_chat_semantics() {
         .expect("requested");
     assert!(!out.strict_field);
 
-    // Claude 5 generation: AWS rejects outputConfig, so the gateway says so.
-    let req = format_req(
+    // Claude 5 generation: forwarded like every other model, with the
+    // default name and still no OpenAI strict field.
+    let req = format_req("us.anthropic.claude-opus-5", strict_capital_format());
+    let out = responses_output_format(&req, "us.anthropic.claude-opus-5", &caps())
+        .expect("forwarded")
+        .expect("requested");
+    assert_eq!(out.output_config["textFormat"]["type"], "json_schema");
+    assert!(!out.strict_field);
+}
+
+#[test]
+fn text_format_is_forwarded_whatever_the_registry_says() {
+    // The gateway no longer decides which models take structured output;
+    // Bedrock answers for each model. A model the registry has no entry for,
+    // or one Bedrock is known to refuse, still gets its outputConfig sent.
+    for model in [
         "global.anthropic.claude-sonnet-5-5",
-        json!({ "type": "json_object" }),
-    );
-    let err = responses_output_format(&req, "global.anthropic.claude-sonnet-5-5", &caps())
-        .expect_err("unsupported");
-    assert!(
-        matches!(&err, AppError::BadRequest(m) if m.contains("does not support text.format")),
-        "{err:?}"
-    );
+        "global.anthropic.claude-haiku-5-5",
+        "global.anthropic.claude-fable-5",
+        "us.amazon.nova-pro-v1:0",
+        "acme.unlisted-model-v1:0",
+    ] {
+        let req = format_req(model, json!({ "type": "json_object" }));
+        let out = responses_output_format(&req, model, &caps())
+            .unwrap_or_else(|e| panic!("{model}: {e:?}"))
+            .unwrap_or_else(|| panic!("{model}: not requested"));
+        assert_eq!(
+            out.output_config["textFormat"]["structure"]["jsonSchema"]["name"], "response",
+            "{model}"
+        );
+    }
 }
 
 #[test]

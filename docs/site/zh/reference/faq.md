@@ -25,9 +25,9 @@ Bedrock 拒绝网关自身的 AWS 身份访问模型时，网关同样返回 401
 - `is not available in region`：该模型只在少数区域提供。请在其中一个区域运行网关，见[模型](../guide/models.md#openai-gpt)。
 - `is only available on the /responses endpoint` 或 `on the /chat/completions endpoint`：Completions 路由不提供 GPT-5.x 和 gpt-oss。请把请求发到 Chat Completions 或 Responses。
 
-### Claude 模型对 `response_format` 返回 400
+### `response_format` 或 `text.format` 返回 400
 
-Bedrock 只在 Claude Sonnet 4.5 和 4.6、Haiku 4.5 以及 Opus 4.5 和 4.6 上支持结构化输出。对其他版本，网关会直接拒绝请求，而不是发出一个会被 Bedrock 拒绝的请求。在这些版本上，请在提示中要求输出 JSON，或者换用支持结构化输出的模型。
+网关对所有模型都会把结构化输出发给 Bedrock，所以这个 400 来自 Bedrock。出现的情况有两种：一是模型不支持结构化输出，例如 Amazon Nova 和 Meta Llama（报 `This model doesn't support the outputConfig field`）以及 Claude Fable 5；二是模型无法按这个 schema 约束输出，例如 Claude 要求每个对象都设置 `additionalProperties: false`。遇到这类模型，请去掉 `response_format`，改在 system 提示中要求输出一个 JSON 对象。
 
 ### 请求带有工具时 Claude 的回答没有推理内容
 

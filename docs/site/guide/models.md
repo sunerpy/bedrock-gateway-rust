@@ -29,16 +29,16 @@ The gateway sends the ID to Bedrock as you wrote it, so a profile keeps its rout
 
 Claude Sonnet, Opus, Haiku and Fable are served through Bedrock's Converse API, on both Chat Completions and
 Responses. Recent versions are reached through inference profiles, for example `global.anthropic.claude-sonnet-5-5`,
-`us.anthropic.claude-opus-5-5` or `global.anthropic.claude-fable-5-1`.
+`us.anthropic.claude-opus-5-5`, `global.anthropic.claude-haiku-5-5` or `global.anthropic.claude-fable-5-1`.
 
 The gateway handles the differences between versions for you. On the versions that reject `temperature` and
 `top_p`, it drops them. On the versions that think adaptively, `reasoning_effort` becomes the effort the model
 expects. When a version does not accept a conversation that ends with an assistant message, the gateway adds a short
 user turn that asks the model to continue.
 
-`response_format` and the Responses `text.format` are honoured on Claude Sonnet 4.5 and 4.6, Haiku 4.5 and Opus 4.5
-and 4.6, the versions on which Bedrock supports structured output. On the other versions the gateway answers with
-HTTP 400 instead of sending a request that Bedrock would refuse.
+`response_format` and the Responses `text.format` go to Bedrock as structured output on every version, and Bedrock
+decides whether the version takes it; one that does not, such as Fable 5, answers with HTTP 400. On Claude, every
+object in a JSON schema must set `additionalProperties: false`.
 
 ## OpenAI GPT
 
@@ -63,7 +63,8 @@ OpenAI's models on Bedrock are called by short names:
 ## Other models
 
 Amazon Nova, DeepSeek and every other model in your catalog are served through Bedrock Converse with no extra setup.
-A model's limits are Bedrock's: when a model does not support images, tools or streaming, Bedrock's error comes back
+On xAI Grok 4 and Moonshot Kimi K3, which refuse `temperature` and `top_p`, the gateway drops both. A model's limits
+are Bedrock's: when a model does not support images, tools, streaming or structured output, Bedrock's error comes back
 to the client.
 
 Embeddings use their own registry. The [API reference](../reference/api.md#embeddings) lists the supported families.
@@ -76,11 +77,10 @@ An entry matches a fragment of the model ID and sets, for example:
 - whether the model rejects `temperature` and `top_p`;
 - which form of reasoning it takes;
 - the smallest prompt prefix worth caching, and whether it supports a 1-hour cache;
-- whether it supports structured output;
 - which backend serves it, and in which regions.
 
-A model with no entry is served with the defaults: no reasoning parameters, no structured output, and no prompt
-caching, except for a Claude ID, which gets a conservative cache threshold.
+A model with no entry is served with the defaults: no reasoning parameters and no prompt caching, except for a Claude
+ID, which gets a conservative cache threshold.
 
 ## Add or change a model
 
@@ -90,7 +90,7 @@ caching, except for a Claude ID, which gets a conservative cache threshold.
    ```toml
    [[model]]
    match = "provider.model-name"
-   capabilities = ["drop_sampling_params", "structured_output"]
+   capabilities = ["drop_sampling_params", "no_assistant_prefill"]
    [model.params]
    cache_min_tokens = 1024
    reasoning_path = "adaptive_thinking"

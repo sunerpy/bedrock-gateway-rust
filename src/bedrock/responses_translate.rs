@@ -1028,14 +1028,14 @@ pub struct ResponsesOutputFormat {
 /// Map a Responses `text.format` onto Converse structured output, exactly as
 /// the chat surface maps `response_format`.
 ///
-/// `None` for an absent or `text` format. `json_object` / `json_schema` gate on
-/// [`Capability::StructuredOutput`] for `model_id` (the resolved id) and are a
-/// clean 400 on a model without it, matching chat. The schema and its `name` /
-/// `strict` may sit on the format itself or under a nested `json_schema`, the
-/// two shapes [`reject_unsatisfiable_text_format`] accepts.
+/// `None` for an absent or `text` format. `json_object` / `json_schema` are
+/// sent for every model, matching chat: Bedrock decides whether `model_id` (the
+/// resolved id) takes structured output. The schema and its `name` / `strict`
+/// may sit on the format itself or under a nested `json_schema`, the two shapes
+/// [`reject_unsatisfiable_text_format`] accepts.
 ///
 /// # Errors
-/// [`AppError::BadRequest`] when the model does not support structured output.
+/// [`AppError::Internal`] when the schema cannot be serialized.
 pub fn responses_output_format(
     req: &ResponsesRequest,
     model_id: &str,
@@ -1064,8 +1064,7 @@ pub fn responses_output_format(
         _ => return Ok(None),
     };
 
-    let output_config =
-        json_output_config(model_id, &req.model, "text.format", &schema, name, caps)?;
+    let output_config = json_output_config("text.format", &schema, name)?;
     Ok(Some(ResponsesOutputFormat {
         output_config,
         strict_field: needs_strict_text_format_field(model_id, strict, caps),

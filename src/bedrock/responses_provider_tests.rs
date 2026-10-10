@@ -431,7 +431,9 @@ async fn responses_assemble_emits_output_config_for_text_format() {
 }
 
 #[tokio::test]
-async fn responses_assemble_rejects_text_format_on_unsupported_model() {
+async fn responses_assemble_sends_text_format_for_claude_5_5() {
+    // Bedrock serves structured output on Opus 5.5 (live 2026-10-10); the
+    // gateway sends the outputConfig instead of answering 400 itself.
     let provider = test_provider_with_config(false, project_capability_config()).await;
     let mut req = base_request();
     req.model = "global.anthropic.claude-opus-5-5".to_string();
@@ -440,14 +442,16 @@ async fn responses_assemble_rejects_text_format_on_unsupported_model() {
             .expect("text config"),
     );
 
-    let err = match provider
+    let assembled = provider
         .assemble(&req, "global.anthropic.claude-opus-5-5", false)
         .await
-    {
-        Ok(_) => panic!("Opus 5.5 rejects outputConfig upstream; the gateway must 400"),
-        Err(err) => err,
-    };
-    assert!(matches!(err, AppError::BadRequest(_)), "{err:?}");
+        .expect("assemble");
+    let oc = assembled.output_config.expect("outputConfig sent");
+    assert_eq!(oc["textFormat"]["type"], "json_schema");
+    assert_eq!(
+        oc["textFormat"]["structure"]["jsonSchema"]["name"],
+        "response"
+    );
 }
 
 #[tokio::test]

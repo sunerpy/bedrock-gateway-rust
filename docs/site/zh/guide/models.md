@@ -21,11 +21,11 @@ curl -s http://localhost:8080/api/v1/models -H "Authorization: Bearer $API_KEY" 
 
 ## Claude
 
-Claude Sonnet、Opus、Haiku 和 Fable 通过 Bedrock 的 Converse API 提供，Chat Completions 和 Responses 都可以使用。较新的版本通过推理配置文件调用，例如 `global.anthropic.claude-sonnet-5-5`、`us.anthropic.claude-opus-5-5` 或 `global.anthropic.claude-fable-5-1`。
+Claude Sonnet、Opus、Haiku 和 Fable 通过 Bedrock 的 Converse API 提供，Chat Completions 和 Responses 都可以使用。较新的版本通过推理配置文件调用，例如 `global.anthropic.claude-sonnet-5-5`、`us.anthropic.claude-opus-5-5`、`global.anthropic.claude-haiku-5-5` 或 `global.anthropic.claude-fable-5-1`。
 
 各版本之间的差异由网关处理。对拒绝 `temperature` 和 `top_p` 的版本，网关会去掉这两个参数。对使用自适应思考的版本，`reasoning_effort` 会转换为模型所需的推理强度。某个版本不接受以 assistant 消息结尾的对话时，网关会追加一条简短的用户消息，请模型接着回答。
 
-Bedrock 只在 Claude Sonnet 4.5 和 4.6、Haiku 4.5 以及 Opus 4.5 和 4.6 上支持结构化输出，网关在这些版本上遵循 `response_format` 和 Responses 的 `text.format`。对其他版本，网关直接返回 HTTP 400，不会发出一个必然被 Bedrock 拒绝的请求。
+`response_format` 和 Responses 的 `text.format` 在所有版本上都会作为结构化输出发给 Bedrock，由 Bedrock 判断该版本是否支持；不支持的版本（例如 Fable 5）返回 HTTP 400。在 Claude 上，JSON schema 里的每个对象都必须设置 `additionalProperties: false`。
 
 ## OpenAI GPT
 
@@ -43,7 +43,7 @@ Bedrock 上的 OpenAI 模型使用简称调用：
 
 ## 其他模型
 
-Amazon Nova、DeepSeek 以及你的模型目录中的其他模型都通过 Bedrock Converse 提供，无需额外设置。模型的限制以 Bedrock 为准：模型不支持图片、工具或流式输出时，Bedrock 的错误会返回给客户端。
+Amazon Nova、DeepSeek 以及你的模型目录中的其他模型都通过 Bedrock Converse 提供，无需额外设置。xAI Grok 4 和 Moonshot Kimi K3 拒绝 `temperature` 和 `top_p`，网关会去掉这两个参数。模型的限制以 Bedrock 为准：模型不支持图片、工具、流式输出或结构化输出时，Bedrock 的错误会返回给客户端。
 
 Embeddings 使用单独的注册表，支持的模型系列见 [API 参考](../reference/api.md#embeddings)。
 
@@ -54,10 +54,9 @@ Embeddings 使用单独的注册表，支持的模型系列见 [API 参考](../r
 - 模型是否拒绝 `temperature` 和 `top_p`；
 - 模型接受哪种形式的推理参数；
 - 值得缓存的最短提示前缀，以及是否支持 1 小时缓存；
-- 是否支持结构化输出；
 - 由哪个后端提供服务，以及在哪些区域可用。
 
-没有对应条目的模型使用默认设置：不带推理参数，不支持结构化输出，也不使用提示缓存（Claude 的 ID 除外，它会得到一个保守的缓存阈值）。
+没有对应条目的模型使用默认设置：不带推理参数，也不使用提示缓存（Claude 的 ID 除外，它会得到一个保守的缓存阈值）。
 
 ## 添加或修改模型
 
@@ -67,7 +66,7 @@ Embeddings 使用单独的注册表，支持的模型系列见 [API 参考](../r
    ```toml
    [[model]]
    match = "provider.model-name"
-   capabilities = ["drop_sampling_params", "structured_output"]
+   capabilities = ["drop_sampling_params", "no_assistant_prefill"]
    [model.params]
    cache_min_tokens = 1024
    reasoning_path = "adaptive_thinking"
