@@ -1,6 +1,6 @@
 [package]
 name = "bedrock-gateway-rust"
-version = "0.18.1"
+version = "0.18.2"
 edition = "2021"
 description = "OpenAI-compatible HTTP gateway for Amazon Bedrock: Chat Completions, Responses, Completions and Embeddings from one Rust binary."
 license = "MIT-0"
