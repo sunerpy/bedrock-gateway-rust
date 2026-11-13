@@ -223,11 +223,11 @@ pub(crate) struct SearchedTool {
 ///
 /// - a `namespace` contributes each inner `function` / `custom` as
 ///   `{namespace}__{name}`, the same rule as `tools` (zuno's MCP tools);
-/// - a top-level `function` gets its own name as namespace: OpenAI's client
+/// - a top-level `function` keeps its bare name upstream. OpenAI's client
 ///   search example answers a loaded top-level function with a `function_call`
-///   whose `namespace` equals the function name, so the gateway uses
-///   `{name}__{name}` and the replayed `function_call` flattens back to the
-///   same declared tool;
+///   whose `namespace` equals the function name, so the binding carries that
+///   namespace and a replayed `function_call {name: X, namespace: X}` maps back
+///   to the bare `X` (see [`searched_top_level_functions`]);
 /// - a top-level `custom` keeps its bare name, like a `custom` in `tools`.
 ///
 /// Other entry types have no upstream equivalent and are skipped.
@@ -274,7 +274,7 @@ pub(crate) fn flatten_searched_tools(tools: &[Value]) -> Result<Vec<SearchedTool
             Some("function") => {
                 let client_name = name(entry)?;
                 out.push(SearchedTool {
-                    bedrock_name: format!("{client_name}{NAMESPACE_DELIMITER}{client_name}"),
+                    bedrock_name: client_name.clone(),
                     namespace: Some(client_name.clone()),
                     client_name,
                     kind: ResponsesToolKind::Function,
@@ -297,6 +297,34 @@ pub(crate) fn flatten_searched_tools(tools: &[Value]) -> Result<Vec<SearchedTool
         }
     }
     Ok(out)
+}
+
+/// Names of the top-level functions loaded by `tool_search_output` items:
+/// declared upstream under their bare name, answered with `namespace` equal to
+/// the name.
+fn searched_top_level_functions(items: &[ResponseInputItem]) -> Result<HashSet<String>, AppError> {
+    let mut names = HashSet::new();
+    for item in items {
+        let ResponseInputItem::Other { item_type, fields } = item else {
+            continue;
+        };
+        if item_type != "tool_search_output" {
+            continue;
+        }
+        let tools = fields
+            .get("tools")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        for tool in flatten_searched_tools(tools)? {
+            if tool.kind == ResponsesToolKind::Function
+                && tool.namespace.as_deref() == Some(tool.bedrock_name.as_str())
+            {
+                names.insert(tool.bedrock_name);
+            }
+        }
+    }
+    Ok(names)
 }
 
 /// Every tool loaded by a `tool_search_output` anywhere in `input`, in input
@@ -737,6 +765,11 @@ async fn parse_input_items(
     tool_search: bool,
 ) -> Result<Vec<Turn>, AppError> {
     let mut turns: Vec<Turn> = Vec::new();
+    let top_level_searched = if tool_search {
+        searched_top_level_functions(items)?
+    } else {
+        HashSet::new()
+    };
     for item in items {
         match item {
             ResponseInputItem::Message { role, content } => match role {
@@ -787,10 +820,13 @@ async fn parse_input_items(
                 let input: Value = serde_json::from_str(arguments).map_err(|e| {
                     AppError::BadRequest(format!("invalid function_call arguments JSON: {e}"))
                 })?;
-                let bedrock_name = namespace.as_ref().map_or_else(
-                    || name.clone(),
-                    |ns| format!("{ns}{NAMESPACE_DELIMITER}{name}"),
-                );
+                let bedrock_name = match namespace {
+                    // A searched top-level function is answered with its own
+                    // name as namespace but declared under the bare name.
+                    Some(ns) if ns == name && top_level_searched.contains(name) => name.clone(),
+                    Some(ns) => format!("{ns}{NAMESPACE_DELIMITER}{name}"),
+                    None => name.clone(),
+                };
                 turns.push(Turn {
                     role: "assistant".to_string(),
                     content: vec![json!({
