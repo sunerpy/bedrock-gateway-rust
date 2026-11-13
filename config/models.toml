@@ -138,6 +138,10 @@ from = "gpt-6.1-sol"
 to = "global.openai.gpt-6.1-sol"
 
 [[alias]]
+from = "gpt-6.1-terra"
+to = "global.openai.gpt-6.1-terra"
+
+[[alias]]
 from = "gpt-6-sol"
 to = "global.openai.gpt-6-sol"
 
@@ -379,6 +383,27 @@ cache_min_tokens = 4096 # AWS prompt-caching table row `anthropic.claude-mythos-
 reasoning_path = "adaptive_thinking"
 
 [[model]]
+# Claude Fable 5.2 — MUST stay BEFORE `claude-fable-5` for the same first-match
+# params reason as Fable 5.1 below. Live (2026-11-13,
+# global.anthropic.claude-fable-5-2): temperature and top_p are "deprecated for
+# this model", assistant prefill is refused, "thinking.type.enabled" is refused
+# while adaptive thinking takes effort low..max, structured output and a 1h
+# cachePoint are accepted. AWS prompt-caching table row
+# `anthropic.claude-fable-5-2`: 512 min tokens/checkpoint, 4 checkpoints,
+# 5m + 1h TTL. Listed on the Claude tool-search compatibility page.
+match = "claude-fable-5-2"
+capabilities = [
+  "no_assistant_prefill",
+  "adaptive_thinking",
+  "drop_sampling_params",
+  "cache_ttl_1h",
+  "tool_search",
+]
+[model.params]
+cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-fable-5-2`: 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
+reasoning_path = "adaptive_thinking"
+
+[[model]]
 # Claude Fable 5.1 — MUST stay BEFORE `claude-fable-5`, but only [model.params]
 # depends on that: params come from the FIRST substring match, and
 # "claude-fable-5" is a substring of "claude-fable-5-1", so declaring 5 first
@@ -465,7 +490,9 @@ reasoning_path = "deepseek_string"
 # Converse answers "This model doesn't support the temperature field" and the
 # same for topP, hence drop_sampling_params. stopSequences is refused the same
 # way and has no flag; Bedrock's 400 reaches the client. Kimi K2.5 accepts all
-# three and needs no entry.
+# three and needs no entry. Kimi K3.1 (`moonshotai.kimi-k3.1`) matches the
+# `moonshotai.kimi-k3` entry by substring and refuses the same three fields
+# (live, 2026-11-13).
 [[model]]
 match = "xai.grok-4"
 capabilities = ["drop_sampling_params"]
@@ -543,7 +570,9 @@ available_regions = ["us-east-1", "us-east-2", "us-west-2"]
 # (live 404 "The model 'openai.gpt-6.1-sol' does not exist"; the GPT-6.1 Sol
 # model card serves mantle only in us-east-1) and are profile-only on
 # bedrock-runtime (`us.` / `global.` ids), which Converse serves on both
-# surfaces. Live Converse behavior, all four models:
+# surfaces. Live Converse behavior, all five models (GPT-6.1 Terra re-probed
+# 2026-11-13; it also refuses effort "minimal" and, like the others,
+# stopSequences, which has no flag and reaches the client as Bedrock's 400):
 # - temperature / topP → 400 "This model doesn't support the temperature
 #   field", hence drop_sampling_params;
 # - additionalModelRequestFields.reasoning.effort is the effort knob
@@ -556,6 +585,12 @@ available_regions = ["us-east-1", "us-east-2", "us-west-2"]
 # caching still applies), so there is deliberately no cache_min_tokens.
 [[model]]
 match = "openai.gpt-6.1-sol"
+capabilities = ["drop_sampling_params", "openai_text_format"]
+[model.params]
+reasoning_path = "openai_effort"
+
+[[model]]
+match = "openai.gpt-6.1-terra"
 capabilities = ["drop_sampling_params", "openai_text_format"]
 [model.params]
 reasoning_path = "openai_effort"

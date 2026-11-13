@@ -48,7 +48,7 @@ OpenAI's models on Bedrock are called by short names:
 | -------------------------------------------------- | ------------------------------------ | ---------------- | --------- |
 | `gpt-5.4`, `gpt-5.5`                               | Bedrock's OpenAI-compatible endpoint | Yes              | Yes       |
 | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`     | Bedrock's OpenAI-compatible endpoint | Yes              | Yes       |
-| `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, `gpt-6-astra` | Bedrock Converse, global profile | Yes              | Yes       |
+| `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-6-astra` | Bedrock Converse, global profile | Yes              | Yes       |
 | `gpt-oss-120b`, `gpt-oss-20b`                      | Bedrock's OpenAI-compatible endpoint | Yes              | No        |
 
 - **GPT-5.x and gpt-oss** go to Bedrock's OpenAI-compatible endpoint, which needs a Bedrock API key

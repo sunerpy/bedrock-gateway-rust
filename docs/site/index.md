@@ -168,7 +168,7 @@ home:
     rows:
       - cells: [Claude, global.anthropic.claude-sonnet-5-5 us.anthropic.claude-opus-5-5 global.anthropic.claude-fable-5-1, Bedrock Converse]
       - cells: [GPT-5.x, gpt-5.4 gpt-5.5 gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna, OpenAI-compatible endpoint]
-      - cells: [GPT-6.x, gpt-6.1-sol gpt-6-sol gpt-6-luna gpt-6-astra, Bedrock Converse]
+      - cells: [GPT-6.x, gpt-6.1-sol gpt-6.1-terra gpt-6-sol gpt-6-luna gpt-6-astra, Bedrock Converse]
       - cells: [gpt-oss, gpt-oss-120b gpt-oss-20b, OpenAI-compatible endpoint]
       - cells: [Amazon Nova, us.amazon.nova-2-lite-v1:0 us.amazon.nova-pro-v1:0, Bedrock Converse]
     code: [1]
