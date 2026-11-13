@@ -627,6 +627,7 @@ fn tool_search_flag_matches_the_claude_compatibility_list() {
         vec![
             "claude-fable-5",
             "claude-fable-5-1",
+            "claude-fable-5-2",
             "claude-haiku-4-5",
             "claude-haiku-5-5",
             "claude-mythos-5",
@@ -645,4 +646,51 @@ fn tool_search_flag_matches_the_claude_compatibility_list() {
     );
     let default = cfg.entry_for_match("default").expect("default entry");
     assert_eq!(default.params.default_max_tokens, Some(32000));
+}
+
+#[test]
+fn claude_fable_5_2_and_gpt_6_1_terra_entries() {
+    // Live 2026-11-13 (us-east-2). Fable 5.2 must precede `claude-fable-5`,
+    // whose params would otherwise win by first substring match.
+    let cfg = load_project_config();
+    let pos = |m: &str| {
+        cfg.models
+            .iter()
+            .position(|e| e.match_pattern == m)
+            .unwrap_or_else(|| panic!("{m} entry must exist"))
+    };
+    assert!(pos("claude-fable-5-2") < pos("claude-fable-5"));
+    let fable = cfg.entry_for_match("claude-fable-5-2").unwrap();
+    let caps: HashSet<Capability> = fable.capabilities.iter().copied().collect();
+    let expected: HashSet<Capability> = [
+        Capability::NoAssistantPrefill,
+        Capability::AdaptiveThinking,
+        Capability::DropSamplingParams,
+        Capability::CacheTtl1h,
+        Capability::ToolSearch,
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(caps, expected);
+    assert_eq!(fable.params.cache_min_tokens, Some(512));
+    assert_eq!(
+        fable.params.reasoning_path,
+        Some(ReasoningPath::AdaptiveThinking)
+    );
+
+    let terra = cfg.entry_for_match("openai.gpt-6.1-terra").unwrap();
+    let caps: HashSet<Capability> = terra.capabilities.iter().copied().collect();
+    let expected: HashSet<Capability> =
+        [Capability::DropSamplingParams, Capability::OpenaiTextFormat]
+            .into_iter()
+            .collect();
+    assert_eq!(caps, expected);
+    assert_eq!(
+        terra.params.reasoning_path,
+        Some(ReasoningPath::OpenaiEffort)
+    );
+    assert!(cfg
+        .aliases
+        .iter()
+        .any(|a| a.from == "gpt-6.1-terra" && a.to == "global.openai.gpt-6.1-terra"));
 }

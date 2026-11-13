@@ -101,6 +101,7 @@ pub fn supports_caching(model: &str, caps: &dyn ModelCapabilities) -> bool {
 | Claude Haiku 5.5      | anthropic.claude-haiku-5-5                | 512              | 是     | `claude-haiku-5-5`         |
 | Claude Sonnet 5.5     | anthropic.claude-sonnet-5-5               | 512              | 是     | `claude-sonnet-5-5`        |
 | Claude Opus 5.5       | anthropic.claude-opus-5-5                 | 512              | 是     | `claude-opus-5-5`          |
+| Claude Fable 5.2      | anthropic.claude-fable-5-2                | 512              | 是     | `claude-fable-5-2`         |
 | Claude Fable 5.1      | anthropic.claude-fable-5-1                | 512              | 是     | `claude-fable-5-1`         |
 | Claude Fable 5        | anthropic.claude-fable-5                  | 512              | 是     | `claude-fable-5`           |
 | Claude Mythos 5.1     | anthropic.claude-mythos-5-1（Gated）      | 512              | 是     | `claude-mythos-5-1`        |
@@ -126,6 +127,7 @@ pub fn supports_caching(model: &str, caps: &dyn ModelCapabilities) -> bool {
 | Claude Haiku 5.5     | anthropic.claude-haiku-5-5                | 512                   | 4               |
 | Claude Sonnet 5.5    | anthropic.claude-sonnet-5-5               | 512                   | 4               |
 | Claude Opus 5.5      | anthropic.claude-opus-5-5                 | 512                   | 4               |
+| Claude Fable 5.2     | anthropic.claude-fable-5-2                | 512                   | 4               |
 | Claude Fable 5.1     | anthropic.claude-fable-5-1                | 512                   | 4               |
 | Claude Fable 5       | anthropic.claude-fable-5                  | 512                   | 4               |
 | Claude Opus 5        | anthropic.claude-opus-5                   | 512                   | 4               |
@@ -263,7 +265,7 @@ high / xhigh / max -> budget = effective_max - 1
 | `budget_tokens`     | claude-sonnet-4-x                                              | `reasoning_config = {type: "enabled", budget_tokens: N}`                      |
 | `adaptive_thinking` | claude-opus-4-6/4-7/4-8/5/5-5、claude-sonnet-5/5-5、claude-haiku-5-5、claude-fable-5/5-1 | `thinking = {type: "adaptive", display: "summarized"} + output_config.effort` |
 | `deepseek_string`   | deepseek.v3                                                    | `reasoning_config = "low"/"medium"/"high"`                                    |
-| `openai_effort`     | openai.gpt-6.1-sol / gpt-6-sol / gpt-6-luna / gpt-6-astra      | `reasoning = {effort: "<effort>"}`（原样透传，模型不支持的值由上游 400）      |
+| `openai_effort`     | openai.gpt-6.1-sol / gpt-6.1-terra / gpt-6-sol / gpt-6-luna / gpt-6-astra      | `reasoning = {effort: "<effort>"}`（原样透传，模型不支持的值由上游 400）      |
 | `none`              | 无推理能力模型                                                 | 无（reasoning_effort 被忽略）                                                 |
 
 > **Fable 5.1 审视补充（两项均确认无需改代码）：**

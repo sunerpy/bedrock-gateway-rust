@@ -35,7 +35,7 @@ Bedrock 上的 OpenAI 模型使用简称调用：
 | ------------------------------------------------------- | ---------------------------------- | ---------------- | --------- |
 | `gpt-5.4`、`gpt-5.5`                                    | Bedrock 的 OpenAI 兼容端点         | 支持             | 支持      |
 | `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`          | Bedrock 的 OpenAI 兼容端点         | 支持             | 支持      |
-| `gpt-6.1-sol`、`gpt-6-sol`、`gpt-6-luna`、`gpt-6-astra` | Bedrock Converse，全球推理配置文件 | 支持             | 支持      |
+| `gpt-6.1-sol`、`gpt-6.1-terra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-6-astra` | Bedrock Converse，全球推理配置文件 | 支持             | 支持      |
 | `gpt-oss-120b`、`gpt-oss-20b`                           | Bedrock 的 OpenAI 兼容端点         | 支持             | 不支持    |
 
 - **GPT-5.x 和 gpt-oss** 发往 Bedrock 的 OpenAI 兼容端点。这个端点需要 Bedrock API 密钥（`AWS_BEARER_TOKEN_BEDROCK`），并且只在少数区域可用：`us-east-1`、`us-east-2` 和 `us-west-2`，具体取决于模型。在其他区域，网关返回 HTTP 400。在 Chat Completions 上，网关把 GPT-5.x 的请求转换为 Responses API 请求，再把回答转换回来，推理摘要出现在 `<think>` 标签中。
