@@ -64,6 +64,13 @@ pub enum Capability {
     /// via this flag — never a model-name check in code.
     #[serde(rename = "cache_ttl_1h")]
     CacheTtl1h,
+    /// This model takes client-executed tool search on the Responses surface:
+    /// a request carrying `{"type":"tool_search","execution":"client"}` or
+    /// `tool_search_call` / `tool_search_output` items is sent as an Anthropic
+    /// Messages body over `InvokeModel` (searched tools declared with
+    /// `defer_loading`, results as `tool_reference` blocks), because Converse
+    /// has no field for either. Requests without tool search stay on Converse.
+    ToolSearch,
 }
 
 /// The strategy used to express reasoning/extended-thinking to Bedrock.
@@ -147,6 +154,10 @@ pub struct ModelParams {
     /// (Anthropic rejects `budget_tokens < 1024` with HTTP 400). Defaults to
     /// 1024 via the `default` entry when an entry does not override it.
     pub min_budget_tokens: Option<u32>,
+    /// `max_tokens` sent when the request names no `max_output_tokens` and the
+    /// upstream API requires one (the Anthropic Messages body on InvokeModel;
+    /// Converse may omit it). Falls back to the `default` entry.
+    pub default_max_tokens: Option<u32>,
     /// The reasoning strategy for this model.
     pub reasoning_path: Option<ReasoningPath>,
     /// Which backend serves this model's `/responses` requests. `None` means the

@@ -1,0 +1,35 @@
+[
+  {
+    "type": "response.created",
+    "response": {
+      "id": "resp_1"
+    }
+  },
+  {
+    "type": "response.output_item.done",
+    "item": {
+      "type": "tool_search_call",
+      "id": "ts_1",
+      "call_id": "tscall_1",
+      "execution": "client",
+      "status": "completed",
+      "arguments": {
+        "query": "ticket",
+        "limit": 5
+      }
+    }
+  },
+  {
+    "type": "response.completed",
+    "response": {
+      "id": "resp_1",
+      "usage": {
+        "input_tokens": 1,
+        "input_tokens_details": null,
+        "output_tokens": 1,
+        "output_tokens_details": null,
+        "total_tokens": 2
+      }
+    }
+  }
+]

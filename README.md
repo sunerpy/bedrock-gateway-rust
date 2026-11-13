@@ -231,6 +231,7 @@ Prefer fetching `API_KEY` from a secrets store. Priority order:
 | `ENABLE_CROSS_REGION_INFERENCE`         | `true`   | Transparently route cross-region inference profiles          |
 | `ENABLE_APPLICATION_INFERENCE_PROFILES` | `true`   | Surface inference profile metadata in `GET /models`          |
 | `ENABLE_PROMPT_CACHING`                 | `true`   | Auto-inject cache points for Claude and Nova models          |
+| `DISABLE_TOOL_SEARCH`                   | `false`  | Turn off the `/responses` tool-search lane: client-executed `tool_search` on Claude models goes to InvokeModel with deferred tools; when `true` it stays on Converse, where `tool_search` is dropped and search items return 400 |
 | `CONFIG_DIR`                            | `config` | External config directory path (overrides embedded defaults) |
 
 **Server**

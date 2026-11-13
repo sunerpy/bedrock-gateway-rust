@@ -66,6 +66,19 @@
 #                               card lists 1h TTL support: the Claude 4.5-gen
 #                               family (Sonnet/Haiku/Opus 4-5), Sonnet 5, and
 #                               Fable 5 / Fable 5.1.
+#   tool_search               – this model takes client-executed tool search on
+#                               /responses: a request carrying
+#                               {"type":"tool_search","execution":"client"} or
+#                               tool_search_call / tool_search_output items goes
+#                               to InvokeModel as an Anthropic Messages body
+#                               (searched tools declared with defer_loading,
+#                               search results as tool_reference blocks), since
+#                               Converse has no field for either. Every other
+#                               request stays on Converse. Set on the models the
+#                               Claude tool-search page lists as compatible
+#                               (Sonnet/Haiku/Opus 4.5 and later, Fable/Mythos 5
+#                               and 5.1). DISABLE_TOOL_SEARCH=true turns the
+#                               InvokeModel lane off for every model.
 #
 # reasoning_path — selects the shape of the reasoning config the gateway emits:
 #   adaptive_thinking – additionalModelRequestFields.thinking=
@@ -158,6 +171,7 @@ capabilities = []
 
 [model.params]
 min_budget_tokens = 1024 # Anthropic hard floor: thinking budget < 1024 → HTTP 400
+default_max_tokens = 32000 # max_tokens sent when a request names no max_output_tokens and the upstream requires one (InvokeModel Messages); every tool_search model accepts >= 64K output
 
 [model.params.budget_ratios]
 low = 0.3 # 30% of max_tokens
@@ -171,7 +185,7 @@ high = -1.0 # sentinel meaning "max_tokens - 1" (the maximum thinking budget)
 
 [[model]]
 match = "claude-sonnet-4-5"
-capabilities = ["temperature_topp_conflict", "cache_ttl_1h"]
+capabilities = ["temperature_topp_conflict", "cache_ttl_1h", "tool_search"]
 # Non-adaptive Claude: reasoning uses the budget_tokens form (see budget_ratios).
 [model.params]
 cache_min_tokens = 1024 # AWS prompt-caching table row `anthropic.claude-sonnet-4-5-20250929-v1:0`: 1,024 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
@@ -183,6 +197,7 @@ capabilities = [
   "temperature_topp_conflict",
   "context_1m_beta",
   "cache_ttl_1h",
+  "tool_search",
 ]
 [model.params]
 cache_min_tokens = 1024 # AWS prompt-caching table row `anthropic.claude-sonnet-4-6`: 1,024 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
@@ -190,7 +205,7 @@ reasoning_path = "budget_tokens"
 
 [[model]]
 match = "claude-haiku-4-5"
-capabilities = ["temperature_topp_conflict", "cache_ttl_1h"]
+capabilities = ["temperature_topp_conflict", "cache_ttl_1h", "tool_search"]
 [model.params]
 cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Haiku
 reasoning_path = "budget_tokens"
@@ -206,6 +221,7 @@ capabilities = [
   "adaptive_thinking",
   "drop_sampling_params",
   "cache_ttl_1h",
+  "tool_search",
 ]
 [model.params]
 cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-haiku-5-5`: 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
@@ -213,7 +229,7 @@ reasoning_path = "adaptive_thinking"
 
 [[model]]
 match = "claude-opus-4-5"
-capabilities = ["temperature_topp_conflict", "cache_ttl_1h"]
+capabilities = ["temperature_topp_conflict", "cache_ttl_1h", "tool_search"]
 [model.params]
 cache_min_tokens = 4096 # Minimum cacheable prefix tokens; AWS-doc floor for 4.5-gen Opus
 reasoning_path = "budget_tokens"
@@ -225,6 +241,7 @@ capabilities = [
   "no_assistant_prefill",
   "adaptive_thinking",
   "cache_ttl_1h",
+  "tool_search",
 ]
 # Adaptive-thinking Claude: reasoning uses the thinking.type=adaptive form.
 [model.params]
@@ -238,6 +255,7 @@ capabilities = [
   "adaptive_thinking",
   "drop_sampling_params",
   "cache_ttl_1h",
+  "tool_search",
 ]
 # Opus 4.7 and later deprecate temperature/top_p (HTTP 400 on non-default values).
 [model.params]
@@ -251,6 +269,7 @@ capabilities = [
   "adaptive_thinking",
   "drop_sampling_params",
   "cache_ttl_1h",
+  "tool_search",
 ]
 [model.params]
 cache_min_tokens = 1024 # AWS prompt-caching table row `anthropic.claude-opus-4-8`: 1,024 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
@@ -270,6 +289,7 @@ capabilities = [
   "adaptive_thinking",
   "drop_sampling_params",
   "cache_ttl_1h",
+  "tool_search",
 ]
 [model.params]
 cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-opus-5-5`: 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
@@ -282,6 +302,7 @@ capabilities = [
   "adaptive_thinking",
   "drop_sampling_params",
   "cache_ttl_1h",
+  "tool_search",
 ]
 [model.params]
 cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-opus-5`: 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
@@ -300,6 +321,7 @@ capabilities = [
   "adaptive_thinking",
   "drop_sampling_params",
   "cache_ttl_1h",
+  "tool_search",
 ]
 [model.params]
 cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-sonnet-5-5`: 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
@@ -309,7 +331,7 @@ reasoning_path = "adaptive_thinking"
 # Live: Sonnet 5 rejects a conversation ending on an assistant turn ("This
 # model does not support assistant message prefill"), hence no_assistant_prefill.
 match = "claude-sonnet-5"
-capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "cache_ttl_1h"]
+capabilities = ["no_assistant_prefill", "adaptive_thinking", "drop_sampling_params", "cache_ttl_1h", "tool_search"]
 [model.params]
 cache_min_tokens = 1024 # AWS prompt-caching table row `anthropic.claude-sonnet-5`: 1,024 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
 reasoning_path = "adaptive_thinking"
@@ -325,6 +347,7 @@ capabilities = [
   "adaptive_thinking",
   "drop_sampling_params",
   "cache_ttl_1h",
+  "tool_search",
 ]
 [model.params]
 cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-mythos-5-1` (Gated): 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
@@ -336,6 +359,7 @@ capabilities = [
   "adaptive_thinking",
   "drop_sampling_params",
   "cache_ttl_1h",
+  "tool_search",
 ]
 [model.params]
 cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-mythos-5` (Gated): 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
@@ -373,6 +397,7 @@ capabilities = [
   "adaptive_thinking",
   "drop_sampling_params",
   "cache_ttl_1h",
+  "tool_search",
 ]
 [model.params]
 cache_min_tokens = 512 # AWS model card + prompt-caching table: 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
@@ -388,6 +413,7 @@ capabilities = [
   "adaptive_thinking",
   "drop_sampling_params",
   "cache_ttl_1h",
+  "tool_search",
 ]
 [model.params]
 cache_min_tokens = 512 # AWS prompt-caching table: 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL

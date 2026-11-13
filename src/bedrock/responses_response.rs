@@ -265,6 +265,27 @@ pub(crate) fn tool_output_item(
         };
     }
 
+    // Client-executed tool search: `arguments` is the input OBJECT (not a JSON
+    // string), and the item is always `completed` — only a call that is safe to
+    // execute reaches `output_item.done` / the final output.
+    if binding.kind == ResponsesToolKind::ToolSearch {
+        let mut fields = HashMap::new();
+        fields.insert("id".to_string(), json!(format!("ts_{call_id}")));
+        fields.insert("call_id".to_string(), json!(call_id));
+        fields.insert("execution".to_string(), json!("client"));
+        fields.insert("status".to_string(), json!("completed"));
+        let arguments = if input.is_object() {
+            input.clone()
+        } else {
+            json!({})
+        };
+        fields.insert("arguments".to_string(), arguments);
+        return ResponseOutputItem::Other {
+            item_type: "tool_search_call".to_string(),
+            fields,
+        };
+    }
+
     let (item_type, id_prefix, payload_key, payload) = match binding.kind {
         ResponsesToolKind::Custom => (
             "custom_tool_call",
@@ -294,7 +315,7 @@ pub(crate) fn tool_output_item(
                 .cloned()
                 .unwrap_or_else(|| input.clone()),
         ),
-        ResponsesToolKind::Function => unreachable!(),
+        ResponsesToolKind::Function | ResponsesToolKind::ToolSearch => unreachable!(),
     };
     let mut fields = HashMap::new();
     fields.insert("id".to_string(), json!(format!("{id_prefix}_{call_id}")));

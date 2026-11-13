@@ -231,6 +231,7 @@ aws cloudformation deploy \
 | `ENABLE_CROSS_REGION_INFERENCE`         | `true`   | 透明支持跨区域 inference profile          |
 | `ENABLE_APPLICATION_INFERENCE_PROFILES` | `true`   | 在 `GET /models` 中展示推理配置文件元数据 |
 | `ENABLE_PROMPT_CACHING`                 | `true`   | 为 Claude 和 Nova 模型自动注入缓存点      |
+| `DISABLE_TOOL_SEARCH`                   | `false`  | 关闭 `/responses` 的工具搜索通道：Claude 模型上客户端执行的 `tool_search` 走 InvokeModel 并把搜到的工具声明为延迟工具；设为 `true` 时仍走 Converse，`tool_search` 被丢弃，搜索项返回 400 |
 | `CONFIG_DIR`                            | `config` | 外部 config 目录路径（覆盖嵌入默认值）    |
 
 **服务**

@@ -1,0 +1,377 @@
+{
+  "model": "gpt-5.5",
+  "instructions": "<zuno base instructions, omitted>",
+  "input": [
+    {
+      "type": "message",
+      "id": "msg_01a1d2b4-1bf8-7ce3-8f70-7efb34183984",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<skills_instructions>…</skills_instructions> (omitted)"
+        },
+        {
+          "type": "input_text",
+          "text": "<permissions instructions>…</permissions instructions> (omitted)"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_01a1d2b4-1bf8-7ce3-8f70-7f08358f6bdf",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<environment_context>…</environment_context> (omitted)"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_01a1d2b4-1c06-7661-90ec-8926550e86a2",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "find the ticket tools and use one"
+        }
+      ]
+    },
+    {
+      "type": "tool_search_call",
+      "id": "ts_1",
+      "call_id": "tscall_1",
+      "status": "completed",
+      "execution": "client",
+      "arguments": {
+        "query": "ticket",
+        "limit": 5
+      }
+    },
+    {
+      "type": "tool_search_output",
+      "id": "tso_01a1d2b4-1c2f-7891-a7eb-2835711a7452",
+      "call_id": "tscall_1",
+      "status": "completed",
+      "execution": "client",
+      "tools": [
+        {
+          "type": "namespace",
+          "name": "mcp__ze_tools_deferred",
+          "description": "Tools in the mcp__ze_tools_deferred namespace.",
+          "tools": [
+            {
+              "type": "function",
+              "name": "ticket_search",
+              "description": "Search tickets by keyword.",
+              "strict": false,
+              "defer_loading": true,
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "type": "function",
+              "name": "ticket_get",
+              "description": "Get one ticket by id.",
+              "strict": false,
+              "defer_loading": true,
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "function_call",
+      "id": "fc_2",
+      "name": "ticket_search",
+      "namespace": "mcp__ze_tools_deferred",
+      "arguments": "{}",
+      "call_id": "call_2"
+    },
+    {
+      "type": "function_call_output",
+      "id": "fco_01a1d2b4-1c5f-7ad0-980f-02bb289b32f0",
+      "call_id": "call_2",
+      "output": [
+        {
+          "type": "input_text",
+          "text": "Wall time: 0.0023 seconds\nOutput:"
+        },
+        {
+          "type": "input_text",
+          "text": "called ticket_search"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "list_mcp_resources",
+      "description": "Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "description": "Opaque cursor from a previous list_mcp_resources call; omit for the first page."
+          },
+          "server": {
+            "type": "string",
+            "description": "MCP server name. Omit to list resources from every configured server."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "list_mcp_resource_templates",
+      "description": "Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "description": "Opaque cursor from a previous list_mcp_resource_templates call; omit for the first page."
+          },
+          "server": {
+            "type": "string",
+            "description": "MCP server name. Omit to list resource templates from every configured server."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "read_mcp_resource",
+      "description": "Read a specific resource from an MCP server given the server name and resource URI.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string",
+            "description": "MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources."
+          },
+          "uri": {
+            "type": "string",
+            "description": "Resource URI to read. Must be one of the URIs returned by list_mcp_resources."
+          }
+        },
+        "required": [
+          "server",
+          "uri"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "request_user_input",
+      "description": "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "questions": {
+            "type": "array",
+            "description": "Questions to show the user. Prefer 1 and do not exceed 3",
+            "items": {
+              "type": "object",
+              "properties": {
+                "header": {
+                  "type": "string",
+                  "description": "Short header label shown in the UI (12 or fewer chars)."
+                },
+                "id": {
+                  "type": "string",
+                  "description": "Stable identifier for mapping answers (snake_case)."
+                },
+                "options": {
+                  "type": "array",
+                  "description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "description": {
+                        "type": "string",
+                        "description": "One short sentence explaining impact/tradeoff if selected."
+                      },
+                      "label": {
+                        "type": "string",
+                        "description": "User-facing label (1-5 words)."
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "question": {
+                  "type": "string",
+                  "description": "Single-sentence prompt shown to the user."
+                }
+              },
+              "required": [
+                "id",
+                "header",
+                "question",
+                "options"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "questions"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "namespace",
+      "name": "mcp__ze_tools",
+      "description": "Tools in the mcp__ze_tools namespace.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "direct_alpha",
+          "description": "Alpha direct tool.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "type": "function",
+          "name": "direct_beta",
+          "description": "Beta direct tool.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "get_goal",
+      "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "create_goal",
+      "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "objective": {
+            "type": "string",
+            "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete."
+          },
+          "token_budget": {
+            "type": "integer",
+            "description": "Positive token budget for the new goal. Omit unless explicitly requested."
+          }
+        },
+        "required": [
+          "objective"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "update_goal",
+      "description": "Update the existing goal.\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.",
+            "enum": [
+              "complete",
+              "blocked",
+              "paused"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "tool_search",
+      "execution": "client",
+      "description": "# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\n\nYou have access to tools from the following sources:\n- Multi-agent tools: Spawn and manage sub-agents.\n- ze_tools_deferred\nSome of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "number",
+            "description": "Maximum number of tools to return. Defaults to 8."
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query for deferred tools."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "store": false,
+  "stream": true,
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "prompt_cache_key": "<thread-id>",
+  "text": {
+    "verbosity": "low"
+  },
+  "client_metadata": {
+    "session_id": "<thread-id>",
+    "x-codex-window-id": "<thread-id>:0",
+    "root_turn_id": "<turn-id>",
+    "x-codex-turn-metadata": "<turn metadata as a JSON string, omitted>",
+    "turn_id": "<turn-id>",
+    "thread_id": "<thread-id>",
+    "x-codex-installation-id": "<installation-id>"
+  }
+}

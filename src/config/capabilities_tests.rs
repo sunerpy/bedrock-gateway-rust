@@ -41,6 +41,7 @@ fn test_opus_4_8_capabilities() {
         Capability::AdaptiveThinking,
         Capability::DropSamplingParams,
         Capability::CacheTtl1h,
+        Capability::ToolSearch,
     ]
     .into_iter()
     .collect();
@@ -63,6 +64,7 @@ fn test_haiku_5_5_capabilities() {
         Capability::AdaptiveThinking,
         Capability::DropSamplingParams,
         Capability::CacheTtl1h,
+        Capability::ToolSearch,
     ]
     .into_iter()
     .collect();
@@ -100,10 +102,13 @@ fn test_sonnet_4_5_capabilities() {
         .entry_for_match("claude-sonnet-4-5")
         .expect("claude-sonnet-4-5 entry must exist");
     let caps: HashSet<Capability> = entry.capabilities.iter().copied().collect();
-    let expected: HashSet<Capability> =
-        [Capability::TemperatureToppConflict, Capability::CacheTtl1h]
-            .into_iter()
-            .collect();
+    let expected: HashSet<Capability> = [
+        Capability::TemperatureToppConflict,
+        Capability::CacheTtl1h,
+        Capability::ToolSearch,
+    ]
+    .into_iter()
+    .collect();
     assert_eq!(caps, expected);
 }
 
@@ -141,6 +146,7 @@ fn test_sonnet_5_capabilities_and_reasoning_path() {
         Capability::AdaptiveThinking,
         Capability::DropSamplingParams,
         Capability::CacheTtl1h,
+        Capability::ToolSearch,
     ]
     .into_iter()
     .collect();
@@ -168,6 +174,7 @@ fn test_fable_5_1_capabilities_and_cache_floor() {
         Capability::AdaptiveThinking,
         Capability::DropSamplingParams,
         Capability::CacheTtl1h,
+        Capability::ToolSearch,
     ]
     .into_iter()
     .collect();
@@ -524,6 +531,7 @@ fn claude_5_5_entries_are_declared_before_their_5_parents() {
             Capability::AdaptiveThinking,
             Capability::DropSamplingParams,
             Capability::CacheTtl1h,
+            Capability::ToolSearch,
         ]
         .into_iter()
         .collect();
@@ -599,4 +607,42 @@ fn openai_text_format_and_openai_effort_parse() {
         entry.params.reasoning_path,
         Some(ReasoningPath::OpenaiEffort)
     );
+}
+
+#[test]
+fn tool_search_flag_matches_the_claude_compatibility_list() {
+    // Claude tool-search page, Model compatibility (2026-11-13): Sonnet/Haiku/
+    // Opus 4.5 and later, Fable/Mythos 5 and 5.1. Mythos Preview, the family
+    // catch-all and every non-Claude entry stay on Converse.
+    let cfg = load_project_config();
+    let mut flagged: Vec<&str> = cfg
+        .models
+        .iter()
+        .filter(|e| e.has_capability(Capability::ToolSearch))
+        .map(|e| e.match_pattern.as_str())
+        .collect();
+    flagged.sort_unstable();
+    assert_eq!(
+        flagged,
+        vec![
+            "claude-fable-5",
+            "claude-fable-5-1",
+            "claude-haiku-4-5",
+            "claude-haiku-5-5",
+            "claude-mythos-5",
+            "claude-mythos-5-1",
+            "claude-opus-4-5",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+            "claude-opus-5",
+            "claude-opus-5-5",
+            "claude-sonnet-4-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+            "claude-sonnet-5-5",
+        ]
+    );
+    let default = cfg.entry_for_match("default").expect("default entry");
+    assert_eq!(default.params.default_max_tokens, Some(32000));
 }

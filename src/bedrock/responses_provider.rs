@@ -27,8 +27,13 @@ use aws_sdk_bedrockruntime::operation::converse::{ConverseError, ConverseOutput}
 use aws_sdk_bedrockruntime::operation::converse_stream::{
     ConverseStreamError, ConverseStreamOutput,
 };
+use aws_sdk_bedrockruntime::operation::invoke_model_with_response_stream::InvokeModelWithResponseStreamOutput;
+use aws_sdk_bedrockruntime::primitives::Blob;
 use serde_json::{json, Map, Value};
 
+use crate::bedrock::anthropic_messages::{
+    build_messages_body, messages_response_to_converse_output, MessagesBodyInput,
+};
 use crate::bedrock::cache_support::{send_with_cache_strip_retry, CacheSupportRegistry, SendError};
 use crate::bedrock::capabilities::normalize_for_match;
 use crate::bedrock::client::{region_config_override, BedrockClients};
@@ -38,11 +43,12 @@ use crate::bedrock::provider::{
 };
 use crate::bedrock::responses_response::from_converse_output_to_responses_with_tools;
 use crate::bedrock::responses_stream::{
-    converse_stream_to_openai_responses, ResponsesStreamRuntime,
+    converse_stream_to_openai_responses, invoke_stream_to_openai_responses, ResponsesStreamRuntime,
 };
 use crate::bedrock::responses_translate::{
-    build_responses_tools, reasoning_outcome, responses_output_format, to_responses_converse_input,
-    ResponsesToolRegistry,
+    build_responses_tools_with, collect_searched_tools, reasoning_outcome,
+    request_uses_tool_search, responses_output_format, to_responses_converse_input_with,
+    ResponsesToolRegistry, SearchedTool,
 };
 use crate::bedrock::translate::{merge_strict_text_format, ImageResolver};
 use crate::bedrock::{cache, provider, tools};
@@ -51,7 +57,7 @@ use crate::domain::{
     ModelCapabilities, NormalizedResponsesRequest, ResponsesProvider, ResponsesStream,
     RouteOverride,
 };
-use crate::error::AppError;
+use crate::error::{from_bedrock_sdk_error, AppError};
 use crate::openai::responses_schema::{ResponsesRequest, ResponsesResponse, ResponsesToolChoice};
 
 /// Concrete [`ResponsesProvider`] backed by Amazon Bedrock Converse.
@@ -110,16 +116,28 @@ impl BedrockResponsesProvider {
     /// `cache_points_injected` is returned `false` — the same no-cachePoint
     /// assembly the master-switch-off path produces (a re-assemble, not a
     /// surgical edit of a built SDK struct).
+    ///
+    /// `tool_search` selects the tool-search lane: the client `tool_search`
+    /// tool and the search input items are translated (see
+    /// [`to_responses_converse_input_with`]) and the tools loaded by
+    /// `tool_search_output` items are collected for the Messages body.
     async fn assemble(
         &self,
         req: &ResponsesRequest,
         resolved: &str,
         force_caching_off: bool,
+        tool_search: bool,
     ) -> Result<AssembledConverse, AppError> {
         let caps = self.caps.as_ref();
 
-        let parsed =
-            to_responses_converse_input(req, resolved, self.image_resolver.as_ref(), caps).await?;
+        let parsed = to_responses_converse_input_with(
+            req,
+            resolved,
+            self.image_resolver.as_ref(),
+            caps,
+            tool_search,
+        )
+        .await?;
         let mut messages = parsed.messages;
         let mut system = parsed.system;
 
@@ -161,9 +179,19 @@ impl BedrockResponsesProvider {
 
         // toolConfig from the Responses flattened-function tools (the rejection
         // matrix in to_responses_converse_input already vetoed built-in tools).
-        let (mut tool_config, tool_registry) = build_responses_tool_config_with_registry(req)?;
+        let (mut tool_config, mut tool_registry) =
+            build_responses_tool_config_with_registry(req, tool_search)?;
+        let searched_tools = if tool_search {
+            collect_searched_tools(req)?
+        } else {
+            Vec::new()
+        };
+        tool_registry.add_searched(&searched_tools);
         if tool_config.is_none() {
             tool_config = tools::synthesize_tool_config_from_messages(&messages);
+            // Searched tools are declared as deferred tools; a placeholder of
+            // the same name would collide with that declaration.
+            drop_synthesized_searched(&mut tool_config, &searched_tools);
         }
 
         // cachePoint decoration: tools → system → messages, one shared budget.
@@ -244,6 +272,7 @@ impl BedrockResponsesProvider {
             tool_config,
             output_config,
             tool_registry,
+            searched_tools,
             cache_points_injected: used > 0,
         })
     }
@@ -383,6 +412,109 @@ impl BedrockResponsesProvider {
         }
     }
 
+    /// Whether this request takes the tool-search lane: the lane is enabled,
+    /// the model declares [`Capability::ToolSearch`], and the request carries a
+    /// client `tool_search` tool or search input items. Every other request
+    /// stays on Converse unchanged.
+    fn uses_tool_search(&self, req: &ResponsesRequest, resolved: &str) -> bool {
+        !self.settings.disable_tool_search
+            && self.caps.has(resolved, Capability::ToolSearch)
+            && request_uses_tool_search(req)
+    }
+
+    /// Serialize the Messages body for an assembled tool-search request.
+    fn messages_body(
+        &self,
+        resolved: &str,
+        assembled: &AssembledConverse,
+    ) -> Result<Vec<u8>, AppError> {
+        let body = build_messages_body(&MessagesBodyInput {
+            messages: &assembled.messages,
+            system: &assembled.system,
+            inference_config: &assembled.inference_config,
+            additional_fields: assembled.additional_fields.as_ref(),
+            tool_config: assembled.tool_config.as_ref(),
+            output_config: assembled.output_config.as_ref(),
+            searched_tools: &assembled.searched_tools,
+            default_max_tokens: self.caps.default_max_tokens(resolved),
+        })?;
+        serde_json::to_vec(&body)
+            .map_err(|e| AppError::Internal(format!("failed to serialize InvokeModel body: {e}")))
+    }
+
+    /// Send the tool-search lane's non-stream `InvokeModel` call. The model id
+    /// and region routing are the Converse path's.
+    ///
+    /// No prompt-cache strip-and-retry here: every cache point on this lane is
+    /// gateway-generated, so a 400 that mentions caching means the mapping is
+    /// wrong, and a silent retry without caching would hide it (and mark the
+    /// model cache-unsupported for the whole process).
+    async fn send_invoke(&self, request_model: &str, body: Vec<u8>) -> Result<Value, AppError> {
+        let callable = self.callable_model_id(request_model);
+        let route = self.regions.route_for(&callable);
+        let model_id = Self::outbound_model_id(&callable, route.as_ref());
+        tracing::debug!(
+            model = %model_id,
+            region = ?route.as_ref().map(|r| &r.region),
+            "invoking bedrock invoke_model (responses tool search)"
+        );
+        let call = self
+            .clients
+            .runtime
+            .invoke_model()
+            .model_id(&model_id)
+            .content_type("application/json")
+            .accept("application/json")
+            .body(Blob::new(body));
+        let output = if let Some(route) = &route {
+            call.customize()
+                .config_override(region_config_override(route.region.clone()))
+                .send()
+                .await
+        } else {
+            call.send().await
+        }
+        .map_err(|e| from_bedrock_sdk_error(&e.into_service_error()))?;
+        serde_json::from_slice(output.body.as_ref()).map_err(|e| {
+            AppError::UpstreamBedrock(format!("InvokeModel returned a non-JSON body: {e}"))
+        })
+    }
+
+    /// Send the tool-search lane's `InvokeModelWithResponseStream` call.
+    /// Validation errors arrive before the stream opens and map to an HTTP
+    /// error, never an SSE body.
+    async fn send_invoke_stream(
+        &self,
+        request_model: &str,
+        body: Vec<u8>,
+    ) -> Result<InvokeModelWithResponseStreamOutput, AppError> {
+        let callable = self.callable_model_id(request_model);
+        let route = self.regions.route_for(&callable);
+        let model_id = Self::outbound_model_id(&callable, route.as_ref());
+        tracing::debug!(
+            model = %model_id,
+            region = ?route.as_ref().map(|r| &r.region),
+            "invoking bedrock invoke_model_with_response_stream (responses tool search)"
+        );
+        let call = self
+            .clients
+            .runtime
+            .invoke_model_with_response_stream()
+            .model_id(&model_id)
+            .content_type("application/json")
+            .accept("application/json")
+            .body(Blob::new(body));
+        if let Some(route) = &route {
+            call.customize()
+                .config_override(region_config_override(route.region.clone()))
+                .send()
+                .await
+        } else {
+            call.send().await
+        }
+        .map_err(|e| from_bedrock_sdk_error(&e.into_service_error()))
+    }
+
     /// Pick the model id sent to Bedrock: a region override's rewritten id when
     /// one matched, else the original `request_model` UNCHANGED (prefix intact).
     /// Never the resolved foundation id — that strips the cross-region prefix and
@@ -414,6 +546,9 @@ struct AssembledConverse {
     /// `outputConfig` from `text.format` (structured output), when requested.
     output_config: Option<Value>,
     tool_registry: ResponsesToolRegistry,
+    /// Tools loaded by `tool_search_output` items (tool-search lane only),
+    /// declared with `defer_loading` in the Messages body.
+    searched_tools: Vec<SearchedTool>,
     /// Whether any `cachePoint` landed across the tools/system/messages zones —
     /// consumed by the cache safety net at the send points (read-gate strip).
     cache_points_injected: bool,
@@ -422,10 +557,15 @@ struct AssembledConverse {
 /// Build Bedrock `toolConfig` together with the reversible Responses mapping.
 /// OpenAI-hosted tools without a Converse equivalent are omitted; supported
 /// client-executed tools retain a reversible output-item mapping.
+///
+/// On the tool-search lane, `tool_choice: "none"` keeps the tools (with a
+/// `none` choice the Messages builder understands): searched tools referenced
+/// by `tool_reference` blocks must stay declared.
 fn build_responses_tool_config_with_registry(
     req: &ResponsesRequest,
+    tool_search: bool,
 ) -> Result<(Option<Value>, ResponsesToolRegistry), AppError> {
-    let (specs, registry) = build_responses_tools(req)?;
+    let (specs, registry) = build_responses_tools_with(req, tool_search)?;
     if specs.is_empty() {
         return Ok((None, registry));
     }
@@ -433,6 +573,12 @@ fn build_responses_tool_config_with_registry(
         &req.tool_choice,
         Some(ResponsesToolChoice::String(choice)) if choice == "none"
     ) {
+        if tool_search {
+            return Ok((
+                Some(json!({ "tools": specs, "toolChoice": { "none": {} } })),
+                registry,
+            ));
+        }
         return Ok((None, registry));
     }
 
@@ -498,9 +644,34 @@ fn build_responses_tool_config_with_registry(
 
 #[cfg(test)]
 fn build_responses_tool_config(req: &ResponsesRequest) -> Option<Value> {
-    build_responses_tool_config_with_registry(req)
+    build_responses_tool_config_with_registry(req, false)
         .ok()
         .and_then(|(config, _)| config)
+}
+
+/// Remove placeholder tool specs (synthesized for a continuation with no
+/// `tools`) that name a searched tool.
+fn drop_synthesized_searched(tool_config: &mut Option<Value>, searched: &[SearchedTool]) {
+    if searched.is_empty() {
+        return;
+    }
+    let Some(tools) = tool_config
+        .as_mut()
+        .and_then(|config| config.get_mut("tools"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    tools.retain(|spec| {
+        let name = spec
+            .pointer("/toolSpec/name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        !searched.iter().any(|tool| tool.bedrock_name == name)
+    });
+    if tools.is_empty() {
+        *tool_config = None;
+    }
 }
 
 /// Generate a `resp_`-prefixed response id (mirrors the chat `chatcmpl-` id
@@ -521,7 +692,22 @@ impl ResponsesProvider for BedrockResponsesProvider {
     ) -> Result<ResponsesResponse, AppError> {
         let resolved = &req.resolved_model;
         let request_model = &req.request.model;
-        let assembled = self.assemble(&req.request, resolved, false).await?;
+
+        if self.uses_tool_search(&req.request, resolved) {
+            let assembled = self.assemble(&req.request, resolved, false, true).await?;
+            let body = self.messages_body(resolved, &assembled)?;
+            let output = self.send_invoke(request_model, body).await?;
+            let converse = messages_response_to_converse_output(&output)?;
+            return from_converse_output_to_responses_with_tools(
+                &converse,
+                &req.request,
+                &req.request.model,
+                &resp_id(),
+                &assembled.tool_registry,
+            );
+        }
+
+        let assembled = self.assemble(&req.request, resolved, false, false).await?;
         let normalized = normalize_for_match(resolved);
 
         let output = send_with_cache_strip_retry(
@@ -531,7 +717,7 @@ impl ResponsesProvider for BedrockResponsesProvider {
             || self.send_converse(request_model, &assembled),
             || async {
                 let retry = self
-                    .assemble(&req.request, resolved, true)
+                    .assemble(&req.request, resolved, true, false)
                     .await
                     .map_err(SendError::App)?;
                 self.send_converse(request_model, &retry).await
@@ -556,7 +742,27 @@ impl ResponsesProvider for BedrockResponsesProvider {
     ) -> Result<ResponsesStream, AppError> {
         let resolved = &req.resolved_model;
         let request_model = &req.request.model;
-        let assembled = self.assemble(&req.request, resolved, false).await?;
+        let runtime = ResponsesStreamRuntime::new(
+            req.request_id.clone(),
+            req.received_at,
+            std::time::Duration::from_secs(self.settings.responses_stream_idle_timeout_secs),
+        );
+
+        if self.uses_tool_search(&req.request, resolved) {
+            let assembled = self.assemble(&req.request, resolved, false, true).await?;
+            let body = self.messages_body(resolved, &assembled)?;
+            let output = self.send_invoke_stream(request_model, body).await?;
+            return Ok(invoke_stream_to_openai_responses(
+                output,
+                req.request.model.clone(),
+                resp_id(),
+                req.request.clone(),
+                assembled.tool_registry,
+                runtime,
+            ));
+        }
+
+        let assembled = self.assemble(&req.request, resolved, false, false).await?;
         let normalized = normalize_for_match(resolved);
 
         let output = send_with_cache_strip_retry(
@@ -566,7 +772,7 @@ impl ResponsesProvider for BedrockResponsesProvider {
             || self.send_converse_stream(request_model, &assembled),
             || async {
                 let retry = self
-                    .assemble(&req.request, resolved, true)
+                    .assemble(&req.request, resolved, true, false)
                     .await
                     .map_err(SendError::App)?;
                 self.send_converse_stream(request_model, &retry).await
@@ -580,11 +786,7 @@ impl ResponsesProvider for BedrockResponsesProvider {
             resp_id(),
             req.request.clone(),
             assembled.tool_registry,
-            ResponsesStreamRuntime::new(
-                req.request_id.clone(),
-                req.received_at,
-                std::time::Duration::from_secs(self.settings.responses_stream_idle_timeout_secs),
-            ),
+            runtime,
         ))
     }
 }

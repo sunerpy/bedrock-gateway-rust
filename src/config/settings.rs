@@ -97,6 +97,15 @@ pub struct AppSettings {
     /// Disable the bedrock-mantle backend and startup validation (default: false).
     pub disable_mantle: bool,
 
+    /// Turn off the Responses tool-search lane (default: false). When false, a
+    /// `/responses` request carrying client-executed `tool_search` on a model
+    /// with the `tool_search` capability goes to InvokeModel as an Anthropic
+    /// Messages body; when true it stays on Converse, where the `tool_search`
+    /// tool is dropped and search input items are rejected. Env:
+    /// `DISABLE_TOOL_SEARCH`.
+    #[serde(default)]
+    pub disable_tool_search: bool,
+
     /// Server bind address (default: "0.0.0.0")
     pub bind_addr: String,
 
@@ -199,6 +208,7 @@ impl AppSettings {
             .set_default("prompt_cache_ttl", "5m")?
             .set_default("chat_reasoning_capsule_enabled", false)?
             .set_default("disable_mantle", false)?
+            .set_default("disable_tool_search", false)?
             .set_default("bind_addr", "0.0.0.0")?
             .set_default("port", 8080)?
             .set_default("log_level", "info")?
@@ -311,6 +321,7 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
             "chat_reasoning_capsule_enabled",
         ),
         ("DISABLE_MANTLE", "disable_mantle"),
+        ("DISABLE_TOOL_SEARCH", "disable_tool_search"),
         ("OTEL_CAPTURE_CONTENT", "otel_capture_content"),
     ] {
         if let Some(value) = non_empty_env(env_name) {
