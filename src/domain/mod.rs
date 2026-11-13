@@ -297,6 +297,12 @@ pub trait ModelCapabilities: Send + Sync {
     /// and the caller applies its own protocol default.
     fn min_budget_tokens(&self, model: &str) -> Option<u32>;
 
+    /// The `max_tokens` to send when a request names none and the upstream
+    /// requires one, if configured (falls back to the `default` entry).
+    fn default_max_tokens(&self, _model: &str) -> Option<u32> {
+        None
+    }
+
     /// Maximum cacheable tokens for prompt caching, if configured.
     fn max_cache_tokens(&self, model: &str) -> Option<u32>;
 

@@ -91,6 +91,7 @@ fn test_settings() -> AppSettings {
         api_key_param_name: None,
         bedrock_api_key: None,
         disable_mantle: false,
+        disable_tool_search: false,
         bind_addr: "0.0.0.0".to_string(),
         port: 8080,
         log_level: "info".to_string(),

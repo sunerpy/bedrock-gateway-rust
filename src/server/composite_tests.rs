@@ -201,6 +201,7 @@ fn settings_with(bedrock_api_key: Option<String>, region: &str) -> AppSettings {
         chat_reasoning_capsule_active_kid: None,
         chat_reasoning_capsule_keys: None,
         disable_mantle: false,
+        disable_tool_search: false,
         api_key: Some("k".to_string()),
         api_key_secret_arn: None,
         api_key_param_name: None,

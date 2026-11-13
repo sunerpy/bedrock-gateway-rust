@@ -161,6 +161,46 @@ The contract is:
 - Provider errors end with `response.failed`.
 - The stream has no Chat-style `[DONE]` sentinel.
 
+### Responses tool search (client-executed)
+
+`{"type":"tool_search","execution":"client"}` and the `tool_search_call` /
+`tool_search_output` input items are standard Responses types (zuno 0.160.1
+sends `tool_search` on every request). Converse has no field for deferred tools
+or for search results, so on a model whose `config/models.toml` entry carries
+`tool_search` (Claude Sonnet/Haiku/Opus 4.5 and later, Fable/Mythos 5 and 5.1)
+such a request goes to `InvokeModel` / `InvokeModelWithResponseStream` with an
+Anthropic Messages body (`anthropic_version: bedrock-2023-05-31`, no beta). Every
+other request, and every request when `DISABLE_TOOL_SEARCH=true`, stays on
+Converse, where `tool_search` is dropped and search items return 400.
+
+| Responses | Messages body |
+| --- | --- |
+| `tool_search` tool | custom tool `tool_search` (description and parameters verbatim) at the client's position, never deferred |
+| `tool_search_call` | assistant `tool_use {id: call_id, name: "tool_search", input: arguments}` |
+| `tool_search_output` | user `tool_result` with one `tool_reference {tool_name}` per loaded tool, or the text `No tools matched the query.` |
+| tools in every `tool_search_output` of the history | appended after the request's tools with `defer_loading: true` and no `cache_control`; namespaced tools as `{namespace}__{name}`, a top-level function as `{name}__{name}` |
+
+The deferred set is recomputed from the replayed history on every request,
+deduplicated by name with the first definition kept, so a tool stays
+byte-identical from the turn it was first referenced. That keeps the prompt
+cache prefix and the preserved-thinking prefix check intact. Cache points
+become `cache_control` on the block they follow; the tools breakpoint therefore
+sits on the last non-deferred tool.
+
+Output: Claude's `tool_search` call becomes `{"type":"tool_search_call",
+"id":"ts_<id>","call_id":"<id>","execution":"client","status":"completed",
+"arguments":{...}}` (arguments stay an object); in a stream it is emitted only as
+`response.output_item.done`, after `message_stop`, with no
+`function_call_arguments` events. A call of a loaded tool is a normal
+`function_call` with the tool's own `name` and `namespace`. A `refusal` stop is
+treated as Converse's `content_filtered` (`response.incomplete`, no executable
+call); other stop reasons keep Converse's meaning.
+
+The gateway answers 400 before calling Bedrock for an upstream-invalid tool
+name, more than 10,000 loaded tools, a loaded tool that collides with a
+declared tool, or loaded tools with no non-deferred tool. This lane never
+strips prompt caching and retries: its cache points are gateway-generated.
+
 ## Request and response coverage
 
 The Converse backend intentionally does not implement OpenAI-hosted execution
@@ -194,6 +234,7 @@ Tests must cover both non-streaming and streaming variants where applicable:
 | Responses reasoning | encrypted envelope round trip, malformed-envelope rejection, and provider signature replay |
 | Responses terminal state | completed, max-token incomplete, content-filter incomplete, failed |
 | Responses state | `store`, `previous_response_id`, and unresolved item references remain non-fatal and stateless |
+| Responses tool search | the zuno golden requests map to the expected Messages bodies; `tool_search_call` done-only stream; loaded-tool `function_call` with namespace; refusal and max-token stops leave the call incomplete |
 | Mantle | byte-exact passthrough and mid-stream truncation behavior |
 | AI SDK fixtures | current `@ai-sdk/openai-compatible` Chat and `@ai-sdk/openai` Responses shapes |
 

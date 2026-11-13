@@ -268,6 +268,7 @@ fn test_settings(
         chat_reasoning_capsule_keys: None,
         bedrock_api_key: None,
         disable_mantle: false,
+        disable_tool_search: false,
         api_key,
         api_key_secret_arn: secret_arn,
         api_key_param_name: param_name,

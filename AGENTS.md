@@ -54,6 +54,8 @@ Two composite dispatchers pick a backend per request, so a model can be mantle o
 
 `chat_backend` and `responses_backend` are independent fields and must never cross-contaminate.
 
+Inside `BedrockResponsesProvider`, a request with client-executed tool search (`tool_search` tool or `tool_search_call` / `tool_search_output` items) on a model with the `tool_search` capability skips Converse and goes to InvokeModel. `bedrock/anthropic_messages.rs` converts the same Converse-shaped assembly into a Messages body and maps Messages output back into Converse shapes for the existing mappers and stream state machine, so a new Converse block kind needs a Messages mapping there too. The searched tools are recomputed from history on every request and must stay byte-identical once referenced (prompt cache and preserved-thinking prefix checks). `DISABLE_TOOL_SEARCH=true` turns the lane off.
+
 ## Hard rules
 
 **Zero hardcoding.** All model knowledge lives in `config/*.toml`; `.rs` holds only the matching algorithm. Protocol constants (`data: `, `[DONE]`, `chat.completion`, `chatcmpl-`, `finish_reason` values) are fine. Model IDs, name-derived capability flags, context-window magic numbers, and any `if model.contains("...")` are not. If you reach for one, add a capability flag to `config/models.toml` and read it via `ModelCapabilities::has(Capability::...)`.
@@ -109,7 +111,7 @@ Startup degrades rather than fails: a mantle-backed model with no `bedrock_api_k
 
 ## Tests
 
-Unit tests are sidecar files, not inline modules: `foo.rs` ends with `#[cfg(test)] #[path = "foo_tests.rs"] mod tests;` and the tests live in `foo_tests.rs`. There are 33 such files. Follow the pattern; do not add an inline `mod tests`.
+Unit tests are sidecar files, not inline modules: `foo.rs` ends with `#[cfg(test)] #[path = "foo_tests.rs"] mod tests;` and the tests live in `foo_tests.rs`. There are 34 such files. Follow the pattern; do not add an inline `mod tests`.
 
 Golden record/replay lives in `tests/golden/`, fixtures under `fixtures/<group>/<case>/` (`translation`, `response`, `streaming`, `responses_*`, `embeddings`). Helpers in `harness.rs`: `assert_semantic_eq`, `assert_semantic_eq_with`, `assert_stream_eq`. Assertions are semantic, not byte-equal, so field ordering can drift. Add a fixture alongside any new translation path. Runs offline in CI with no AWS credentials.
 

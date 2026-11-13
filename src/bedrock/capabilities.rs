@@ -217,6 +217,18 @@ impl ModelCapabilities for ConfigModelCapabilities {
             })
     }
 
+    fn default_max_tokens(&self, model: &str) -> Option<u32> {
+        let resolved = self.resolve_foundation(model);
+        let model_lower = resolved.to_lowercase();
+        self.matching_entry(&model_lower)
+            .and_then(|e| e.params.default_max_tokens)
+            .or_else(|| {
+                self.config
+                    .entry_for_match(DEFAULT_ENTRY_KEY)
+                    .and_then(|e| e.params.default_max_tokens)
+            })
+    }
+
     fn max_cache_tokens(&self, model: &str) -> Option<u32> {
         let resolved = self.resolve_foundation(model);
         let model_lower = resolved.to_lowercase();

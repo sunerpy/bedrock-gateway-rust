@@ -59,6 +59,10 @@ env:
   ENABLE_APPLICATION_INFERENCE_PROFILES: null
   ENABLE_PROMPT_CACHING: null
   DISABLE_MANTLE: null
+  # DISABLE_TOOL_SEARCH: true keeps /responses tool search on Converse (the
+  # tool_search tool is dropped). Unset ⇒ false: Claude models with the
+  # tool_search capability take the InvokeModel tool-search lane.
+  DISABLE_TOOL_SEARCH: null
   # OTEL_CAPTURE_CONTENT: attach prompt/completion text to OTLP spans. Unset ⇒
   # false (spans stay REDACTED — metadata/counts only).
   OTEL_CAPTURE_CONTENT: null

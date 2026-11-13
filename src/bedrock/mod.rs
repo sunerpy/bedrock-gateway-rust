@@ -1,5 +1,7 @@
 //! Amazon Bedrock integration
 
+pub mod anthropic_messages;
+
 pub mod cache;
 
 pub mod cache_support;

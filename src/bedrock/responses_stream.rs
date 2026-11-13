@@ -54,8 +54,10 @@
 
 use async_stream::stream;
 use aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamOutput as ConverseStreamOutputOp;
+use aws_sdk_bedrockruntime::operation::invoke_model_with_response_stream::InvokeModelWithResponseStreamOutput;
 use aws_sdk_bedrockruntime::types::{
     ContentBlockDelta, ContentBlockStart, ConverseStreamOutput, ReasoningContentBlockDelta,
+    ResponseStream,
 };
 use futures::StreamExt;
 use serde_json::{json, Value};
@@ -63,6 +65,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::bedrock::anthropic_messages::MessagesStreamAdapter;
 use crate::bedrock::responses_response::{
     from_converse_output_to_responses_with_tools, tool_output_item,
 };
@@ -383,6 +386,9 @@ impl ResponsesStreamState {
                         closed: false,
                         done_emitted: false,
                     };
+                    // Shell / apply-patch items are announced only once they are
+                    // executable. A tool_search_call is never announced: zuno is
+                    // only known to accept it as `output_item.done`.
                     let delay_added =
                         self.tool_registry
                             .resolve(&accum.name)
@@ -392,6 +398,7 @@ impl ResponsesStreamState {
                                     ResponsesToolKind::LocalShell
                                         | ResponsesToolKind::Shell
                                         | ResponsesToolKind::ApplyPatch
+                                        | ResponsesToolKind::ToolSearch
                                 )
                             });
                     if !delay_added {
@@ -1219,6 +1226,122 @@ pub(crate) fn converse_stream_to_openai_responses(
                         tool_argument_bytes,
                         idle_timeout_secs = idle_timeout.as_secs(),
                         "responses upstream stream idle timeout"
+                    );
+                    let app_err = AppError::UpstreamBedrock(
+                        "Upstream response stream timed out while idle.".to_string(),
+                    );
+                    for ev in state.fail(&app_err) {
+                        yield Ok(ev);
+                    }
+                    break;
+                }
+            }
+        }
+    };
+    s.boxed()
+}
+
+/// Convert an `InvokeModelWithResponseStream` output (the tool-search lane)
+/// into a Responses [`ResponsesStream`].
+///
+/// Each `chunk` carries one Anthropic Messages stream event; the
+/// [`MessagesStreamAdapter`] turns it into the equivalent ConverseStream events
+/// and the SAME [`ResponsesStreamState`] maps those, so the lifecycle, the
+/// usage formula and the tool-call safety rules (no `done` for truncated,
+/// filtered or errored calls) are the Converse path's. A Messages `error`
+/// event, a receiver error or an idle timeout becomes one `response.failed`.
+pub(crate) fn invoke_stream_to_openai_responses(
+    output: InvokeModelWithResponseStreamOutput,
+    model: String,
+    response_id: String,
+    request: ResponsesRequest,
+    tool_registry: ResponsesToolRegistry,
+    runtime: ResponsesStreamRuntime,
+) -> ResponsesStream {
+    let s = stream! {
+        let mut receiver = output.body;
+        let ResponsesStreamRuntime {
+            request_id,
+            start,
+            idle_timeout,
+        } = runtime;
+        let mut state = ResponsesStreamState::new_with_tools(
+            model,
+            response_id,
+            request,
+            request_id,
+            start,
+            tool_registry,
+        );
+        let mut adapter = MessagesStreamAdapter::new();
+        'events: loop {
+            match tokio::time::timeout(idle_timeout, receiver.recv()).await {
+                Ok(Ok(Some(ResponseStream::Chunk(part)))) => {
+                    let bytes = part.bytes().map(|b| b.as_ref()).unwrap_or_default();
+                    match adapter.map_chunk(bytes) {
+                        Ok(events) => {
+                            for event in &events {
+                                for ev in state.map_event(event) {
+                                    yield Ok(ev);
+                                }
+                                if state.finalized {
+                                    break 'events;
+                                }
+                            }
+                        }
+                        Err(app_err) => {
+                            let (tool_blocks, tool_argument_bytes) = state.tool_progress();
+                            tracing::error!(
+                                request_id = %state.request_id,
+                                model = %state.model,
+                                last_bedrock_event = state.last_bedrock_event,
+                                tool_blocks,
+                                tool_argument_bytes,
+                                error = %app_err,
+                                "responses upstream stream failed (invoke_model)"
+                            );
+                            for ev in state.fail(&app_err) {
+                                yield Ok(ev);
+                            }
+                            break;
+                        }
+                    }
+                }
+                // #[non_exhaustive]: future event kinds are inert.
+                Ok(Ok(Some(_))) => {}
+                Ok(Ok(None)) => {
+                    for ev in state.finish() {
+                        yield Ok(ev);
+                    }
+                    break;
+                }
+                Ok(Err(err)) => {
+                    let app_err = from_bedrock_sdk_error(&err.into_service_error());
+                    let (tool_blocks, tool_argument_bytes) = state.tool_progress();
+                    tracing::error!(
+                        request_id = %state.request_id,
+                        model = %state.model,
+                        last_bedrock_event = state.last_bedrock_event,
+                        tool_blocks,
+                        tool_argument_bytes,
+                        error = %app_err,
+                        "responses upstream stream failed (invoke_model)"
+                    );
+                    for ev in state.fail(&app_err) {
+                        yield Ok(ev);
+                    }
+                    break;
+                }
+                Err(_) => {
+                    let (tool_blocks, tool_argument_bytes) = state.tool_progress();
+                    tracing::error!(
+                        request_id = %state.request_id,
+                        model = %state.model,
+                        last_bedrock_event = state.last_bedrock_event,
+                        tool_blocks,
+                        tool_argument_bytes,
+                        idle_timeout_secs = idle_timeout.as_secs(),
+                        "responses upstream stream idle timeout (invoke_model)"
                     );
                     let app_err = AppError::UpstreamBedrock(
                         "Upstream response stream timed out while idle.".to_string(),

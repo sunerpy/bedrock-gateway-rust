@@ -1397,3 +1397,240 @@ fn finish_is_idempotent() {
     assert!(!first.is_empty());
     assert!(st.finish().is_empty(), "second finish must be empty");
 }
+
+// ---------------------------------------------------------------------------
+// Tool-search lane: Anthropic Messages stream events through the adapter
+// ---------------------------------------------------------------------------
+
+/// The zuno golden request-2 tools (`tool_search` plus the searched namespace)
+/// and the registry the tool-search lane builds for them.
+fn tool_search_state() -> ResponsesStreamState {
+    let mut value: Value = serde_json::from_str(include_str!(
+        "../../tests/golden/fixtures/responses_tool_search/request-2.json"
+    ))
+    .unwrap();
+    value["model"] = json!("global.anthropic.claude-sonnet-5-5");
+    let req: ResponsesRequest = serde_json::from_value(value).unwrap();
+    let (_, mut registry) =
+        crate::bedrock::responses_translate::build_responses_tools_with(&req, true).unwrap();
+    registry
+        .add_searched(&crate::bedrock::responses_translate::collect_searched_tools(&req).unwrap());
+    ResponsesStreamState::new_with_tools(
+        "global.anthropic.claude-sonnet-5-5".to_string(),
+        RID.to_string(),
+        req,
+        Arc::from("req-test"),
+        Instant::now(),
+        registry,
+    )
+}
+
+/// Drive Messages events (JSON) through the adapter and the state machine,
+/// the way `invoke_stream_to_openai_responses` does.
+fn drive_messages(st: &mut ResponsesStreamState, events: &[Value]) -> Vec<ResponseStreamEvent> {
+    let mut adapter = MessagesStreamAdapter::new();
+    let mut out = Vec::new();
+    for event in events {
+        let bytes = serde_json::to_vec(event).unwrap();
+        for converse in adapter.map_chunk(&bytes).expect("adapter") {
+            out.extend(st.map_event(&converse));
+        }
+        if st.finalized {
+            return out;
+        }
+    }
+    out.extend(st.finish());
+    out
+}
+
+fn messages_tool_events(name: &str, fragments: &[&str], stop_reason: &str) -> Vec<Value> {
+    let mut events = vec![
+        json!({ "type": "message_start", "message": { "id": "msg_1", "role": "assistant",
+            "usage": { "input_tokens": 12, "cache_read_input_tokens": 900,
+                       "cache_creation_input_tokens": 30, "output_tokens": 1 } } }),
+        json!({ "type": "ping" }),
+        json!({ "type": "content_block_start", "index": 0,
+            "content_block": { "type": "tool_use", "id": "toolu_9", "name": name, "input": {} } }),
+    ];
+    for fragment in fragments {
+        events.push(json!({ "type": "content_block_delta", "index": 0,
+            "delta": { "type": "input_json_delta", "partial_json": fragment } }));
+    }
+    events.push(json!({ "type": "content_block_stop", "index": 0 }));
+    events.push(
+        json!({ "type": "message_delta", "delta": { "stop_reason": stop_reason },
+        "usage": { "output_tokens": 21 } }),
+    );
+    events.push(json!({ "type": "message_stop" }));
+    events
+}
+
+/// Acceptance 5 (stream): a `tool_search` call surfaces only as
+/// `output_item.done` with object arguments, never as a function call.
+#[test]
+fn messages_stream_tool_search_call_is_done_only() {
+    let mut st = tool_search_state();
+    let events = drive_messages(
+        &mut st,
+        &messages_tool_events(
+            "tool_search",
+            &["{\"query\":", "\"ticket\",\"limit\":5}"],
+            "tool_use",
+        ),
+    );
+    let types: Vec<String> = events.iter().map(type_of).collect();
+    assert_eq!(
+        types,
+        vec![
+            "response.created",
+            "response.in_progress",
+            "response.output_item.done",
+            "response.completed",
+        ]
+    );
+    assert_monotonic_from_zero(&events);
+    let done = serde_json::to_value(&events[2]).unwrap();
+    assert_eq!(
+        done["item"],
+        json!({
+            "type": "tool_search_call", "id": "ts_toolu_9", "call_id": "toolu_9",
+            "execution": "client", "status": "completed",
+            "arguments": { "query": "ticket", "limit": 5 }
+        })
+    );
+    let completed = serde_json::to_value(&events[3]).unwrap();
+    assert_eq!(completed["response"]["status"], "completed");
+    assert_eq!(completed["response"]["output"][0], done["item"]);
+    // compute_token_usage over the Messages counts.
+    let usage = &completed["response"]["usage"];
+    assert_eq!(usage["input_tokens"], 942);
+    assert_eq!(usage["input_tokens_details"]["cached_tokens"], 900);
+    assert_eq!(usage["output_tokens"], 21);
+    assert_eq!(usage["total_tokens"], 963);
+}
+
+/// Acceptance 5 (stream): a searched tool streams as the usual function call,
+/// under its own name and namespace.
+#[test]
+fn messages_stream_searched_tool_call_carries_namespace() {
+    let mut st = tool_search_state();
+    let events = drive_messages(
+        &mut st,
+        &messages_tool_events("mcp__ze_tools_deferred__ticket_search", &["{}"], "tool_use"),
+    );
+    let types: Vec<String> = events.iter().map(type_of).collect();
+    assert_eq!(
+        types,
+        vec![
+            "response.created",
+            "response.in_progress",
+            "response.output_item.added",
+            "response.function_call_arguments.delta",
+            "response.function_call_arguments.done",
+            "response.output_item.done",
+            "response.completed",
+        ]
+    );
+    let done = serde_json::to_value(&events[5]).unwrap();
+    assert_eq!(done["item"]["type"], "function_call");
+    assert_eq!(done["item"]["name"], "ticket_search");
+    assert_eq!(done["item"]["namespace"], "mcp__ze_tools_deferred");
+    assert_eq!(done["item"]["arguments"], "{}");
+}
+
+/// Acceptance 5 (stream): `refusal` after a closed tool_search block maps to
+/// Converse's `content_filtered`: no done for the call, response incomplete.
+#[test]
+fn messages_stream_refusal_never_completes_search_call() {
+    let mut st = tool_search_state();
+    let events = drive_messages(
+        &mut st,
+        &messages_tool_events("tool_search", &["{\"query\":\"ticket\"}"], "refusal"),
+    );
+    let types: Vec<String> = events.iter().map(type_of).collect();
+    assert_eq!(
+        types,
+        vec![
+            "response.created",
+            "response.in_progress",
+            "response.incomplete"
+        ]
+    );
+    let last = serde_json::to_value(events.last().unwrap()).unwrap();
+    assert_eq!(last["response"]["status"], "incomplete");
+    assert_eq!(
+        last["response"]["incomplete_details"],
+        json!({ "reason": "content_filter" })
+    );
+}
+
+/// A `max_tokens` stop leaves the search call incomplete too.
+#[test]
+fn messages_stream_max_tokens_never_completes_search_call() {
+    let mut st = tool_search_state();
+    let events = drive_messages(
+        &mut st,
+        &messages_tool_events("tool_search", &["{\"query\":"], "max_tokens"),
+    );
+    assert!(!events
+        .iter()
+        .any(|e| type_of(e) == "response.output_item.done"));
+    assert_eq!(type_of(events.last().unwrap()), "response.incomplete");
+}
+
+/// Thinking and text stream as the existing reasoning and message items; the
+/// signed thinking lands in the replay envelope.
+#[test]
+fn messages_stream_thinking_and_text_use_existing_items() {
+    let mut st = tool_search_state();
+    let events = drive_messages(
+        &mut st,
+        &[
+            json!({ "type": "message_start", "message": { "usage": { "input_tokens": 3, "output_tokens": 1 } } }),
+            json!({ "type": "content_block_start", "index": 0,
+                "content_block": { "type": "thinking", "thinking": "", "signature": "" } }),
+            json!({ "type": "content_block_delta", "index": 0,
+                "delta": { "type": "thinking_delta", "thinking": "plan" } }),
+            json!({ "type": "content_block_delta", "index": 0,
+                "delta": { "type": "signature_delta", "signature": "sig-1" } }),
+            json!({ "type": "content_block_stop", "index": 0 }),
+            json!({ "type": "content_block_start", "index": 1,
+                "content_block": { "type": "text", "text": "" } }),
+            json!({ "type": "content_block_delta", "index": 1,
+                "delta": { "type": "text_delta", "text": "done" } }),
+            json!({ "type": "content_block_stop", "index": 1 }),
+            json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" },
+                "usage": { "output_tokens": 4 } }),
+            json!({ "type": "message_stop" }),
+        ],
+    );
+    let completed = serde_json::to_value(events.last().unwrap()).unwrap();
+    assert_eq!(completed["type"], "response.completed");
+    let output = completed["response"]["output"].as_array().unwrap();
+    assert_eq!(output[0]["type"], "reasoning");
+    assert!(output[0]["encrypted_content"]
+        .as_str()
+        .unwrap()
+        .starts_with("bedrock-reasoning-v1:"));
+    assert_eq!(output[1]["type"], "message");
+    assert_eq!(output[1]["content"][0]["text"], "done");
+    assert!(events
+        .iter()
+        .any(|e| type_of(e) == "response.reasoning_text.delta"));
+}
+
+/// A Messages `error` event is a stream failure.
+#[test]
+fn messages_stream_error_event_is_an_error() {
+    let mut adapter = MessagesStreamAdapter::new();
+    let err = adapter
+        .map_chunk(
+            br#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+        )
+        .unwrap_err();
+    assert!(matches!(err, AppError::UpstreamBedrock(_)));
+    let mut st = tool_search_state();
+    let failed = serde_json::to_value(st.fail(&err).remove(0)).unwrap();
+    assert_eq!(failed["type"], "response.failed");
+    assert_eq!(failed["response"]["error"]["code"], "server_is_overloaded");
+}

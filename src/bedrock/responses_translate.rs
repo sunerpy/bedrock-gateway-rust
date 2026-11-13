@@ -166,6 +166,182 @@ pub(crate) enum ResponsesToolKind {
     LocalShell,
     Shell,
     ApplyPatch,
+    /// The client-executed `tool_search` tool: Claude's call maps back to a
+    /// `tool_search_call` output item.
+    ToolSearch,
+}
+
+/// The upstream name of the client-executed Responses `tool_search` tool. The
+/// Responses tool carries no `name`; zuno's description calls it this.
+pub(crate) const TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
+
+/// `tool_result` text for a `tool_search_output` whose `tools` is empty. An
+/// empty content array is not documented as valid, so the gateway says so.
+pub(crate) const TOOL_SEARCH_NO_MATCH_TEXT: &str = "No tools matched the query.";
+
+/// Is this `tool_search` tool executed by the client (`execution: "client"`)?
+/// Hosted (`server`) search is OpenAI-only and stays dropped.
+fn is_client_tool_search(fields: &std::collections::HashMap<String, Value>) -> bool {
+    fields.get("execution").and_then(Value::as_str) == Some("client")
+}
+
+/// Does the request use client-executed tool search: a client `tool_search`
+/// tool, or `tool_search_call` / `tool_search_output` items in `input`?
+#[must_use]
+pub fn request_uses_tool_search(req: &ResponsesRequest) -> bool {
+    let tool = req.tools.as_ref().is_some_and(|tools| {
+        tools.iter().any(|tool| {
+            matches!(tool, ResponsesTool::ToolSearch { fields } if is_client_tool_search(fields))
+        })
+    });
+    let items = match &req.input {
+        ResponsesInput::Items(items) => items.iter().any(|item| {
+            matches!(
+                item,
+                ResponseInputItem::Other { item_type, .. }
+                    if item_type == "tool_search_call" || item_type == "tool_search_output"
+            )
+        }),
+        ResponsesInput::Text(_) => false,
+    };
+    tool || items
+}
+
+/// One tool loaded by a `tool_search_output`, flattened to its upstream name.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SearchedTool {
+    /// Upstream (Claude) name: `{namespace}__{name}`.
+    pub bedrock_name: String,
+    pub client_name: String,
+    pub namespace: Option<String>,
+    pub kind: ResponsesToolKind,
+    pub description: Option<String>,
+    pub input_schema: Value,
+}
+
+/// Flatten the `tools` of one `tool_search_output` into upstream tools.
+///
+/// - a `namespace` contributes each inner `function` / `custom` as
+///   `{namespace}__{name}`, the same rule as `tools` (zuno's MCP tools);
+/// - a top-level `function` gets its own name as namespace: OpenAI's client
+///   search example answers a loaded top-level function with a `function_call`
+///   whose `namespace` equals the function name, so the gateway uses
+///   `{name}__{name}` and the replayed `function_call` flattens back to the
+///   same declared tool;
+/// - a top-level `custom` keeps its bare name, like a `custom` in `tools`.
+///
+/// Other entry types have no upstream equivalent and are skipped.
+pub(crate) fn flatten_searched_tools(tools: &[Value]) -> Result<Vec<SearchedTool>, AppError> {
+    fn text(entry: &Value, key: &str) -> Option<String> {
+        entry.get(key).and_then(Value::as_str).map(str::to_string)
+    }
+    fn name(entry: &Value) -> Result<String, AppError> {
+        text(entry, "name").ok_or_else(|| {
+            AppError::BadRequest("tool_search_output tool is missing name".to_string())
+        })
+    }
+    fn parameters(entry: &Value) -> Value {
+        entry
+            .get("parameters")
+            .filter(|p| !p.is_null())
+            .cloned()
+            .unwrap_or_else(|| json!({ "type": "object", "properties": {} }))
+    }
+
+    let mut out = Vec::new();
+    for entry in tools {
+        match entry.get("type").and_then(Value::as_str) {
+            Some("namespace") => {
+                let namespace = name(entry)?;
+                let inner = entry.get("tools").and_then(Value::as_array);
+                for item in inner.into_iter().flatten() {
+                    let (kind, input_schema) = match item.get("type").and_then(Value::as_str) {
+                        Some("function") => (ResponsesToolKind::Function, parameters(item)),
+                        Some("custom") => (ResponsesToolKind::Custom, custom_input_schema()),
+                        _ => continue,
+                    };
+                    let client_name = name(item)?;
+                    out.push(SearchedTool {
+                        bedrock_name: format!("{namespace}{NAMESPACE_DELIMITER}{client_name}"),
+                        client_name,
+                        namespace: Some(namespace.clone()),
+                        kind,
+                        description: text(item, "description"),
+                        input_schema,
+                    });
+                }
+            }
+            Some("function") => {
+                let client_name = name(entry)?;
+                out.push(SearchedTool {
+                    bedrock_name: format!("{client_name}{NAMESPACE_DELIMITER}{client_name}"),
+                    namespace: Some(client_name.clone()),
+                    client_name,
+                    kind: ResponsesToolKind::Function,
+                    description: text(entry, "description"),
+                    input_schema: parameters(entry),
+                });
+            }
+            Some("custom") => {
+                let client_name = name(entry)?;
+                out.push(SearchedTool {
+                    bedrock_name: client_name.clone(),
+                    client_name,
+                    namespace: None,
+                    kind: ResponsesToolKind::Custom,
+                    description: text(entry, "description"),
+                    input_schema: custom_input_schema(),
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// Every tool loaded by a `tool_search_output` anywhere in `input`, in input
+/// order, deduplicated by upstream name (the first definition wins).
+///
+/// Recomputed from the replayed history on every request: the gateway is
+/// stateless, and declaring the same tools in the same order keeps each
+/// referenced deferred tool byte-identical across turns.
+pub(crate) fn collect_searched_tools(
+    req: &ResponsesRequest,
+) -> Result<Vec<SearchedTool>, AppError> {
+    let ResponsesInput::Items(items) = &req.input else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<SearchedTool> = Vec::new();
+    for item in items {
+        let ResponseInputItem::Other { item_type, fields } = item else {
+            continue;
+        };
+        if item_type != "tool_search_output" {
+            continue;
+        }
+        let tools = fields
+            .get("tools")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        for tool in flatten_searched_tools(tools)? {
+            match out
+                .iter()
+                .find(|seen| seen.bedrock_name == tool.bedrock_name)
+            {
+                Some(seen) => {
+                    if *seen != tool {
+                        tracing::warn!(
+                            tool = %tool.bedrock_name,
+                            "tool_search_output loaded a tool twice with different definitions; keeping the first"
+                        );
+                    }
+                }
+                None => out.push(tool),
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone)]
@@ -196,11 +372,39 @@ impl ResponsesToolRegistry {
             .find(|binding| binding.client_name == client_name)
             .map(|binding| binding.bedrock_name.as_str())
     }
+
+    /// Bind every tool loaded by tool search so Claude's call maps back to the
+    /// tool's own name and namespace.
+    pub fn add_searched(&mut self, tools: &[SearchedTool]) {
+        for tool in tools {
+            if self.resolve(&tool.bedrock_name).is_none() {
+                self.bindings.push(ResponsesToolBinding {
+                    bedrock_name: tool.bedrock_name.clone(),
+                    client_name: tool.client_name.clone(),
+                    namespace: tool.namespace.clone(),
+                    kind: tool.kind.clone(),
+                });
+            }
+        }
+    }
 }
 
 /// Build Bedrock tool specifications plus the reversible response mapping.
+#[cfg(test)]
 pub(crate) fn build_responses_tools(
     req: &ResponsesRequest,
+) -> Result<(Vec<Value>, ResponsesToolRegistry), AppError> {
+    build_responses_tools_with(req, false)
+}
+
+/// [`build_responses_tools`] with the tool-search lane switch. With
+/// `tool_search`, a client-executed `tool_search` tool becomes the custom
+/// upstream tool [`TOOL_SEARCH_TOOL_NAME`] (zuno's description and parameters
+/// verbatim, at zuno's position); without it the tool is dropped like every
+/// other hosted tool.
+pub(crate) fn build_responses_tools_with(
+    req: &ResponsesRequest,
+    tool_search: bool,
 ) -> Result<(Vec<Value>, ResponsesToolRegistry), AppError> {
     let Some(tools) = &req.tools else {
         return Ok((Vec::new(), ResponsesToolRegistry::default()));
@@ -378,6 +582,18 @@ pub(crate) fn build_responses_tools(
                     "additionalProperties": false
                 })),
             )?,
+            ResponsesTool::ToolSearch { fields }
+                if tool_search && is_client_tool_search(fields) =>
+            {
+                push(
+                    TOOL_SEARCH_TOOL_NAME.to_string(),
+                    TOOL_SEARCH_TOOL_NAME.to_string(),
+                    None,
+                    ResponsesToolKind::ToolSearch,
+                    fields.get("description").and_then(Value::as_str),
+                    fields.get("parameters").filter(|p| !p.is_null()).cloned(),
+                )?
+            }
             ResponsesTool::WebSearch { .. }
             | ResponsesTool::WebSearchPreview { .. }
             | ResponsesTool::FileSearch { .. }
@@ -451,6 +667,27 @@ pub async fn to_responses_converse_input(
     resolver: &dyn ImageResolver,
     caps: &dyn ModelCapabilities,
 ) -> Result<ResponsesConverseInput, AppError> {
+    to_responses_converse_input_with(req, model_id, resolver, caps, false).await
+}
+
+/// [`to_responses_converse_input`] with the tool-search lane switch. With
+/// `tool_search`, `tool_search_call` becomes an assistant `toolUse` of
+/// [`TOOL_SEARCH_TOOL_NAME`] and `tool_search_output` a user `toolResult`
+/// whose content is gateway-internal `{"toolReference":{"toolName":…}}`
+/// blocks (or one no-match text block). Only the Anthropic Messages body
+/// builder understands `toolReference`; without `tool_search` both items keep
+/// failing with 400, as on Converse.
+///
+/// # Errors
+/// As [`to_responses_converse_input`], plus [`AppError::BadRequest`] for a
+/// search item without `call_id` or with malformed `arguments` / `tools`.
+pub async fn to_responses_converse_input_with(
+    req: &ResponsesRequest,
+    model_id: &str,
+    resolver: &dyn ImageResolver,
+    caps: &dyn ModelCapabilities,
+    tool_search: bool,
+) -> Result<ResponsesConverseInput, AppError> {
     // 1) Request validation. Tool availability is checked when the provider
     //    builds the reversible tool registry.
     reject_unsatisfiable_text_format(req)?;
@@ -477,7 +714,7 @@ pub async fn to_responses_converse_input(
             }]
         }
         ResponsesInput::Items(items) => {
-            parse_input_items(items, model_id, resolver, &mut system_blocks).await?
+            parse_input_items(items, model_id, resolver, &mut system_blocks, tool_search).await?
         }
     };
 
@@ -497,6 +734,7 @@ async fn parse_input_items(
     model_id: &str,
     resolver: &dyn ImageResolver,
     system_blocks: &mut Vec<Value>,
+    tool_search: bool,
 ) -> Result<Vec<Turn>, AppError> {
     let mut turns: Vec<Turn> = Vec::new();
     for item in items {
@@ -649,6 +887,18 @@ async fn parse_input_items(
                         })],
                     });
                 }
+                "tool_search_call" if tool_search => {
+                    turns.push(Turn {
+                        role: "assistant".to_string(),
+                        content: vec![tool_search_call_block(fields)?],
+                    });
+                }
+                "tool_search_output" if tool_search => {
+                    turns.push(Turn {
+                        role: "user".to_string(),
+                        content: vec![tool_search_output_block(fields)?],
+                    });
+                }
                 _ => {
                     return Err(AppError::BadRequest(format!(
                         "Responses input item type '{item_type}' is not supported"
@@ -674,6 +924,79 @@ async fn parse_input_items(
         }
     }
     Ok(turns)
+}
+
+fn search_call_id<'a>(
+    item_type: &str,
+    fields: &'a std::collections::HashMap<String, Value>,
+) -> Result<&'a str, AppError> {
+    fields
+        .get("call_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::BadRequest(format!("{item_type} input item is missing call_id")))
+}
+
+/// `tool_search_call` → `toolUse` of the search tool. `arguments` is an object
+/// on the wire (unlike `function_call`); a JSON string is accepted too.
+fn tool_search_call_block(
+    fields: &std::collections::HashMap<String, Value>,
+) -> Result<Value, AppError> {
+    let call_id = search_call_id("tool_search_call", fields)?;
+    let input = match fields.get("arguments") {
+        Some(Value::Object(map)) => Value::Object(map.clone()),
+        Some(Value::String(text)) => {
+            let parsed: Value = serde_json::from_str(text).map_err(|e| {
+                AppError::BadRequest(format!("invalid tool_search_call arguments JSON: {e}"))
+            })?;
+            if !parsed.is_object() {
+                return Err(AppError::BadRequest(
+                    "tool_search_call arguments must be a JSON object".to_string(),
+                ));
+            }
+            parsed
+        }
+        None | Some(Value::Null) => json!({}),
+        Some(_) => {
+            return Err(AppError::BadRequest(
+                "tool_search_call arguments must be a JSON object".to_string(),
+            ))
+        }
+    };
+    Ok(json!({
+        "toolUse": { "toolUseId": call_id, "name": TOOL_SEARCH_TOOL_NAME, "input": input }
+    }))
+}
+
+/// `tool_search_output` → `toolResult` carrying one `toolReference` per
+/// loaded tool, or a fixed text block when the search found nothing.
+fn tool_search_output_block(
+    fields: &std::collections::HashMap<String, Value>,
+) -> Result<Value, AppError> {
+    let call_id = search_call_id("tool_search_output", fields)?;
+    let tools = match fields.get("tools") {
+        Some(Value::Array(tools)) => tools.as_slice(),
+        None | Some(Value::Null) => &[],
+        Some(_) => {
+            return Err(AppError::BadRequest(
+                "tool_search_output tools must be an array".to_string(),
+            ))
+        }
+    };
+    let mut names: Vec<String> = Vec::new();
+    for tool in flatten_searched_tools(tools)? {
+        if !names.contains(&tool.bedrock_name) {
+            names.push(tool.bedrock_name);
+        }
+    }
+    let content: Vec<Value> = if names.is_empty() {
+        vec![json!({ "text": TOOL_SEARCH_NO_MATCH_TEXT })]
+    } else {
+        names
+            .into_iter()
+            .map(|name| json!({ "toolReference": { "toolName": name } }))
+            .collect()
+    };
+    Ok(json!({ "toolResult": { "toolUseId": call_id, "content": content } }))
 }
 
 async fn parse_function_call_output(

@@ -1,0 +1,32 @@
+[
+  {
+    "type": "response.created",
+    "response": {
+      "id": "resp_2"
+    }
+  },
+  {
+    "type": "response.output_item.done",
+    "item": {
+      "type": "function_call",
+      "id": "fc_2",
+      "call_id": "call_2",
+      "name": "ticket_search",
+      "arguments": "{}",
+      "namespace": "mcp__ze_tools_deferred"
+    }
+  },
+  {
+    "type": "response.completed",
+    "response": {
+      "id": "resp_2",
+      "usage": {
+        "input_tokens": 1,
+        "input_tokens_details": null,
+        "output_tokens": 1,
+        "output_tokens_details": null,
+        "total_tokens": 2
+      }
+    }
+  }
+]
