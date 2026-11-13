@@ -845,18 +845,17 @@ async fn tool_search_preflight_rejections() {
             }
         }
     }
-    // A top-level function loaded by search is flattened as `{name}__{name}`,
-    // so it does not collide with the declared `get_goal`.
-    let (body, registry) = tool_search_body(&provider, &req).await;
-    assert_eq!(tool_names(&body).last().unwrap(), "get_goal__get_goal");
-    assert_eq!(
-        registry
-            .resolve("get_goal__get_goal")
-            .unwrap()
-            .namespace
-            .as_deref(),
-        Some("get_goal")
-    );
+    // A top-level function loaded by search keeps its bare name, so it collides
+    // with the declared `get_goal`: 400 before the call.
+    let assembled = provider
+        .assemble(&req, TOOL_SEARCH_MODEL, false, true)
+        .await
+        .unwrap();
+    let err = provider
+        .messages_body(TOOL_SEARCH_MODEL, &assembled)
+        .unwrap_err();
+    assert!(matches!(err, AppError::BadRequest(_)));
+    assert!(err.to_string().contains("'get_goal' is both declared"));
 
     let mut req = golden("request-2");
     if let ResponsesInput::Items(items) = &mut req.input {
@@ -924,4 +923,90 @@ async fn tool_search_tool_choice_none_keeps_tools() {
     let (body, _) = tool_search_body(&provider, &req).await;
     assert_eq!(body["tools"].as_array().unwrap().len(), 12);
     assert_eq!(body["tool_choice"], json!({ "type": "none" }));
+}
+
+/// A top-level function loaded by search (OpenAI's client example shape) is
+/// declared under its bare name, answered with `namespace` equal to the name,
+/// and its replayed call maps back to the bare declaration.
+#[tokio::test]
+async fn tool_search_top_level_function_round_trips_bare_name() {
+    use crate::bedrock::anthropic_messages::messages_response_to_converse_output;
+
+    let provider = tool_search_provider().await;
+    let loaded = json!([{ "type": "function", "name": "lookup_order",
+        "description": "Look up an order.", "defer_loading": true,
+        "parameters": { "type": "object", "properties": { "id": { "type": "string" } } } }]);
+    let with_loaded = |mut req: ResponsesRequest| {
+        if let ResponsesInput::Items(items) = &mut req.input {
+            for item in items {
+                if let ResponseInputItem::Other { item_type, fields } = item {
+                    if item_type == "tool_search_output" {
+                        fields.insert("tools".to_string(), loaded.clone());
+                    }
+                }
+            }
+        }
+        req
+    };
+
+    let req = with_loaded(golden("request-2"));
+    let (body, registry) = tool_search_body(&provider, &req).await;
+    assert_eq!(tool_names(&body).last().unwrap(), "lookup_order");
+    assert_eq!(body["tools"][10]["defer_loading"], true);
+    assert_eq!(
+        last_messages(&body, 1)[0]["content"][0]["content"],
+        json!([{ "type": "tool_reference", "tool_name": "lookup_order" }])
+    );
+
+    let answer = messages_response_to_converse_output(&json!({
+        "content": [{ "type": "tool_use", "id": "toolu_7", "name": "lookup_order",
+                      "input": { "id": "A1" } }],
+        "stop_reason": "tool_use",
+        "usage": { "input_tokens": 1, "output_tokens": 1 }
+    }))
+    .unwrap();
+    let response = from_converse_output_to_responses_with_tools(
+        &answer, &req, &req.model, "resp_x", &registry,
+    )
+    .unwrap();
+    let item = serde_json::to_value(&response.output[0]).unwrap();
+    assert_eq!(item["type"], "function_call");
+    assert_eq!(item["name"], "lookup_order");
+    assert_eq!(item["namespace"], "lookup_order");
+
+    // The client replays that call with namespace == name.
+    let mut next = with_loaded(golden("request-3"));
+    if let ResponsesInput::Items(items) = &mut next.input {
+        for item in items {
+            if let ResponseInputItem::FunctionCall {
+                name, namespace, ..
+            } = item
+            {
+                *name = "lookup_order".to_string();
+                *namespace = Some("lookup_order".to_string());
+            }
+        }
+    }
+    let (body, _) = tool_search_body(&provider, &next).await;
+    assert_eq!(
+        last_messages(&body, 2)[0]["content"][0]["name"],
+        "lookup_order"
+    );
+
+    // Outside the lane a namespace == name call keeps the old flattening.
+    let mut converse = golden("request-1");
+    converse.input = ResponsesInput::Items(vec![ResponseInputItem::FunctionCall {
+        call_id: "c".to_string(),
+        name: "x".to_string(),
+        arguments: "{}".to_string(),
+        namespace: Some("x".to_string()),
+    }]);
+    let assembled = provider
+        .assemble(&converse, TOOL_SEARCH_MODEL, false, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        assembled.messages[0]["content"][0]["toolUse"]["name"],
+        "x__x"
+    );
 }
