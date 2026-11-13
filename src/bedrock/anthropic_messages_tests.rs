@@ -106,7 +106,7 @@ fn blocks_convert_to_messages_shapes() {
         body["messages"][1]["content"],
         json!([
             { "type": "thinking", "thinking": "t", "signature": "s" },
-            { "type": "redacted_thinking", "data": "UkVEQUNURUQ=" },
+            { "type": "redacted_thinking", "data": "REDACTED" },
             { "type": "tool_use", "id": "c1", "name": "f", "input": { "a": 1 } }
         ])
     );
@@ -263,7 +263,7 @@ fn non_stream_response_maps_to_converse_output() {
         converse["output"]["message"]["content"],
         json!([
             { "reasoningContent": { "reasoningText": { "text": "hmm", "signature": "sig" } } },
-            { "reasoningContent": { "redactedContent": "QUJD" } },
+            { "reasoningContent": { "redactedContent": "UVVKRA==" } },
             { "text": "hi" },
             { "toolUse": { "toolUseId": "toolu_1", "name": "tool_search", "input": { "query": "q" } } }
         ])
@@ -307,7 +307,7 @@ fn stream_adapter_maps_events_and_ignores_pings() {
             ContentBlockDelta::ReasoningContent(ReasoningContentBlockDelta::RedactedContent(
                 blob,
             )) => {
-                assert_eq!(blob.as_ref(), b"ABC");
+                assert_eq!(blob.as_ref(), b"QUJD");
             }
             other => panic!("unexpected {other:?}"),
         },
@@ -338,4 +338,52 @@ fn stream_error_events_map_to_gateway_errors() {
         .map_chunk(br#"{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}"#)
         .unwrap_err();
     assert!(matches!(invalid, AppError::BadRequest(_)));
+}
+
+#[test]
+fn redacted_reasoning_round_trips_in_converse_encoding() {
+    // Converse stores Messages `data` as the blob of its UTF-8 bytes; the
+    // envelope holds that blob in standard base64.
+    let data = "CAQSlwYKEggTEAEYAjgBQgh0aGlua2luZxIMJbzbC+ICLtHrU1Mq";
+    let converse = messages_response_to_converse_output(&json!({
+        "content": [{ "type": "redacted_thinking", "data": data }],
+        "stop_reason": "end_turn",
+        "usage": { "input_tokens": 1, "output_tokens": 1 }
+    }))
+    .unwrap();
+    let block = &converse["output"]["message"]["content"][0];
+    let encoded = block["reasoningContent"]["redactedContent"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap(),
+        data.as_bytes()
+    );
+    let messages = json!([{ "role": "assistant", "content": [block.clone()] }]);
+    let body = build_messages_body(&input(
+        &messages,
+        &json!([]),
+        &json!({ "maxTokens": 1 }),
+        None,
+        &[],
+    ))
+    .unwrap();
+    assert_eq!(
+        body["messages"][0]["content"][0],
+        json!({ "type": "redacted_thinking", "data": data })
+    );
+
+    let bad = json!([{ "role": "assistant", "content": [
+        { "reasoningContent": { "redactedContent": "not base64!" } }
+    ]}]);
+    assert!(build_messages_body(&input(
+        &bad,
+        &json!([]),
+        &json!({ "maxTokens": 1 }),
+        None,
+        &[]
+    ))
+    .is_err());
 }

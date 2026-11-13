@@ -328,9 +328,14 @@ fn tool_result_block(result: &Value) -> Result<Value, AppError> {
 }
 
 /// Replayed reasoning (the `bedrock-reasoning-v1` envelope's Converse blocks) →
-/// `thinking` / `redacted_thinking`. A redacted block's envelope string is the
-/// Messages `data` verbatim: InvokeModel output stores `data` unchanged, and
-/// the Converse path stores the base64 of the bytes Bedrock decoded from it.
+/// `thinking` / `redacted_thinking`.
+///
+/// A redacted block's envelope string is the standard base64 of the Converse
+/// `redactedContent` blob, and Converse carries the Messages `data` string as
+/// that blob's UTF-8 bytes (live, 2026-11-13). So `data` is the envelope
+/// string base64-decoded, and this lane writes envelopes the same way
+/// ([`messages_response_to_converse_output`], [`MessagesStreamAdapter`]): a
+/// session may move between the Converse path and this one.
 fn reasoning_block(reasoning: &Value) -> Result<Value, AppError> {
     if let Some(text) = reasoning.get("reasoningText") {
         let signature = text
@@ -345,7 +350,14 @@ fn reasoning_block(reasoning: &Value) -> Result<Value, AppError> {
             "signature": signature,
         }));
     }
-    if let Some(data) = reasoning.get("redactedContent").and_then(Value::as_str) {
+    if let Some(encoded) = reasoning.get("redactedContent").and_then(Value::as_str) {
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .ok_or_else(|| {
+                AppError::BadRequest("replayed redacted reasoning is malformed".to_string())
+            })?;
         return Ok(json!({ "type": "redacted_thinking", "data": data }));
     }
     Err(AppError::BadRequest(
@@ -482,8 +494,10 @@ fn response_block(block: &Value) -> Option<Value> {
                 "signature": block.get("signature").cloned().unwrap_or(Value::Null),
             } }
         })),
+        // Same blob encoding as Converse: base64 of the `data` string's bytes.
         "redacted_thinking" => Some(json!({
-            "reasoningContent": { "redactedContent": text("data") }
+            "reasoningContent": { "redactedContent":
+                base64::engine::general_purpose::STANDARD.encode(text("data").as_bytes()) }
         })),
         "tool_use" => Some(json!({
             "toolUse": {
@@ -670,12 +684,10 @@ impl MessagesStreamAdapter {
                         }
                     }
                     "redacted_thinking" => {
-                        let data = str_of(&block, "data").unwrap_or_default();
-                        // The stream state re-encodes these bytes as standard
-                        // base64, which round-trips `data` back unchanged.
-                        let bytes = base64::engine::general_purpose::STANDARD
-                            .decode(&data)
-                            .unwrap_or_else(|_| data.into_bytes());
+                        // Converse's blob for a redacted block is the `data`
+                        // string's UTF-8 bytes; the stream state base64-encodes
+                        // them into the envelope like a ConverseStream block.
+                        let bytes = str_of(&block, "data").unwrap_or_default().into_bytes();
                         out.push(delta(
                             index,
                             ContentBlockDelta::ReasoningContent(
