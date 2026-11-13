@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "bedrock-gateway-rust"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "async-stream",
