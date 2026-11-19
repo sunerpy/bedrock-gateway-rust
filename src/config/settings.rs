@@ -144,8 +144,9 @@ pub struct AppSettings {
     #[serde(default)]
     pub web_search_region: Option<String>,
 
-    /// Most searches the gateway runs for one response (at least 1). Env:
-    /// `WEB_SEARCH_MAX_CALLS`. Default: 5.
+    /// Most searches the gateway runs for one answer: one user turn, counted
+    /// across the continuation requests the client sends after its own tool
+    /// calls (clamped to 1-20). Env: `WEB_SEARCH_MAX_CALLS`. Default: 5.
     #[serde(default = "default_web_search_max_calls")]
     pub web_search_max_calls: u32,
 
@@ -257,6 +258,15 @@ impl AppSettings {
     /// 2. Optional file: `config/app.toml` (if present)
     /// 3. Environment variables (override all previous layers)
     pub fn load() -> Result<Self> {
+        Self::load_with_ignored_env().map(|(settings, _)| settings)
+    }
+
+    /// [`AppSettings::load`], plus the bare environment variables it ignored
+    /// because their value does not fit the setting ([`IgnoredEnvVar`]).
+    /// Settings load before telemetry starts, so a WARN emitted here would be
+    /// lost; the binary logs these with [`IgnoredEnvVar::warn`] once telemetry
+    /// is up.
+    pub fn load_with_ignored_env() -> Result<(Self, Vec<IgnoredEnvVar>)> {
         let mut builder = Config::builder()
             .set_default("api_route_prefix", "/api/v1")?
             .set_default("debug", false)?
@@ -312,10 +322,39 @@ impl AppSettings {
         // process env such as HOME/PATH. AWS_REGION feeds the explicit
         // .region(...) call in bedrock::client; the SDK credential chain reads
         // it independently too.
-        builder = apply_bare_env_overrides(builder)?;
+        let mut ignored = Vec::new();
+        builder = apply_bare_env_overrides(builder, &mut ignored)?;
 
         let settings: AppSettings = builder.build()?.try_deserialize()?;
-        Ok(settings)
+        Ok((settings, ignored))
+    }
+}
+
+/// A bare environment variable that [`AppSettings::load`] ignored because its
+/// value does not fit the setting: not a whole number, negative, or larger
+/// than the field holds. The lower-priority layer (`config/app.toml` or the
+/// built-in default) applies instead, so the value cannot stop the gateway
+/// from starting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IgnoredEnvVar {
+    /// The variable, for example `WEB_SEARCH_MAX_CALLS`.
+    pub name: &'static str,
+    /// The value as set, trimmed.
+    pub value: String,
+    /// The largest value the setting holds; the smallest is 0.
+    pub max: u64,
+}
+
+impl IgnoredEnvVar {
+    /// Log the WARN for this variable.
+    pub fn warn(&self) {
+        tracing::warn!(
+            variable = self.name,
+            value = %self.value,
+            max = self.max,
+            "ignoring an environment variable that is not a whole number from 0 to max; \
+             the setting keeps its value from config/app.toml or its default"
+        );
     }
 }
 
@@ -338,7 +377,13 @@ impl AppSettings {
 /// group `WEB_SEARCH_BACKEND`, `WEB_SEARCH_REGION`, `WEB_SEARCH_MAX_CALLS`,
 /// `WEB_SEARCH_TIMEOUT_SECS`, `WEB_SEARCH_MAX_RESULTS`,
 /// `WEB_SEARCH_RESULT_CHARS`, `WEB_SEARCH_MAX_TPS`.
-fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder> {
+///
+/// A numeric web-search variable whose value the field cannot hold is pushed
+/// onto `ignored` instead of being applied.
+fn apply_bare_env_overrides(
+    mut builder: ConfigBuilder,
+    ignored: &mut Vec<IgnoredEnvVar>,
+) -> Result<ConfigBuilder> {
     // String-valued overrides.
     for (env_name, field) in [
         ("API_ROUTE_PREFIX", "api_route_prefix"),
@@ -419,16 +464,57 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
         ("MODEL_CATALOG_REFRESH_SECS", "model_catalog_refresh_secs"),
         ("AWS_MAX_RETRY_ATTEMPTS", "aws_max_retry_attempts"),
         ("MAX_BODY_SIZE_MB", "max_body_size_mb"),
-        ("WEB_SEARCH_MAX_CALLS", "web_search_max_calls"),
-        ("WEB_SEARCH_TIMEOUT_SECS", "web_search_timeout_secs"),
-        ("WEB_SEARCH_MAX_RESULTS", "web_search_max_results"),
-        ("WEB_SEARCH_RESULT_CHARS", "web_search_result_chars"),
-        ("WEB_SEARCH_MAX_TPS", "web_search_max_tps"),
     ] {
         if let Some(value) = non_empty_env(env_name) {
             if let Ok(parsed) = value.parse::<i64>() {
                 builder = builder.set_override(field, parsed)?;
             }
+        }
+    }
+
+    // Web-search integer overrides, parsed at the width of their field. A
+    // negative or too large value would otherwise reach `try_deserialize` and
+    // fail the whole load, so the gateway would not start. Such a value, or
+    // one that is not a number, is ignored with a WARN instead and the
+    // lower-priority layer wins; `WebSearchLimits::from_settings` then clamps
+    // an accepted value to the range the search loop allows.
+    for (env_name, field, max) in [
+        (
+            "WEB_SEARCH_MAX_CALLS",
+            "web_search_max_calls",
+            u64::from(u32::MAX),
+        ),
+        (
+            "WEB_SEARCH_TIMEOUT_SECS",
+            "web_search_timeout_secs",
+            u64::MAX,
+        ),
+        (
+            "WEB_SEARCH_MAX_RESULTS",
+            "web_search_max_results",
+            u64::from(u32::MAX),
+        ),
+        (
+            "WEB_SEARCH_RESULT_CHARS",
+            "web_search_result_chars",
+            u64::from(u32::MAX),
+        ),
+        (
+            "WEB_SEARCH_MAX_TPS",
+            "web_search_max_tps",
+            u64::from(u32::MAX),
+        ),
+    ] {
+        let Some(value) = non_empty_env(env_name) else {
+            continue;
+        };
+        match value.parse::<u64>() {
+            Ok(parsed) if parsed <= max => builder = builder.set_override(field, parsed)?,
+            _ => ignored.push(IgnoredEnvVar {
+                name: env_name,
+                value,
+                max,
+            }),
         }
     }
 

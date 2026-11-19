@@ -566,10 +566,22 @@ fn retry_waits_for_retry_after_up_to_one_second() {
 
 #[tokio::test]
 async fn transport_failure_is_unavailable_after_one_retry() {
-    // Nothing listens on a port whose listener was closed.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    // A listener that accepts each connection and closes it at once, so the
+    // request fails right after connecting, on every platform. A closed port
+    // would not do: Windows refuses a connection to one only after retrying
+    // it for seconds, which can use up the search's time budget.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
     let port = listener.local_addr().expect("address").port();
-    drop(listener);
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&accepted);
+    let closer = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            counter.fetch_add(1, Ordering::SeqCst);
+            drop(stream);
+        }
+    });
     let mut client = AgentCoreWebSearch::new(
         "us-east-2".to_string(),
         Some(format!("http://127.0.0.1:{port}")),
@@ -584,12 +596,34 @@ async fn transport_failure_is_unavailable_after_one_retry() {
     };
     let (logs, _guard) = capture_logs();
     assert_eq!(client.search("q", 5).await, Err(SearchError::Unavailable));
+    closer.abort();
     let rendered = logs.rendered();
     assert!(rendered.contains("\"reason\":\"transport\""), "{rendered}");
     assert!(
         rendered.contains("\"attempt\":2"),
         "the retry ran: {rendered}"
     );
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        2,
+        "one connection per attempt"
+    );
+}
+
+#[test]
+fn endpoint_defaults_to_the_regional_agentcore_url() {
+    let client = AgentCoreWebSearch::new(
+        "us-east-2".to_string(),
+        None,
+        static_credentials(None),
+        &test_limits(),
+    )
+    .expect("client builds");
+    assert_eq!(
+        client.endpoint,
+        "https://bedrock-agentcore.us-east-2.amazonaws.com/web-search/web-search.v1/invoke"
+    );
+    assert_eq!(client.region, "us-east-2");
 }
 
 #[tokio::test]
@@ -1043,6 +1077,10 @@ fn limits_are_clamped() {
             max_tps: 5,
         }
     );
+    // 20 searches per answer is the cap itself: kept, without a WARN.
+    let mut at_cap = settings("agentcore");
+    at_cap.web_search_max_calls = 20;
+    assert_eq!(WebSearchLimits::from_settings(&at_cap).max_calls, 20);
     assert!(!logs.rendered().contains("out of range"));
 
     let mut low = settings("agentcore");
@@ -1071,13 +1109,22 @@ fn limits_are_clamped() {
     assert_eq!(
         WebSearchLimits::from_settings(&high),
         WebSearchLimits {
-            max_calls: 50,
+            max_calls: 20,
             max_results: 25,
             result_chars: 20_000,
             timeout: Duration::from_secs(60),
             max_tps: 40,
         }
     );
+
+    // The cap keeps the loop's step limit (max_calls + 2 Bedrock calls) small
+    // for any setting, the largest included.
+    let mut huge = settings("agentcore");
+    huge.web_search_max_calls = u32::MAX;
+    huge.web_search_timeout_secs = u64::MAX;
+    let huge = WebSearchLimits::from_settings(&huge);
+    assert_eq!(huge.max_calls, 20);
+    assert_eq!(huge.timeout, Duration::from_secs(60));
 
     let rendered = logs.rendered();
     for setting in [

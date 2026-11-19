@@ -77,6 +77,13 @@ pub const MAX_QUERY_CHARS: usize = 200;
 /// AgentCore `maxResults` upper bound.
 pub const MAX_RESULTS_PER_SEARCH: u32 = 25;
 
+/// Upper bound of `WEB_SEARCH_MAX_CALLS`. The search loop makes at most
+/// `max_calls + 2` Bedrock calls for one response (the first, one continuation
+/// per search, and one answer after the limit), so the cap keeps that step
+/// limit small: an operator typo cannot allow thousands of model calls. The
+/// loop (PR 2 of plan C2) still computes the step limit with `saturating_add`.
+pub const MAX_SEARCHES_PER_ANSWER: u32 = 20;
+
 /// Prefix of the `web_search_call` item ids the gateway emits, so the mantle
 /// lane can drop them when a conversation moves to a GPT model.
 pub const WEB_SEARCH_CALL_ID_PREFIX: &str = "ws_bgw_";
@@ -177,7 +184,7 @@ pub enum WebSearchErrorCode {
     TooManyRequests,
     /// The backend could not be used, or is not configured.
     Unavailable,
-    /// The response already ran its `WEB_SEARCH_MAX_CALLS` searches.
+    /// The answer already ran its `WEB_SEARCH_MAX_CALLS` searches.
     MaxUsesExceeded,
     /// The request did not turn web search on, in a conversation that
     /// declared the tool earlier.
@@ -201,7 +208,8 @@ impl WebSearchErrorCode {
 /// The limits the loop and the backend apply, read once from settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WebSearchLimits {
-    /// Searches run per response.
+    /// Searches run per answer: one user turn, counted across the
+    /// continuation requests the client sends after its own tool calls.
     pub max_calls: u32,
     /// `maxResults` of each search.
     pub max_results: u32,
@@ -215,9 +223,9 @@ pub struct WebSearchLimits {
 
 impl WebSearchLimits {
     /// Read the `web_search_*` settings, moving each value into its allowed
-    /// range with a WARN: at least 1 search per response, a 1-60 s budget,
-    /// 1-25 results, 100-20000 characters per result, at least 1 search per
-    /// second.
+    /// range with a WARN: 1-20 searches per answer
+    /// ([`MAX_SEARCHES_PER_ANSWER`]), a 1-60 s budget, 1-25 results,
+    /// 100-20000 characters per result, at least 1 search per second.
     #[must_use]
     pub fn from_settings(settings: &AppSettings) -> Self {
         let result_chars = clamp_setting(
@@ -231,7 +239,7 @@ impl WebSearchLimits {
                 "WEB_SEARCH_MAX_CALLS",
                 settings.web_search_max_calls,
                 1,
-                u32::MAX,
+                MAX_SEARCHES_PER_ANSWER,
             ),
             max_results: clamp_setting(
                 "WEB_SEARCH_MAX_RESULTS",

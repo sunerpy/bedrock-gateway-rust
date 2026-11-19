@@ -32,6 +32,8 @@ Metadata:
           - DefaultEmbeddingModelId
           - EnablePromptCaching
           - WebSearchBackend
+          - WebSearchRegion
+          - WebSearchMaxTps
           - LogLevel
 
 Parameters:
@@ -88,9 +90,33 @@ Parameters:
       requests that send X-Weniq-Web-Search: on. "agentcore" sets
       WEB_SEARCH_BACKEND and grants the execution role
       bedrock-agentcore:InvokeWebSearch; AgentCore calls are signed with that
-      role, never with the Bedrock API key. The gateway's rate limit
-      (WEB_SEARCH_MAX_TPS) is per execution environment, so concurrent
-      environments share the 10 TPS per account and Region quota.
+      role, never with the Bedrock API key. AgentCore Web Search exists only
+      in us-east-1, us-east-2, us-west-2, ap-southeast-2, ap-northeast-1 and
+      eu-west-1; in any other Region, set WebSearchRegion.
+
+  WebSearchRegion:
+    Type: String
+    Default: ""
+    AllowedPattern: ^([a-z]{2}(-[a-z]+)+-[0-9]+)?$
+    Description: >-
+      (Optional, used when WebSearchBackend is "agentcore") Region of the
+      AgentCore Web Search endpoint: sets WEB_SEARCH_REGION and the Region of
+      the execution role's InvokeWebSearch grant. Leave blank to use the
+      function's Region. AgentCore Web Search exists only in us-east-1,
+      us-east-2, us-west-2, ap-southeast-2, ap-northeast-1 and eu-west-1.
+      Bedrock calls stay in the function's Region.
+
+  WebSearchMaxTps:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    Description: >-
+      (Used when WebSearchBackend is "agentcore") Searches per second each
+      execution environment may send to AgentCore Web Search
+      (WEB_SEARCH_MAX_TPS). The limit is per environment, and the AgentCore
+      quota, 10 TPS per account and Region, is shared by every concurrent
+      execution environment, so their total can exceed it; AgentCore then
+      throttles the extra searches.
 
   DisableMantle:
     Type: String
@@ -133,6 +159,9 @@ Conditions:
   HasDefaultEmbeddingModelId: !Not [!Equals [!Ref DefaultEmbeddingModelId, ""]]
   HasBedrockApiKey: !Not [!Equals [!Ref BedrockApiKey, ""]]
   HasWebSearch: !Equals [!Ref WebSearchBackend, agentcore]
+  UseWebSearchRegion: !And
+    - !Condition HasWebSearch
+    - !Not [!Equals [!Ref WebSearchRegion, ""]]
 
 Resources:
   # ---------------------------------------------------------------------------
@@ -192,15 +221,19 @@ Resources:
             Action:
               - secretsmanager:GetSecretValue
             Resource: !Ref ApiKeySecretArn
-          # Web search (WebSearchBackend=agentcore). The tool is owned by AWS:
-          # the docs name the account segment `aws`, the service authorization
-          # reference `${Account}`; `*` matches both.
+          # Web search (WebSearchBackend=agentcore), in WebSearchRegion or the
+          # function's Region. AWS owns the tool, so the account segment of its
+          # ARN is the literal `aws`, as the AgentCore developer guide and API
+          # reference write it.
           - !If
             - HasWebSearch
             - Sid: AgentCoreWebSearch
               Effect: Allow
               Action: bedrock-agentcore:InvokeWebSearch
-              Resource: !Sub "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:*:tool/web-search.v1"
+              Resource: !If
+                - UseWebSearchRegion
+                - !Sub "arn:${AWS::Partition}:bedrock-agentcore:${WebSearchRegion}:aws:tool/web-search.v1"
+                - !Sub "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:aws:tool/web-search.v1"
             - !Ref "AWS::NoValue"
 
   # ---------------------------------------------------------------------------
@@ -236,9 +269,12 @@ Resources:
           AWS_BEARER_TOKEN_BEDROCK: !If [HasBedrockApiKey, !Ref BedrockApiKey, !Ref "AWS::NoValue"]
           DEFAULT_MODEL: !If [HasDefaultModelId, !Ref DefaultModelId, !Ref "AWS::NoValue"]
           DEFAULT_EMBEDDING_MODEL: !If [HasDefaultEmbeddingModelId, !Ref DefaultEmbeddingModelId, !Ref "AWS::NoValue"]
-          # Gateway-run web search for Claude; the region is the function's
-          # (AWS_REGION, injected by Lambda).
+          # Gateway-run web search for Claude. The AgentCore Region is
+          # WebSearchRegion, or the function's (AWS_REGION, injected by
+          # Lambda) when that is blank.
           WEB_SEARCH_BACKEND: !If [HasWebSearch, agentcore, !Ref "AWS::NoValue"]
+          WEB_SEARCH_MAX_TPS: !If [HasWebSearch, !Ref WebSearchMaxTps, !Ref "AWS::NoValue"]
+          WEB_SEARCH_REGION: !If [UseWebSearchRegion, !Ref WebSearchRegion, !Ref "AWS::NoValue"]
           # NOTE: AWS_REGION is a reserved Lambda runtime variable and is
           # injected automatically by Lambda (set to the function's region).
           # The gateway and AWS SDK credential chain read it from the

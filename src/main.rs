@@ -31,7 +31,8 @@ async fn main() -> Result<()> {
         return health_check().await;
     }
 
-    let settings = AppSettings::load().context("failed to load application settings")?;
+    let (settings, ignored_env) =
+        AppSettings::load_with_ignored_env().context("failed to load application settings")?;
 
     let otel = telemetry::OtelConfig {
         endpoint: settings.otel_exporter_otlp_endpoint.clone(),
@@ -39,6 +40,10 @@ async fn main() -> Result<()> {
     };
     telemetry::init_telemetry(settings.debug, &settings.log_level, &otel)
         .context("failed to initialize telemetry")?;
+    // Settings load before telemetry exists, so their warnings wait until now.
+    for var in &ignored_env {
+        var.warn();
+    }
 
     server::serve(settings).await
 }

@@ -37,6 +37,8 @@ Metadata:
           - DefaultEmbeddingModelId
           - EnablePromptCaching
           - WebSearchBackend
+          - WebSearchRegion
+          - WebSearchMaxTps
           - LogLevel
           - DesiredCount
 
@@ -105,9 +107,31 @@ Parameters:
       requests that send X-Weniq-Web-Search: on. "agentcore" sets
       WEB_SEARCH_BACKEND and grants the task role
       bedrock-agentcore:InvokeWebSearch; AgentCore calls are signed with the
-      task role, never with the Bedrock API key. The default
-      WEB_SEARCH_MAX_TPS of 5 suits up to 2 tasks (the quota is 10 TPS per
-      account and Region).
+      task role, never with the Bedrock API key. AgentCore Web Search exists
+      only in us-east-1, us-east-2, us-west-2, ap-southeast-2, ap-northeast-1
+      and eu-west-1; in any other Region, set WebSearchRegion.
+  WebSearchRegion:
+    Type: String
+    Default: ""
+    AllowedPattern: ^([a-z]{2}(-[a-z]+)+-[0-9]+)?$
+    Description: >-
+      (Optional, used when WebSearchBackend is "agentcore") Region of the
+      AgentCore Web Search endpoint: sets WEB_SEARCH_REGION and the Region of
+      the task role's InvokeWebSearch grant. Leave blank to use the stack's
+      Region. AgentCore Web Search exists only in us-east-1, us-east-2,
+      us-west-2, ap-southeast-2, ap-northeast-1 and eu-west-1. Bedrock calls
+      stay in the stack's Region.
+  WebSearchMaxTps:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    Description: >-
+      (Used when WebSearchBackend is "agentcore") Searches per second each
+      task may send to AgentCore Web Search (WEB_SEARCH_MAX_TPS). The
+      AgentCore quota, 10 TPS per account and Region, is shared by every task,
+      so set this to floor(10 / DesiredCount): the default of 5 suits 2
+      tasks. A rolling deployment runs up to twice DesiredCount for a while;
+      AgentCore throttles the searches beyond the quota.
   LogLevel:
     Type: String
     Default: info
@@ -161,6 +185,9 @@ Conditions:
   HasDefaultEmbeddingModelId: !Not [!Equals [!Ref DefaultEmbeddingModelId, ""]]
   HasBedrockApiKey: !Not [!Equals [!Ref BedrockApiKeySecretArn, ""]]
   HasWebSearch: !Equals [!Ref WebSearchBackend, agentcore]
+  UseWebSearchRegion: !And
+    - !Condition HasWebSearch
+    - !Not [!Equals [!Ref WebSearchRegion, ""]]
   CreateNet: !Equals [!Ref CreateNetwork, "true"]
   UseExistingNet: !Not [!Condition CreateNet]
 
@@ -317,15 +344,19 @@ Resources:
                 Resource:
                   - !Ref ApiKeySecretArn
                   - !If [HasBedrockApiKey, !Ref BedrockApiKeySecretArn, !Ref AWS::NoValue]
-              # Web search (WebSearchBackend=agentcore). The tool is owned by
-              # AWS: the docs name the account segment `aws`, the service
-              # authorization reference `${Account}`; `*` matches both.
+              # Web search (WebSearchBackend=agentcore), in WebSearchRegion or
+              # the stack's Region. AWS owns the tool, so the account segment
+              # of its ARN is the literal `aws`, as the AgentCore developer
+              # guide and API reference write it.
               - !If
                 - HasWebSearch
                 - Sid: AgentCoreWebSearch
                   Effect: Allow
                   Action: bedrock-agentcore:InvokeWebSearch
-                  Resource: !Sub "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:*:tool/web-search.v1"
+                  Resource: !If
+                    - UseWebSearchRegion
+                    - !Sub "arn:${AWS::Partition}:bedrock-agentcore:${WebSearchRegion}:aws:tool/web-search.v1"
+                    - !Sub "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:aws:tool/web-search.v1"
                 - !Ref AWS::NoValue
 
   # ----------------------------------------------------------------
@@ -447,6 +478,16 @@ Resources:
               - HasWebSearch
               - Name: WEB_SEARCH_BACKEND
                 Value: agentcore
+              - !Ref AWS::NoValue
+            - !If
+              - HasWebSearch
+              - Name: WEB_SEARCH_MAX_TPS
+                Value: !Ref WebSearchMaxTps
+              - !Ref AWS::NoValue
+            - !If
+              - UseWebSearchRegion
+              - Name: WEB_SEARCH_REGION
+                Value: !Ref WebSearchRegion
               - !Ref AWS::NoValue
           LogConfiguration:
             LogDriver: awslogs

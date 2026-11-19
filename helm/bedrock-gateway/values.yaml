@@ -86,11 +86,15 @@ env:
   # off. AgentCore calls are signed with SigV4 from the pod's IRSA role, never
   # with AWS_BEARER_TOKEN_BEDROCK; the chart creates no IAM, so grant that role
   # bedrock-agentcore:InvokeWebSearch on
-  # arn:aws:bedrock-agentcore:<region>:*:tool/web-search.v1 yourself.
+  # arn:aws:bedrock-agentcore:<region>:aws:tool/web-search.v1 yourself (the
+  # account segment is the literal "aws": AWS owns the tool).
   WEB_SEARCH_BACKEND: null
-  # WEB_SEARCH_REGION: AgentCore Region. Unset ⇒ AWS_REGION.
+  # WEB_SEARCH_REGION: AgentCore Region. Unset ⇒ AWS_REGION. AgentCore Web
+  # Search exists only in us-east-1, us-east-2, us-west-2, ap-southeast-2,
+  # ap-northeast-1 and eu-west-1.
   WEB_SEARCH_REGION: null
-  # Unset ⇒ binary defaults: 5 searches per response, a 12 s budget per search
+  # Unset ⇒ binary defaults: 5 searches per answer (one user turn, counted
+  # across its continuation requests; at most 20), a 12 s budget per search
   # including one retry, 5 results per search, 1500 characters of page text
   # per result.
   WEB_SEARCH_MAX_CALLS: null
