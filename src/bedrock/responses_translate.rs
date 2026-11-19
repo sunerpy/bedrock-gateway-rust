@@ -29,6 +29,9 @@
 //!   [`crate::bedrock::tools::tool_message_to_tool_result_turn`]).
 //! - `reasoning` items          → Bedrock `reasoningContent`, decoded from the
 //!   gateway's opaque `encrypted_content` envelope with text/signature intact.
+//!   A reasoning item without that envelope is another provider's (a GPT turn's
+//!   OpenAI ciphertext, or no `encrypted_content`) and is skipped; a malformed
+//!   gateway envelope is a 400.
 //!
 //! Contiguous same-role turns are merged / split with the SAME rule the chat
 //! path uses ([`crate::bedrock::tools::should_split_same_role_merge`]): tool-only
@@ -47,11 +50,13 @@
 //!   `store:false`; a 400 would break codex).
 //! - `previous_response_id` / `item_reference` → **accept & IGNORE** because
 //!   this backend is stateless. Clients must replay full history for context.
-//! - `web_search_call` input items → **accept & IGNORE**. codex-based clients
-//!   (zuno) replay the searches a mantle-backed GPT turn ran when the
-//!   conversation continues on this backend; the item carries the query but
-//!   not the results, so it adds no Bedrock block and the turns around it
-//!   merge as if it were absent. The hosted `web_search` tool stays omitted.
+//! - `web_search_call` / `image_generation_call` input items → **accept &
+//!   IGNORE**. codex-based clients (zuno) replay the hosted tool runs of a
+//!   mantle-backed GPT turn when the conversation continues on this backend;
+//!   the search carries its query but not the results, and the image is not
+//!   output of the Bedrock model. Neither adds a Bedrock block, and the turns
+//!   around them merge as if they were absent. The hosted tools stay omitted.
+//!   Other untranslated item types are still a 400.
 //! - `include: ["reasoning.encrypted_content"]` is accepted; signed reasoning
 //!   output carries the replay envelope.
 //! - tools in `tools[]` → function/custom/namespace and client-executed shell /
@@ -121,12 +126,22 @@ pub(crate) fn encode_reasoning_envelope(content: &[Value]) -> Option<String> {
     ))
 }
 
-fn decode_reasoning_envelope(envelope: &str) -> Result<Vec<Value>, AppError> {
-    let encoded = envelope
-        .strip_prefix(REASONING_ENVELOPE_PREFIX)
-        .ok_or_else(|| {
-            AppError::BadRequest("unsupported reasoning.encrypted_content envelope".to_string())
-        })?;
+/// The payload of the gateway's own reasoning envelope, or `None` when
+/// `encrypted_content` is another provider's reasoning (such as the OpenAI
+/// ciphertext of a GPT turn served by mantle).
+fn gateway_envelope_payload(encrypted_content: &str) -> Option<&str> {
+    encrypted_content.strip_prefix(REASONING_ENVELOPE_PREFIX)
+}
+
+/// Is `encrypted_content` the gateway's own reasoning envelope? Only these
+/// replay to Bedrock, and the mantle upstream rejects them.
+pub(crate) fn is_gateway_reasoning_envelope(encrypted_content: &str) -> bool {
+    gateway_envelope_payload(encrypted_content).is_some()
+}
+
+/// Decode a gateway envelope's payload (the text after
+/// [`REASONING_ENVELOPE_PREFIX`]) into Converse `reasoningContent` blocks.
+fn decode_reasoning_envelope(encoded: &str) -> Result<Vec<Value>, AppError> {
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(encoded)
         .map_err(|_| AppError::BadRequest("malformed reasoning.encrypted_content".to_string()))?;
@@ -940,30 +955,35 @@ async fn parse_input_items(
                         content: vec![tool_search_output_block(fields)?],
                     });
                 }
-                // web_search_call → DROP. A search the hosted `web_search`
-                // tool ran on mantle, replayed after a GPT turn. It carries the
-                // query but not the results, so no Bedrock block comes of it.
-                "web_search_call" => {}
+                // web_search_call / image_generation_call → DROP. A hosted
+                // tool run on mantle, replayed after a GPT turn. The search
+                // carries its query but not the results, and the image is not
+                // output of the Bedrock model, so neither is replayed.
+                "web_search_call" | "image_generation_call" => {}
                 _ => {
                     return Err(AppError::BadRequest(format!(
                         "Responses input item type '{item_type}' is not supported"
                     )));
                 }
             },
-            // Replay signed reasoning exactly; Bedrock validates the provider
-            // signature against the unmodified text on the continuation call.
+            // Replay the gateway's signed reasoning exactly; Bedrock validates
+            // the provider signature against the unmodified text on the
+            // continuation call. A reasoning item without the gateway envelope
+            // (a GPT turn's OpenAI ciphertext, or no encrypted_content at all)
+            // belongs to another provider and holds nothing Bedrock can
+            // verify, so it is skipped. A malformed gateway envelope is a 400.
             ResponseInputItem::Reasoning {
                 encrypted_content, ..
             } => {
-                let envelope = encrypted_content.as_deref().ok_or_else(|| {
-                    AppError::BadRequest(
-                        "reasoning continuation requires reasoning.encrypted_content when store is false"
-                            .to_string(),
-                    )
-                })?;
+                let Some(encoded) = encrypted_content
+                    .as_deref()
+                    .and_then(gateway_envelope_payload)
+                else {
+                    continue;
+                };
                 turns.push(Turn {
                     role: "assistant".to_string(),
-                    content: decode_reasoning_envelope(envelope)?,
+                    content: decode_reasoning_envelope(encoded)?,
                 });
             }
         }
