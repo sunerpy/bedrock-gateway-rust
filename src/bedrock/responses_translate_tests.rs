@@ -179,6 +179,185 @@ async fn item_reference_is_accepted_and_ignored_by_stateless_gateway() {
     assert_eq!(messages[0]["content"][0]["text"], "continue");
 }
 
+// -- Replayed web_search_call items (a hosted search mantle ran) are skipped --
+
+/// A `web_search_call` as zuno replays it after a search the GPT (mantle)
+/// backend ran: the action with its query, and no results.
+fn replayed_web_search_call(id: &str, action: Value) -> Value {
+    json!({ "type": "web_search_call", "id": id, "status": "completed", "action": action })
+}
+
+/// The same `input` with its `web_search_call` items removed.
+fn without_web_search_calls(input: &Value) -> Value {
+    input
+        .as_array()
+        .expect("input items")
+        .iter()
+        .filter(|item| item["type"] != "web_search_call")
+        .cloned()
+        .collect()
+}
+
+fn roles(out: &ResponsesConverseInput) -> Vec<&str> {
+    out.messages
+        .as_array()
+        .expect("messages")
+        .iter()
+        .map(|message| message["role"].as_str().expect("role"))
+        .collect()
+}
+
+#[tokio::test]
+async fn replayed_web_search_call_is_skipped_on_both_lanes() {
+    let input = json!([
+        { "type": "message", "role": "user", "content": "What changed in Rust 1.98?" },
+        { "type": "message", "role": "assistant", "content": [
+            { "type": "output_text", "text": "Rust 1.98 stabilized two APIs." }
+        ]},
+        replayed_web_search_call("ws_1", json!({
+            "type": "search",
+            "query": "Rust 1.98 release notes",
+            "queries": ["Rust 1.98 release notes"]
+        })),
+        { "type": "message", "role": "user", "content": "Which ones?" }
+    ]);
+    let without = req_from(json!({ "model": "m", "input": without_web_search_calls(&input) }));
+    let with = req_from(json!({ "model": "m", "input": input }));
+    let c = caps();
+    let r = resolver(true);
+
+    for tool_search in [false, true] {
+        let model = "anthropic.claude-3-sonnet-v1:0";
+        let out = to_responses_converse_input_with(&with, model, &r, &c, tool_search)
+            .await
+            .unwrap_or_else(|e| panic!("tool_search={tool_search}: {e:?}"));
+        let expected = to_responses_converse_input_with(&without, model, &r, &c, tool_search)
+            .await
+            .expect("parse without the search");
+
+        assert_eq!(out, expected, "tool_search={tool_search}");
+        assert_eq!(roles(&out), ["user", "assistant", "user"]);
+        assert_eq!(
+            out.messages[1]["content"],
+            json!([{ "text": "Rust 1.98 stabilized two APIs." }])
+        );
+        assert_eq!(
+            out.messages[2]["content"],
+            json!([{ "text": "Which ones?" }])
+        );
+    }
+}
+
+#[tokio::test]
+async fn assistant_turns_around_a_skipped_web_search_call_merge() {
+    // GPT's commentary, two searches, then its answer: with the searches
+    // skipped, the two assistant texts are contiguous and merge into one
+    // assistant message.
+    let input = json!([
+        { "type": "message", "role": "user", "content": "What changed in Rust 1.98?" },
+        { "type": "message", "role": "assistant", "content": [
+            { "type": "output_text", "text": "Let me check the release notes." }
+        ]},
+        replayed_web_search_call("ws_1", json!({
+            "type": "search",
+            "query": "Rust 1.98",
+            "queries": ["Rust 1.98", "Rust 1.98 release notes"]
+        })),
+        replayed_web_search_call("ws_2", json!({
+            "type": "open_page",
+            "url": "https://example.com/rust-1-98"
+        })),
+        { "type": "message", "role": "assistant", "content": [
+            { "type": "output_text", "text": "Rust 1.98 stabilized two APIs." }
+        ]},
+        { "type": "message", "role": "user", "content": "Thanks." }
+    ]);
+    let expected = parse(&req_from(
+        json!({ "model": "m", "input": without_web_search_calls(&input) }),
+    ))
+    .await
+    .expect("parse without the searches");
+    let out = parse(&req_from(json!({ "model": "m", "input": input })))
+        .await
+        .expect("web_search_call items are skipped");
+
+    assert_eq!(out, expected);
+    assert_eq!(roles(&out), ["user", "assistant", "user"]);
+    assert_eq!(
+        out.messages[1]["content"],
+        json!([
+            { "text": "Let me check the release notes." },
+            { "text": "Rust 1.98 stabilized two APIs." }
+        ])
+    );
+}
+
+#[tokio::test]
+async fn skipped_web_search_call_keeps_reasoning_replay_boundaries() {
+    // A search between a signed reasoning item and its text must not split
+    // them into two assistant messages, and a search before the next
+    // reasoning item must not merge that reasoning into the previous message.
+    let first = encode_reasoning_envelope(&[json!({
+        "reasoningContent": {
+            "reasoningText": { "text": "search first", "signature": "sig-1" }
+        }
+    })])
+    .expect("first envelope");
+    let second = encode_reasoning_envelope(&[json!({
+        "reasoningContent": {
+            "reasoningText": { "text": "answer now", "signature": "sig-2" }
+        }
+    })])
+    .expect("second envelope");
+    let input = json!([
+        { "type": "message", "role": "user", "content": "start" },
+        { "type": "reasoning", "id": "rs_1", "encrypted_content": first },
+        replayed_web_search_call("ws_1", json!({
+            "type": "search",
+            "query": "q",
+            "queries": ["q"]
+        })),
+        { "type": "message", "role": "assistant", "content": [
+            { "type": "output_text", "text": "first response" }
+        ]},
+        replayed_web_search_call("ws_2", json!({
+            "type": "find_in_page",
+            "url": "https://example.com/notes",
+            "pattern": "stabilized"
+        })),
+        { "type": "reasoning", "id": "rs_2", "encrypted_content": second },
+        { "type": "message", "role": "assistant", "content": [
+            { "type": "output_text", "text": "second response" }
+        ]},
+        { "type": "message", "role": "user", "content": "continue" }
+    ]);
+    let expected = parse(&req_from(
+        json!({ "model": "m", "input": without_web_search_calls(&input) }),
+    ))
+    .await
+    .expect("parse without the searches");
+    let out = parse(&req_from(json!({ "model": "m", "input": input })))
+        .await
+        .expect("web_search_call items are skipped");
+
+    assert_eq!(out, expected);
+    assert_eq!(roles(&out), ["user", "assistant", "assistant", "user"]);
+    let first_turn = out.messages[1]["content"].as_array().expect("first turn");
+    assert_eq!(first_turn.len(), 2);
+    assert_eq!(
+        first_turn[0]["reasoningContent"]["reasoningText"]["signature"],
+        "sig-1"
+    );
+    assert_eq!(first_turn[1]["text"], "first response");
+    let second_turn = out.messages[2]["content"].as_array().expect("second turn");
+    assert_eq!(second_turn.len(), 2);
+    assert_eq!(
+        second_turn[0]["reasoningContent"]["reasoningText"]["signature"],
+        "sig-2"
+    );
+    assert_eq!(second_turn[1]["text"], "second response");
+}
+
 // -- Test 2: instructions present → a Bedrock system block ----------------
 
 #[tokio::test]

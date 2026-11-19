@@ -209,6 +209,16 @@ or MCP. These are not client-side function calls and cannot be emulated merely
 by changing the wire shape. They are omitted from `toolConfig` without hiding
 supported client-executed tools that appear in the same request.
 
+A hosted search can still reach these paths as history. When a conversation
+that searched on a bedrock-mantle (GPT) model continues on a model served by
+Converse or InvokeModel, codex-based clients such as zuno replay its
+`web_search_call` items in `input`. The item carries the search action and
+query but not the results, so the gateway skips it: it adds no Bedrock block,
+and the messages around it keep their order, same-role merging, and reasoning
+boundaries. Input item types that the gateway neither translates nor skips,
+including the call items of the other hosted tools, are still rejected with
+HTTP 400.
+
 The following client-executed forms are the compatibility target:
 
 - Chat nested `function` tools.
@@ -234,6 +244,7 @@ Tests must cover both non-streaming and streaming variants where applicable:
 | Responses reasoning | encrypted envelope round trip, malformed-envelope rejection, and provider signature replay |
 | Responses terminal state | completed, max-token incomplete, content-filter incomplete, failed |
 | Responses state | `store`, `previous_response_id`, and unresolved item references remain non-fatal and stateless |
+| Responses replayed searches | a `web_search_call` input item adds nothing on the Converse and tool-search lanes; the turns around it keep their order, merging, and reasoning boundaries |
 | Responses tool search | the zuno golden requests map to the expected Messages bodies; `tool_search_call` done-only stream; loaded-tool `function_call` with namespace; refusal and max-token stops leave the call incomplete |
 | Mantle | byte-exact passthrough and mid-stream truncation behavior |
 | AI SDK fixtures | current `@ai-sdk/openai-compatible` Chat and `@ai-sdk/openai` Responses shapes |

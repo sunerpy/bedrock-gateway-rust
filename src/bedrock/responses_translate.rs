@@ -47,6 +47,11 @@
 //!   `store:false`; a 400 would break codex).
 //! - `previous_response_id` / `item_reference` → **accept & IGNORE** because
 //!   this backend is stateless. Clients must replay full history for context.
+//! - `web_search_call` input items → **accept & IGNORE**. codex-based clients
+//!   (zuno) replay the searches a mantle-backed GPT turn ran when the
+//!   conversation continues on this backend; the item carries the query but
+//!   not the results, so it adds no Bedrock block and the turns around it
+//!   merge as if it were absent. The hosted `web_search` tool stays omitted.
 //! - `include: ["reasoning.encrypted_content"]` is accepted; signed reasoning
 //!   output carries the replay envelope.
 //! - tools in `tools[]` → function/custom/namespace and client-executed shell /
@@ -935,6 +940,10 @@ async fn parse_input_items(
                         content: vec![tool_search_output_block(fields)?],
                     });
                 }
+                // web_search_call → DROP. A search the hosted `web_search`
+                // tool ran on mantle, replayed after a GPT turn. It carries the
+                // query but not the results, so no Bedrock block comes of it.
+                "web_search_call" => {}
                 _ => {
                     return Err(AppError::BadRequest(format!(
                         "Responses input item type '{item_type}' is not supported"
