@@ -13,11 +13,14 @@
 //! 1. **Region gate FIRST** (before any HTTP call): if the model declares a
 //!    region allow-list ([`ModelCapabilities::model_regions`], T2) that does not
 //!    contain the gateway's running region, fail with [`AppError::BadRequest`].
-//! 2. **Model rewrite**: patch ONLY the top-level `"model"` key of the captured
+//! 2. **Model rewrite**: patch the top-level `"model"` key of the captured
 //!    raw request body to the canonical foundation id
 //!    ([`ModelCapabilities::resolve_foundation`], T2), keeping every other field
 //!    byte-stable (this is why T5 captured `raw_body` — to preserve
-//!    unknown/future fields). Forward that body upstream.
+//!    unknown/future fields). The one other change: `reasoning` items that
+//!    carry the gateway's own envelope (left by a Claude turn earlier in the
+//!    conversation) are removed from `input`, because mantle rejects them with
+//!    400 `invalid encrypted reasoning`. Forward that body upstream.
 //! 3. **Non-stream** ([`Self::respond`]): call
 //!    [`MantleClient::responses_nonstream`], deserialize the mantle JSON into a
 //!    [`ResponsesResponse`], and re-normalize `usage` through the shared
@@ -42,6 +45,7 @@ use futures::stream::StreamExt;
 use serde_json::Value;
 
 use crate::bedrock::mantle_client::{MantleClient, ResponsesStreamTerminal};
+use crate::bedrock::responses_translate::is_gateway_reasoning_envelope;
 use crate::bedrock::tokens::compute_token_usage;
 use crate::config::AppSettings;
 use crate::domain::{
@@ -108,12 +112,15 @@ impl MantleResponsesProvider {
         Ok(region.clone())
     }
 
-    /// Patch ONLY the top-level `"model"` key of the captured raw request body to
-    /// the canonical foundation id, keeping every other field byte-stable.
+    /// Patch the top-level `"model"` key of the captured raw request body to the
+    /// canonical foundation id and drop the gateway's own reasoning items from
+    /// `input` ([`drop_gateway_reasoning`]), keeping every other field.
     ///
     /// The body is parsed to a [`serde_json::Value`], its `model` key is set to
-    /// `resolve_foundation(model)`, and it is reserialized. A malformed body
-    /// surfaces as [`AppError::BadRequest`] (it never reached the upstream).
+    /// `resolve_foundation(model)`, and it is reserialized. A body without
+    /// gateway reasoning comes out exactly as the model patch alone makes it. A
+    /// malformed body surfaces as [`AppError::BadRequest`] (it never reached
+    /// the upstream).
     fn rewrite_model(&self, model: &str, raw_body: &Bytes) -> Result<Bytes, AppError> {
         let canonical = self.caps.resolve_foundation(model);
         let mut value: Value = serde_json::from_slice(raw_body)
@@ -121,6 +128,10 @@ impl MantleResponsesProvider {
         match value.as_object_mut() {
             Some(obj) => {
                 obj.insert("model".to_string(), Value::String(canonical));
+                let dropped = drop_gateway_reasoning(obj);
+                if dropped > 0 {
+                    tracing::debug!(dropped, "dropped Bedrock reasoning items from mantle input");
+                }
             }
             None => {
                 return Err(AppError::BadRequest(
@@ -141,6 +152,32 @@ impl MantleResponsesProvider {
         let body = self.rewrite_model(model, &req.raw_body)?;
         Ok((region, body))
     }
+}
+
+/// Remove from the body's `input` array every `reasoning` item whose
+/// `encrypted_content` is the gateway's own envelope, and return how many were
+/// removed.
+///
+/// A Bedrock-translated (Claude) turn earlier in the conversation left those
+/// items. Mantle cannot read the envelope and rejects the whole request with
+/// 400 `invalid encrypted reasoning`, so the reasoning of another provider is
+/// dropped, as the Converse path drops mantle's. A string `input`, OpenAI
+/// reasoning and every other item are left alone; with nothing to remove the
+/// body is not modified.
+fn drop_gateway_reasoning(body: &mut serde_json::Map<String, Value>) -> usize {
+    let Some(Value::Array(items)) = body.get_mut("input") else {
+        return 0;
+    };
+    let before = items.len();
+    items.retain(|item| {
+        let gateway_reasoning = item.get("type").and_then(Value::as_str) == Some("reasoning")
+            && item
+                .get("encrypted_content")
+                .and_then(Value::as_str)
+                .is_some_and(is_gateway_reasoning_envelope);
+        !gateway_reasoning
+    });
+    before - items.len()
 }
 
 /// Re-normalize a mantle [`ResponsesResponse`]'s `usage` through the shared

@@ -6,11 +6,12 @@
 //! lives in the nested `prop_tests` submodule.
 
 use super::*;
+use crate::bedrock::responses_translate::encode_reasoning_envelope;
 use crate::domain::{ModelCapabilities, ResponsesBackend};
 use crate::openai::responses_schema::{ResponsesInput, ResponsesRequest};
 use std::collections::HashMap;
 use std::time::Instant;
-use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::matchers::{body_json, body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// A capability stub that gates a single model to a fixed region set and
@@ -373,6 +374,153 @@ async fn malformed_body_rejected_before_http() {
     assert!(matches!(err, AppError::BadRequest(_)));
 }
 
+// ---------------------------------------------------------------------------
+// Reasoning from a Bedrock-translated (Claude) turn never reaches mantle
+// ---------------------------------------------------------------------------
+
+/// A reasoning item a Claude turn left in the history: the gateway's envelope,
+/// which mantle answers with 400 `invalid encrypted reasoning`.
+fn claude_reasoning(id: &str) -> Value {
+    let envelope = encode_reasoning_envelope(&[serde_json::json!({
+        "reasoningContent": { "reasoningText": { "text": "plan", "signature": "sig" } }
+    })])
+    .expect("envelope");
+    serde_json::json!({
+        "type": "reasoning", "id": id, "summary": [], "encrypted_content": envelope
+    })
+}
+
+/// The bytes forwarded before Claude reasoning was dropped: the body with only
+/// `model` patched.
+fn model_patch_only(raw: &[u8], canonical: &str) -> Bytes {
+    let mut value: Value = serde_json::from_slice(raw).expect("raw body parses");
+    value["model"] = Value::String(canonical.to_string());
+    Bytes::from(serde_json::to_vec(&value).expect("serialize"))
+}
+
+#[test]
+fn rewrite_drops_gateway_reasoning_and_keeps_every_other_field() {
+    let body = serde_json::json!({
+        "model": "gpt-5.5",
+        "instructions": "Be terse.",
+        "input": [
+            { "type": "message", "role": "user", "content": "Find the bug." },
+            claude_reasoning("rs_claude_1"),
+            { "type": "function_call", "id": "fc_tooluse_1", "call_id": "tooluse_1",
+              "name": "read_file", "arguments": "{}" },
+            { "type": "function_call_output", "call_id": "tooluse_1", "output": "panic!()" },
+            claude_reasoning("rs_claude_2"),
+            { "type": "message", "role": "assistant",
+              "content": [{ "type": "output_text", "text": "main panics." }] },
+            { "type": "reasoning", "id": "rs_gpt_1", "summary": [],
+              "encrypted_content": "gAAAAABpZXhhbXBsZQ==" },
+            { "type": "reasoning", "id": "rs_gpt_2", "summary": [], "encrypted_content": null },
+            { "type": "message", "role": "user", "content": "Now on GPT." }
+        ],
+        "tools": [{ "type": "function", "name": "read_file", "parameters": { "type": "object" } }],
+        "include": ["reasoning.encrypted_content"],
+        "store": false,
+        "stream": true,
+        "future_field": { "kept": true }
+    });
+    let raw = Bytes::from(serde_json::to_vec(&body).expect("serialize"));
+    let provider = provider_for("http://mantle.invalid", "us-east-2", None);
+
+    let out = provider.rewrite_model("gpt-5.5", &raw).expect("rewrite");
+    let out: Value = serde_json::from_slice(&out).expect("output parses");
+
+    let mut expected = body;
+    expected["model"] = serde_json::json!("openai.gpt-5.5");
+    expected["input"]
+        .as_array_mut()
+        .expect("input")
+        .retain(|item| {
+            !item["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("rs_claude"))
+        });
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn rewrite_without_gateway_reasoning_is_byte_stable() {
+    // OpenAI reasoning, a search, a user who pasted the envelope prefix, and a
+    // non-reasoning item with a prefixed field: nothing is dropped.
+    let raw: &[u8] = br#"{"model":"gpt-5.5","input":[
+        {"type":"message","role":"user","content":"bedrock-reasoning-v1:pasted"},
+        {"type":"reasoning","id":"rs_gpt_1","summary":[],"encrypted_content":"gAAAAABpZXhhbXBsZQ=="},
+        {"type":"reasoning","id":"rs_gpt_2","summary":[],"encrypted_content":null},
+        {"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search"}},
+        {"type":"compaction","encrypted_content":"bedrock-reasoning-v1:not-reasoning"}
+    ],"stream":true,"zeta":1,"alpha":[3,2,1]}"#;
+    let provider = provider_for("http://mantle.invalid", "us-east-2", None);
+
+    let out = provider
+        .rewrite_model("gpt-5.5", &Bytes::copy_from_slice(raw))
+        .expect("rewrite");
+    assert_eq!(out, model_patch_only(raw, "openai.gpt-5.5"));
+}
+
+#[test]
+fn rewrite_leaves_string_input_byte_stable() {
+    let raw: &[u8] = br#"{"model":"gpt-5.5","input":"bedrock-reasoning-v1:text","stream":true}"#;
+    let provider = provider_for("http://mantle.invalid", "us-east-2", None);
+
+    let out = provider
+        .rewrite_model("gpt-5.5", &Bytes::copy_from_slice(raw))
+        .expect("rewrite");
+    assert_eq!(out, model_patch_only(raw, "openai.gpt-5.5"));
+}
+
+/// The raw lane forwards the history without the Claude reasoning item.
+#[tokio::test]
+async fn raw_stream_forwards_input_without_gateway_reasoning() {
+    const SSE: &str = "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .and(body_json(serde_json::json!({
+            "model": "openai.gpt-5.5",
+            "input": [
+                { "type": "message", "role": "user", "content": "hi" },
+                { "type": "message", "role": "user", "content": "again" }
+            ],
+            "stream": true
+        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(SSE),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = provider_for(
+        &server.uri(),
+        "us-east-2",
+        Some(vec!["us-east-2".to_string()]),
+    );
+    let body = serde_json::json!({
+        "model": "gpt-5.5",
+        "input": [
+            { "type": "message", "role": "user", "content": "hi" },
+            claude_reasoning("rs_claude_1"),
+            { "type": "message", "role": "user", "content": "again" }
+        ],
+        "stream": true
+    });
+    let req = normalized(&body.to_string());
+
+    let stream = provider
+        .respond_raw_stream(&req)
+        .await
+        .expect("raw lane should succeed")
+        .expect("raw stream should open on 200");
+    let chunks: Vec<Bytes> = stream.map(|r| r.expect("ok chunk")).collect().await;
+    assert_eq!(chunks.concat(), SSE.as_bytes());
+}
+
 /// Property-based tests for the mantle model-name rewrite minimality.
 ///
 /// Property 4: Mantle 模型名改写的最小性.
@@ -423,6 +571,9 @@ mod prop_tests {
         /// mantle backend, `rewrite_model` patches ONLY the top-level `"model"`
         /// key (to the canonical / alias-resolved foundation id) and preserves
         /// every other field verbatim — no field is added, removed, or mutated.
+        /// The generated strings cannot contain `:`, so no generated body holds
+        /// a gateway reasoning envelope, the one input the rewrite also drops
+        /// (covered by the `rewrite_*` tests above).
         #[test]
         fn prop_rewrite_only_touches_model_field(
             fields in arb_body_fields(),

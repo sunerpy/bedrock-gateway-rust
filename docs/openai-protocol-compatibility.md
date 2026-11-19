@@ -81,6 +81,26 @@ reconstructs the Bedrock `reasoningContent` block without changing its text,
 provider signature, or redacted content. Bedrock authenticates the replayed
 text/signature pair; malformed envelopes are rejected locally.
 
+A conversation can switch between a model the gateway translates (Claude on
+Converse or InvokeModel) and a bedrock-mantle model (GPT). The client then
+replays the reasoning items of both providers in one `input`, and each provider
+can read only its own: Bedrock cannot verify OpenAI's ciphertext, and mantle
+rejects the gateway envelope with HTTP 400 `invalid encrypted reasoning`. The
+gateway therefore drops the other provider's reasoning on both paths:
+
+- Converse and the tool-search lane replay only reasoning items whose
+  `encrypted_content` starts with the envelope prefix `bedrock-reasoning-v1:`.
+  Every other reasoning item, including one without `encrypted_content`, is
+  skipped. A malformed envelope with the right prefix is still rejected with
+  HTTP 400.
+- The mantle passthrough removes the reasoning items that carry that prefix
+  from the `input` array before forwarding and leaves everything else as it
+  was. A body without such items is forwarded exactly as before, with only
+  `model` patched.
+
+Only reasoning that the receiving provider cannot read is dropped; the messages
+and tool calls of the other model's turns are still replayed.
+
 Chat Completions has no standard field that can carry a Bedrock reasoning
 signature through an arbitrary OpenAI client. Consequently, the gateway must
 not claim that extended-thinking tool continuation is supported on Chat. It
@@ -209,6 +229,17 @@ or MCP. These are not client-side function calls and cannot be emulated merely
 by changing the wire shape. They are omitted from `toolConfig` without hiding
 supported client-executed tools that appear in the same request.
 
+A hosted tool run can still reach these paths as history. When a conversation
+that used hosted tools on a bedrock-mantle (GPT) model continues on a model
+served by Converse or InvokeModel, codex-based clients such as zuno replay its
+`web_search_call` and `image_generation_call` items in `input`. The search
+item carries the action and query but not the results, and the image is not
+output of the Bedrock model, so the gateway skips both: they add no Bedrock
+block, and the messages around them keep their order, same-role merging, and
+reasoning boundaries. Input item types that the gateway neither translates nor
+skips, including the call items of the other hosted tools, are still rejected
+with HTTP 400.
+
 The following client-executed forms are the compatibility target:
 
 - Chat nested `function` tools.
@@ -232,8 +263,10 @@ Tests must cover both non-streaming and streaming variants where applicable:
 | Responses shell tools | local shell, shell, apply patch request/output round trips |
 | Responses unsupported tools | every hosted/unknown family is omitted while supported sibling tools remain |
 | Responses reasoning | encrypted envelope round trip, malformed-envelope rejection, and provider signature replay |
+| Responses reasoning from another provider | Converse and tool-search lanes skip reasoning without the gateway envelope (OpenAI ciphertext or none) and still reject a malformed envelope; mantle drops gateway-envelope reasoning from `input`, forwards a body without any byte-stable, and leaves a string `input` alone |
 | Responses terminal state | completed, max-token incomplete, content-filter incomplete, failed |
 | Responses state | `store`, `previous_response_id`, and unresolved item references remain non-fatal and stateless |
+| Responses replayed hosted calls | `web_search_call` and `image_generation_call` input items add nothing on the Converse and tool-search lanes; the turns around them keep their order, merging, and reasoning boundaries |
 | Responses tool search | the zuno golden requests map to the expected Messages bodies; `tool_search_call` done-only stream; loaded-tool `function_call` with namespace; refusal and max-token stops leave the call incomplete |
 | Mantle | byte-exact passthrough and mid-stream truncation behavior |
 | AI SDK fixtures | current `@ai-sdk/openai-compatible` Chat and `@ai-sdk/openai` Responses shapes |

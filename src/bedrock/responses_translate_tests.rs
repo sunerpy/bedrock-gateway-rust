@@ -179,6 +179,400 @@ async fn item_reference_is_accepted_and_ignored_by_stateless_gateway() {
     assert_eq!(messages[0]["content"][0]["text"], "continue");
 }
 
+// -- Replayed web_search_call items (a hosted search mantle ran) are skipped --
+
+/// A `web_search_call` as zuno replays it after a search the GPT (mantle)
+/// backend ran: the action with its query, and no results.
+fn replayed_web_search_call(id: &str, action: Value) -> Value {
+    json!({ "type": "web_search_call", "id": id, "status": "completed", "action": action })
+}
+
+/// The same `input` without the items `skipped` matches.
+fn input_without(input: &Value, skipped: impl Fn(&Value) -> bool) -> Value {
+    input
+        .as_array()
+        .expect("input items")
+        .iter()
+        .filter(|item| !skipped(item))
+        .cloned()
+        .collect()
+}
+
+/// The same `input` with its `web_search_call` items removed.
+fn without_web_search_calls(input: &Value) -> Value {
+    input_without(input, |item| item["type"] == "web_search_call")
+}
+
+fn roles(out: &ResponsesConverseInput) -> Vec<&str> {
+    out.messages
+        .as_array()
+        .expect("messages")
+        .iter()
+        .map(|message| message["role"].as_str().expect("role"))
+        .collect()
+}
+
+#[tokio::test]
+async fn replayed_web_search_call_is_skipped_on_both_lanes() {
+    let input = json!([
+        { "type": "message", "role": "user", "content": "What changed in Rust 1.98?" },
+        { "type": "message", "role": "assistant", "content": [
+            { "type": "output_text", "text": "Rust 1.98 stabilized two APIs." }
+        ]},
+        replayed_web_search_call("ws_1", json!({
+            "type": "search",
+            "query": "Rust 1.98 release notes",
+            "queries": ["Rust 1.98 release notes"]
+        })),
+        { "type": "message", "role": "user", "content": "Which ones?" }
+    ]);
+    let without = req_from(json!({ "model": "m", "input": without_web_search_calls(&input) }));
+    let with = req_from(json!({ "model": "m", "input": input }));
+    let c = caps();
+    let r = resolver(true);
+
+    for tool_search in [false, true] {
+        let model = "anthropic.claude-3-sonnet-v1:0";
+        let out = to_responses_converse_input_with(&with, model, &r, &c, tool_search)
+            .await
+            .unwrap_or_else(|e| panic!("tool_search={tool_search}: {e:?}"));
+        let expected = to_responses_converse_input_with(&without, model, &r, &c, tool_search)
+            .await
+            .expect("parse without the search");
+
+        assert_eq!(out, expected, "tool_search={tool_search}");
+        assert_eq!(roles(&out), ["user", "assistant", "user"]);
+        assert_eq!(
+            out.messages[1]["content"],
+            json!([{ "text": "Rust 1.98 stabilized two APIs." }])
+        );
+        assert_eq!(
+            out.messages[2]["content"],
+            json!([{ "text": "Which ones?" }])
+        );
+    }
+}
+
+#[tokio::test]
+async fn assistant_turns_around_a_skipped_web_search_call_merge() {
+    // GPT's commentary, two searches, then its answer: with the searches
+    // skipped, the two assistant texts are contiguous and merge into one
+    // assistant message.
+    let input = json!([
+        { "type": "message", "role": "user", "content": "What changed in Rust 1.98?" },
+        { "type": "message", "role": "assistant", "content": [
+            { "type": "output_text", "text": "Let me check the release notes." }
+        ]},
+        replayed_web_search_call("ws_1", json!({
+            "type": "search",
+            "query": "Rust 1.98",
+            "queries": ["Rust 1.98", "Rust 1.98 release notes"]
+        })),
+        replayed_web_search_call("ws_2", json!({
+            "type": "open_page",
+            "url": "https://example.com/rust-1-98"
+        })),
+        { "type": "message", "role": "assistant", "content": [
+            { "type": "output_text", "text": "Rust 1.98 stabilized two APIs." }
+        ]},
+        { "type": "message", "role": "user", "content": "Thanks." }
+    ]);
+    let expected = parse(&req_from(
+        json!({ "model": "m", "input": without_web_search_calls(&input) }),
+    ))
+    .await
+    .expect("parse without the searches");
+    let out = parse(&req_from(json!({ "model": "m", "input": input })))
+        .await
+        .expect("web_search_call items are skipped");
+
+    assert_eq!(out, expected);
+    assert_eq!(roles(&out), ["user", "assistant", "user"]);
+    assert_eq!(
+        out.messages[1]["content"],
+        json!([
+            { "text": "Let me check the release notes." },
+            { "text": "Rust 1.98 stabilized two APIs." }
+        ])
+    );
+}
+
+#[tokio::test]
+async fn skipped_web_search_call_keeps_reasoning_replay_boundaries() {
+    // A search between a signed reasoning item and its text must not split
+    // them into two assistant messages, and a search before the next
+    // reasoning item must not merge that reasoning into the previous message.
+    let first = encode_reasoning_envelope(&[json!({
+        "reasoningContent": {
+            "reasoningText": { "text": "search first", "signature": "sig-1" }
+        }
+    })])
+    .expect("first envelope");
+    let second = encode_reasoning_envelope(&[json!({
+        "reasoningContent": {
+            "reasoningText": { "text": "answer now", "signature": "sig-2" }
+        }
+    })])
+    .expect("second envelope");
+    let input = json!([
+        { "type": "message", "role": "user", "content": "start" },
+        { "type": "reasoning", "id": "rs_1", "encrypted_content": first },
+        replayed_web_search_call("ws_1", json!({
+            "type": "search",
+            "query": "q",
+            "queries": ["q"]
+        })),
+        { "type": "message", "role": "assistant", "content": [
+            { "type": "output_text", "text": "first response" }
+        ]},
+        replayed_web_search_call("ws_2", json!({
+            "type": "find_in_page",
+            "url": "https://example.com/notes",
+            "pattern": "stabilized"
+        })),
+        { "type": "reasoning", "id": "rs_2", "encrypted_content": second },
+        { "type": "message", "role": "assistant", "content": [
+            { "type": "output_text", "text": "second response" }
+        ]},
+        { "type": "message", "role": "user", "content": "continue" }
+    ]);
+    let expected = parse(&req_from(
+        json!({ "model": "m", "input": without_web_search_calls(&input) }),
+    ))
+    .await
+    .expect("parse without the searches");
+    let out = parse(&req_from(json!({ "model": "m", "input": input })))
+        .await
+        .expect("web_search_call items are skipped");
+
+    assert_eq!(out, expected);
+    assert_eq!(roles(&out), ["user", "assistant", "assistant", "user"]);
+    let first_turn = out.messages[1]["content"].as_array().expect("first turn");
+    assert_eq!(first_turn.len(), 2);
+    assert_eq!(
+        first_turn[0]["reasoningContent"]["reasoningText"]["signature"],
+        "sig-1"
+    );
+    assert_eq!(first_turn[1]["text"], "first response");
+    let second_turn = out.messages[2]["content"].as_array().expect("second turn");
+    assert_eq!(second_turn.len(), 2);
+    assert_eq!(
+        second_turn[0]["reasoningContent"]["reasoningText"]["signature"],
+        "sig-2"
+    );
+    assert_eq!(second_turn[1]["text"], "second response");
+}
+
+// -- A conversation that switches between Claude and GPT (mantle) ---------
+
+/// A reasoning item from a GPT (mantle) turn: OpenAI's own opaque
+/// `encrypted_content`, which is not the gateway's envelope.
+fn gpt_reasoning(id: &str) -> Value {
+    json!({
+        "type": "reasoning",
+        "id": id,
+        "summary": [{ "type": "summary_text", "text": "Looked it up." }],
+        "encrypted_content": "gAAAAABpZXhhbXBsZS1vcGVuYWktY2lwaGVydGV4dA=="
+    })
+}
+
+/// An `image_generation_call` as zuno replays it after the hosted image tool
+/// ran on a GPT turn.
+fn replayed_image_generation_call(id: &str) -> Value {
+    json!({
+        "type": "image_generation_call",
+        "id": id,
+        "status": "completed",
+        "revised_prompt": "A gray tabby cat",
+        "result": "aGk="
+    })
+}
+
+#[tokio::test]
+async fn alternating_claude_and_gpt_turns_replay_only_gateway_reasoning() {
+    let claude_reasoning = encode_reasoning_envelope(&[json!({
+        "reasoningContent": {
+            "reasoningText": { "text": "read a.rs first", "signature": "sig-claude" }
+        }
+    })])
+    .expect("envelope");
+    let input = json!([
+        // Claude turn.
+        { "type": "message", "role": "user", "content": "Find the bug in a.rs." },
+        { "type": "reasoning", "id": "rs_claude_1", "encrypted_content": claude_reasoning },
+        { "type": "function_call", "call_id": "tooluse_1", "name": "read_file",
+          "arguments": "{\"path\":\"a.rs\"}" },
+        { "type": "function_call_output", "call_id": "tooluse_1", "output": "panic!()" },
+        { "type": "message", "role": "assistant", "content": [
+            { "type": "output_text", "text": "main panics." }
+        ]},
+        // GPT turn: OpenAI reasoning, a search, a tool call, an image.
+        { "type": "message", "role": "user", "content": "Find the fix." },
+        gpt_reasoning("rs_gpt_1"),
+        replayed_web_search_call("ws_1", json!({
+            "type": "search",
+            "query": "rust panic fix",
+            "queries": ["rust panic fix"]
+        })),
+        { "type": "function_call", "call_id": "call_2", "name": "read_file",
+          "arguments": "{\"path\":\"b.rs\"}" },
+        { "type": "function_call_output", "call_id": "call_2", "output": "fn fix() {}" },
+        // zuno sends `encrypted_content: null` when the turn had none.
+        { "type": "reasoning", "id": "rs_gpt_2", "summary": [], "encrypted_content": null },
+        { "type": "message", "role": "assistant", "content": [
+            { "type": "output_text", "text": "Call fix() instead." }
+        ]},
+        replayed_image_generation_call("ig_1"),
+        // Back on Claude.
+        { "type": "message", "role": "user", "content": "Apply it." }
+    ]);
+    let without = req_from(json!({
+        "model": "m",
+        "input": input_without(&input, |item| {
+            item["id"].as_str().is_some_and(|id| {
+                id.starts_with("rs_gpt") || id.starts_with("ws_") || id.starts_with("ig_")
+            })
+        })
+    }));
+    let with = req_from(json!({ "model": "m", "input": input }));
+    let c = caps();
+    let r = resolver(true);
+
+    for tool_search in [false, true] {
+        let model = "anthropic.claude-3-sonnet-v1:0";
+        let out = to_responses_converse_input_with(&with, model, &r, &c, tool_search)
+            .await
+            .unwrap_or_else(|e| panic!("tool_search={tool_search}: {e:?}"));
+        let expected = to_responses_converse_input_with(&without, model, &r, &c, tool_search)
+            .await
+            .expect("parse without the GPT-only items");
+
+        assert_eq!(out, expected, "tool_search={tool_search}");
+        assert_eq!(
+            roles(&out),
+            [
+                "user",
+                "assistant",
+                "user",
+                "assistant",
+                "user",
+                "assistant",
+                "user",
+                "assistant",
+                "user"
+            ]
+        );
+        let claude_turn = out.messages[1]["content"].as_array().expect("Claude turn");
+        assert_eq!(
+            claude_turn[0]["reasoningContent"]["reasoningText"]["signature"],
+            "sig-claude"
+        );
+        assert_eq!(claude_turn[1]["toolUse"]["toolUseId"], "tooluse_1");
+        assert_eq!(
+            out.messages[5]["content"],
+            json!([{ "toolUse": {
+                "toolUseId": "call_2", "name": "read_file", "input": { "path": "b.rs" }
+            }}])
+        );
+        assert_eq!(
+            out.messages[7]["content"],
+            json!([{ "text": "Call fix() instead." }])
+        );
+    }
+}
+
+#[tokio::test]
+async fn reasoning_input_without_encrypted_content_is_skipped() {
+    // Only the gateway's envelope can be replayed; an item without one is
+    // another provider's reasoning (or carries nothing Bedrock can verify).
+    let req = req_from(json!({
+        "model": "m",
+        "input": [
+            { "type": "message", "role": "user", "content": "hi" },
+            { "type": "reasoning" },
+            { "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": null }
+        ]
+    }));
+
+    let out = parse(&req)
+        .await
+        .expect("reasoning without an envelope is skipped");
+    assert_eq!(
+        out.messages,
+        json!([{ "role": "user", "content": [{ "text": "hi" }] }])
+    );
+}
+
+#[tokio::test]
+async fn malformed_gateway_reasoning_envelope_is_still_rejected() {
+    fn gateway_envelope(payload: &[u8]) -> String {
+        format!(
+            "bedrock-reasoning-v1:{}",
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload)
+        )
+    }
+    let cases = [
+        (
+            "bedrock-reasoning-v1:not base64!".to_string(),
+            "malformed reasoning.encrypted_content",
+        ),
+        (
+            gateway_envelope(b"not json"),
+            "malformed reasoning.encrypted_content",
+        ),
+        (
+            gateway_envelope(br#"{"version":2,"blocks":[]}"#),
+            "unsupported reasoning.encrypted_content envelope version",
+        ),
+        (
+            gateway_envelope(br#"{"version":1}"#),
+            "reasoning envelope has no blocks",
+        ),
+        (
+            gateway_envelope(br#"{"version":1,"blocks":[{"reasoningText":{"text":"t"}}]}"#),
+            "reasoning envelope contains an invalid block",
+        ),
+    ];
+
+    for (envelope, expected) in cases {
+        let req = req_from(json!({
+            "model": "m",
+            "input": [
+                { "type": "message", "role": "user", "content": "hi" },
+                { "type": "reasoning", "id": "rs_1", "encrypted_content": envelope }
+            ]
+        }));
+        match parse(&req).await {
+            Err(AppError::BadRequest(message)) => assert_eq!(message, expected),
+            other => panic!("{expected}: expected BadRequest, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn replayed_image_generation_call_is_skipped() {
+    let input = json!([
+        { "type": "message", "role": "user", "content": "Draw a cat." },
+        replayed_image_generation_call("ig_1"),
+        { "type": "message", "role": "assistant", "content": [
+            { "type": "output_text", "text": "Here is the cat." }
+        ]},
+        { "type": "message", "role": "user", "content": "Make it gray." }
+    ]);
+    let expected = parse(&req_from(json!({
+        "model": "m",
+        "input": input_without(&input, |item| item["type"] == "image_generation_call")
+    })))
+    .await
+    .expect("parse without the image");
+    let out = parse(&req_from(json!({ "model": "m", "input": input })))
+        .await
+        .expect("image_generation_call is skipped");
+
+    assert_eq!(out, expected);
+    assert_eq!(roles(&out), ["user", "assistant", "user"]);
+}
+
 // -- Test 2: instructions present → a Bedrock system block ----------------
 
 #[tokio::test]
@@ -595,25 +989,6 @@ async fn reasoning_input_without_id_replays_identically_to_id_bearing_item() {
     let with_id_output = parse(&with_id).await.expect("id-bearing replay parses");
     let without_id_output = parse(&without_id).await.expect("id-less replay parses");
     assert_eq!(without_id_output, with_id_output);
-}
-
-#[tokio::test]
-async fn reasoning_input_without_id_or_encrypted_content_reports_replay_error() {
-    let req = req_from(json!({
-        "model": "m",
-        "input": [{ "type": "reasoning" }]
-    }));
-
-    let err = parse(&req)
-        .await
-        .expect_err("reasoning replay without encrypted content must reject");
-    match err {
-        AppError::BadRequest(message) => assert_eq!(
-            message,
-            "reasoning continuation requires reasoning.encrypted_content when store is false"
-        ),
-        other => panic!("expected BadRequest, got {other:?}"),
-    }
 }
 
 #[tokio::test]
