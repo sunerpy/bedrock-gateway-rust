@@ -123,7 +123,7 @@ Live integration tests are `#[ignore]`d and env-gated (`src/bedrock/cache_tests.
 BEDROCK_INTEGRATION=1 AWS_PROFILE=<your-profile> cargo test -- --ignored   # needs real Bedrock access in us-east-2
 ```
 
-The web search tests pin us-east-2 for Bedrock and AgentCore in code, but `AppSettings::load()` and the SDK read a bare `AWS_REGION`, so unset it (and stray key variables) when running them: `env -u AWS_REGION -u AWS_DEFAULT_REGION -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN BEDROCK_INTEGRATION=1 AWS_PROFILE=<profile> cargo test --lib web_search -- --ignored`. AgentCore takes SigV4 only, so the profile needs IAM credentials even where `AWS_BEARER_TOKEN_BEDROCK` is set.
+The web search tests pin us-east-2 for Bedrock and AgentCore in code, but `AppSettings::load()` and the SDK read a bare `AWS_REGION`, so unset it (and stray key variables) when running them: `env -u AWS_REGION -u AWS_DEFAULT_REGION -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_BEARER_TOKEN_BEDROCK -u BEDROCK_API_KEY BEDROCK_INTEGRATION=1 AWS_PROFILE=<profile> cargo test --lib web_search -- --ignored`. The Bedrock clients send a bearer token from `AWS_BEARER_TOKEN_BEDROCK` instead of signing with the profile; a token meant for another endpoint makes every Bedrock call fail with `Authorization header requires 'Credential' parameter`, so unset it unless it is a Bedrock API key of the profile's account. AgentCore takes SigV4 only, so the profile needs IAM credentials either way.
 
 Coverage is tracked but never blocking: `make coverage`, `make coverage-html`, `make coverage-lcov`. Target 95%; see `docs/coverage.md`.
 
