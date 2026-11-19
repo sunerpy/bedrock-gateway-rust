@@ -2,7 +2,9 @@
 //!
 //! A request reaches this module when it *declares* the gateway's web search
 //! (`WebSearchPlan::declared`): its `X-Weniq-Web-Search` header is `on` on a
-//! model with the `web_search` capability while a backend is configured, or
+//! model with the `web_search` capability while a backend is configured
+//! (and it does not continue a tool loop whose thinking predates the
+//! declaration), or
 //! its history already carries the gateway's web search marks. Every other
 //! request takes the single-call path of [`BedrockResponsesProvider`],
 //! unchanged.
@@ -29,10 +31,13 @@
 //! ## Terminal states
 //!
 //! After a real search in the answer, the response never ends `incomplete`
-//! (zuno retries that and would search again) and never ends `completed`
-//! without an answer: running out of steps or of output budget appends a
-//! gateway message (`msg_S_stop`) that says why, with status `completed`.
-//! Without a real search the terminal states are the single-call ones.
+//! (zuno retries that, `content_filter` included, and would search again)
+//! and never ends `completed` without an answer: running out of steps or of
+//! output budget, a content-filter stop, or a final step with neither an
+//! answer nor a client call appends a gateway message (`msg_S_stop`) that
+//! says why, with status `completed`. Without a real search the terminal
+//! states are the single-call ones, except that the step limit also gets the
+//! gateway message, which then names the gate.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -112,9 +117,15 @@ pub(crate) struct WebSearchPlan {
 /// Execution needs the header `on`, a backend and the capability. Declaration
 /// also holds whenever the history carries a mark: the thinking of a
 /// conversation that declared the tool was signed under a tool list that has
-/// it, so the declaration must not depend on the switch or the model. `scan`
-/// is `None` when the history could not be scanned; it then counts as
-/// unmarked.
+/// it, so the declaration must not depend on the switch or the model.
+///
+/// A request without marks that continues a tool loop holding unmarked
+/// thinking ([`HistoryScan::unmarked_tool_loop`]) does not declare the tool
+/// even when it could run it: the first declaration would drop that
+/// thinking, the thinking of the loop's last assistant message included.
+/// Search then starts with the next user message. `scan` is `None` when the
+/// history could not be scanned; it then counts as unmarked and not in such
+/// a loop.
 pub(crate) fn plan_web_search(
     header: WebSearchHeader,
     backend_on: bool,
@@ -133,8 +144,10 @@ pub(crate) fn plan_web_search(
     for payload in scan.iter().flat_map(|scan| &scan.carrier_payloads) {
         sources.extend_from_payload(payload);
     }
+    let marked = scan.is_some_and(|scan| scan.marked);
+    let unmarked_tool_loop = scan.is_some_and(|scan| scan.unmarked_tool_loop);
     WebSearchPlan {
-        declared: executable || scan.is_some_and(|scan| scan.marked),
+        declared: marked || (executable && !unmarked_tool_loop),
         gate,
         sources,
         used_in_answer: scan.map_or(0, |scan| scan.used_in_answer),
@@ -200,6 +213,10 @@ pub(crate) enum Exhaustion {
     /// Too little of `max_output_tokens` is left, or Bedrock stopped at
     /// `max_tokens`.
     OutputBudget,
+    /// Bedrock's content filter stopped the answer (`content_filtered`).
+    ContentFilter,
+    /// The final step has neither text nor a client call.
+    NoAnswer,
 }
 
 impl Exhaustion {
@@ -207,6 +224,8 @@ impl Exhaustion {
         match self {
             Self::StepLimit => "step_limit",
             Self::OutputBudget => "output_budget",
+            Self::ContentFilter => "content_filter",
+            Self::NoAnswer => "no_answer",
         }
     }
 
@@ -220,9 +239,56 @@ impl Exhaustion {
         let why = match self {
             Self::StepLimit => "the search limit for one answer was reached",
             Self::OutputBudget => "the output token budget ran out",
+            Self::ContentFilter => "the content filter stopped the answer",
+            Self::NoAnswer => "the model gave no answer",
         };
         format!("The answer stopped after {searches} {noun}: {why}.")
     }
+}
+
+/// The text of the gateway's message when the step limit is reached before
+/// any real search in the answer: the gate says why nothing ran.
+pub(crate) fn no_search_message(gate: ExecGate) -> &'static str {
+    match gate {
+        ExecGate::Disabled => "The answer stopped: web search is off for this message.",
+        ExecGate::Unavailable => "The answer stopped: web search is unavailable.",
+        ExecGate::Search => {
+            "The answer stopped: the step limit was reached before any web search ran."
+        }
+    }
+}
+
+/// How a final step ends once the answer has run a real search (`searched`):
+/// a stop at `max_tokens` or by the content filter, or a step without an
+/// answer and without client calls, ends with the gateway's message. `None`
+/// keeps the single-call status.
+fn final_exhaustion(
+    searched: bool,
+    stop_reason: Option<&str>,
+    answered: bool,
+    client_calls: bool,
+) -> Option<Exhaustion> {
+    if !searched {
+        return None;
+    }
+    match stop_reason {
+        Some("max_tokens") => Some(Exhaustion::OutputBudget),
+        Some("content_filtered") => Some(Exhaustion::ContentFilter),
+        _ if !answered && !client_calls => Some(Exhaustion::NoAnswer),
+        _ => None,
+    }
+}
+
+/// Whether a step's items hold an answer: a message with text that is not
+/// only whitespace, or a refusal.
+fn has_answer(items: &[ResponseOutputItem]) -> bool {
+    items.iter().any(|item| match item {
+        ResponseOutputItem::Message { content, .. } => content.iter().any(|part| match part {
+            OutputContentPart::OutputText { text, .. } => !text.trim().is_empty(),
+            OutputContentPart::Refusal { .. } => true,
+        }),
+        _ => false,
+    })
 }
 
 /// What one step is.
@@ -464,13 +530,17 @@ struct LoopState {
 
 impl LoopState {
     async fn start(ctx: &Ctx<'_>, plan: &WebSearchPlan) -> Result<Self, AppError> {
-        let parsed = parse_responses_input(
+        let mut parsed = parse_responses_input(
             ctx.request,
             ctx.resolved,
             ctx.provider.image_resolver(),
             ctx.opts(),
         )
         .await?;
+        // An input that ends with an assistant turn is sent with the
+        // no-prefill continuation turn after it. The first step's thinking is
+        // bound to that turn, so it stays in every later step.
+        parsed.pin_no_prefill_continuation(ctx.resolved, ctx.provider.caps());
         let max_calls = ctx.provider.web_search_limits().max_calls;
         let max_steps = usize::try_from(max_calls.saturating_add(2)).unwrap_or(usize::MAX);
         Ok(Self {
@@ -628,7 +698,8 @@ impl LoopState {
     /// How the answer ends after `exhaustion`: `(message, status, details)`.
     /// With a real search in the answer, the gateway's message and
     /// `completed`; without one, a spent budget keeps the single-call meaning
-    /// (`incomplete`, `max_output_tokens`) and there is no message.
+    /// (`incomplete`, `max_output_tokens`) and there is no message, while the
+    /// step limit gets a message that names the gate.
     fn stop_item(
         &self,
         ctx: &Ctx<'_>,
@@ -648,12 +719,13 @@ impl LoopState {
             searches = self.used,
             "web search answer stopped by the gateway"
         );
+        let text = if self.used == 0 {
+            no_search_message(ctx.gate).to_string()
+        } else {
+            exhaustion.message(self.used)
+        };
         let s = ctx.response_id.trim_start_matches("resp_");
-        let item = message_item(
-            &format!("msg_{s}_stop"),
-            &exhaustion.message(self.used),
-            Vec::new(),
-        );
+        let item = message_item(&format!("msg_{s}_stop"), &text, Vec::new());
         (Some(item), "completed".to_string(), None)
     }
 
@@ -788,12 +860,18 @@ pub(crate) async fn respond(
             .filter(|call| !is_web_search(&state.registry, &call.name))
             .collect();
         if kind == StepKind::Final {
-            if mapped.stop_reason.as_deref() == Some("max_tokens") && state.used > 0 {
+            let exhaustion = final_exhaustion(
+                state.used > 0,
+                mapped.stop_reason.as_deref(),
+                has_answer(&done_items),
+                !client_calls.is_empty(),
+            );
+            if let Some(exhaustion) = exhaustion {
                 // The answer ends `completed`, so a call cut off by
-                // `max_tokens` must not be handed back: the client would run
-                // it. (Under `incomplete` the single-call path lists such
-                // calls; the client does not run them.)
-                let (item, status, details) = state.stop_item(&ctx, Exhaustion::OutputBudget);
+                // `max_tokens` or by the filter must not be handed back: the
+                // client would run it. (Under `incomplete` the single-call
+                // path lists such calls; the client does not run them.)
+                let (item, status, details) = state.stop_item(&ctx, exhaustion);
                 state.items.extend(item);
                 break (status, details);
             }
@@ -1239,6 +1317,12 @@ pub(crate) async fn respond_stream(
                 .cloned()
                 .collect();
             if kind == StepKind::Final {
+                let exhaustion = final_exhaustion(
+                    state.used > 0,
+                    end.stop_reason.as_deref(),
+                    has_answer(&done_items),
+                    !client_calls.is_empty(),
+                );
                 // A call cut off by max_tokens or filtered is never executable.
                 if !incomplete_stop {
                     let events = client_call_events(&state.registry, client_calls, &mut counters);
@@ -1247,8 +1331,8 @@ pub(crate) async fn respond_stream(
                         yield Ok(ev);
                     }
                 }
-                if end.stop_reason.as_deref() == Some("max_tokens") && state.used > 0 {
-                    let (item, status, details) = state.stop_item(&ctx, Exhaustion::OutputBudget);
+                if let Some(exhaustion) = exhaustion {
+                    let (item, status, details) = state.stop_item(&ctx, exhaustion);
                     if let Some(item) = item {
                         for ev in message_events(&item, &mut counters) {
                             yield Ok(ev);

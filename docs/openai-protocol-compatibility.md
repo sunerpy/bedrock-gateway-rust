@@ -182,9 +182,9 @@ The contract is:
 - Output items are only marked `completed` after Bedrock closes their content
   block.
 - `max_tokens` and content filtering end with `response.incomplete`, except
-  that an answer that already ran a gateway-executed web search ends a
-  `max_tokens` stop with `response.completed` and a gateway message (see
-  "Responses web search (gateway-executed)").
+  that an answer that already ran a gateway-executed web search ends either
+  stop with `response.completed` and a gateway message (see "Responses web
+  search (gateway-executed)").
 - Provider errors end with `response.failed`.
 - The stream has no Chat-style `[DONE]` sentinel.
 
@@ -247,8 +247,12 @@ on a model without the capability (calls answer `unavailable`): Claude 5.5 binds
 every thinking block to the `tools` it was signed under, so the tool list must
 not change once a conversation declared the tool. The first declaration drops
 the replayed thinking that has no mark, which was signed without the tool;
-removing thinking from the start of a history is allowed. Every other request
-takes the single-call path unchanged.
+removing thinking from the start of a history is allowed. A request without
+marks in the middle of a tool loop (its input ends with tool outputs) whose
+current answer holds gateway thinking does not declare the tool even when it
+could run it: the first declaration would drop that thinking, the thinking of
+the loop's last assistant message included. Search then starts with the next
+user message. Every other request takes the single-call path unchanged.
 
 **The synthetic tool.** `web_search` with a frozen description and the schema
 `{"query": string}`, appended after every client tool (the tool-search lane's
@@ -263,7 +267,12 @@ hands the client calls back (`completed`). Any other step is the answer. Each
 continuation is built from the step's own output items through the replay
 translation, so the client's next request rebuilds the same prefix; only the
 remaining `max_output_tokens` and `tool_choice` (`required` becomes `auto` after
-the first search step) change between steps. Usage is summed over the steps
+the first search step) change between steps. An input that ends with an
+assistant item on a model that does not accept prefill gets the continuation
+user turn before the first step, and every later step keeps it (the first
+step's thinking is bound to it). A later replay does not rebuild that turn
+(neither does one without web search), so that thinking can still fail
+Bedrock's check on the client's next request. Usage is summed over the steps
 through the one token formula.
 
 **Output items.** Per search step: the step's reasoning item (its envelope
@@ -293,13 +302,19 @@ emitted after their step, not streamed. `response.created`,
 
 **Limits and terminal states.** At most `WEB_SEARCH_MAX_CALLS` (default 5)
 real searches per answer, counted across the client's continuation requests
-through the carriers and reset by a new user message; further calls answer
-`max_uses_exceeded`. At most `max_calls + 2` Bedrock calls per response. Once
-the answer has run a real search, the response never ends `incomplete`: the
-step limit, less than 1,024 output tokens left before a continuation, or a
-`max_tokens` stop end `completed` with a gateway-written message
-(`msg_S_stop`) that says why. Without a real search the single-call terminal
-states apply.
+through the carriers and reset by a new user message; a gateway
+`web_search_call` replayed after the newest carrier (its step's carrier never
+reached the client) counts too. Further calls answer `max_uses_exceeded`. At
+most `max_calls + 2` Bedrock calls per response. Once the answer has run a real
+search, the response never ends `incomplete` (zuno retries `incomplete`,
+`content_filter` included) and never ends `completed` without an answer: the
+step limit, less than 1,024 output tokens left before a continuation, a
+`max_tokens` or content-filter stop, or a final step with neither an answer
+nor a client call end `completed` with a gateway-written message
+(`msg_S_stop`) that says why; a call cut off by such a stop is not handed back.
+Without a real search the single-call terminal states apply, except that the
+step limit also ends with the gateway message, which then says that web search
+is off for the message, unavailable, or never ran.
 
 **Errors.** AgentCore failures never become HTTP errors: they are error payloads
 in the call's `toolResult` (`too_many_requests`, `unavailable`,
@@ -367,7 +382,7 @@ Tests must cover both non-streaming and streaming variants where applicable:
 | Responses state | `store`, `previous_response_id`, and unresolved item references remain non-fatal and stateless |
 | Responses replayed hosted calls | `web_search_call` and `image_generation_call` input items add nothing on the Converse and tool-search lanes; the turns around them keep their order, merging, and reasoning boundaries |
 | Responses tool search | the zuno golden requests map to the expected Messages bodies; `tool_search_call` done-only stream; loaded-tool `function_call` with namespace; refusal and max-token stops leave the call incomplete |
-| Responses web search | requests that do not declare it keep the single-call bytes; the declaration rules (header, backend, capability, sticky marks, first declaration); the frozen tool's position and the reserved name; search-only, parallel and mixed steps on both lanes, streamed and not; the loop's continuation equals the replay's rebuild (tools, system, message prefix); carrier and marker codecs; refused, failed and invalid calls; the per-answer count across continuations; the step limit, the output budget and `max_tokens` after a search end `completed` with the gateway message; stream event order and unique ids; `invalid_prompt` for a later binding error; mantle drops the gateway's items |
+| Responses web search | requests that do not declare it keep the single-call bytes; the declaration rules (header, backend, capability, sticky marks, first declaration); the frozen tool's position and the reserved name; search-only, parallel and mixed steps on both lanes, streamed and not; the loop's continuation equals the replay's rebuild (tools, system, message prefix); carrier and marker codecs; refused, failed and invalid calls; the per-answer count across continuations; the step limit, the output budget, `max_tokens`, a content-filter stop and an empty answer after a search end `completed` with the gateway message; the step limit without a search names the gate; a tool loop with unmarked thinking does not declare the tool; the continuation turn of an input that ends on an assistant item stays in every step; gateway searches without a carrier count toward the answer; stream event order and unique ids; `invalid_prompt` for a later binding error; mantle drops the gateway's items |
 | Mantle | byte-exact passthrough and mid-stream truncation behavior |
 | AI SDK fixtures | current `@ai-sdk/openai-compatible` Chat and `@ai-sdk/openai` Responses shapes |
 

@@ -923,8 +923,18 @@ fn plan_matrix() {
         marked: true,
         carrier_payloads: vec![r#"{"query":"q","results":[{"rank":1,"text":"t","text_truncated":false,"title":"T","url":"https://a.example/x"}],"source":"s","trust":"t","type":"web_search_results"}"#.to_string()],
         used_in_answer: 2,
+        unmarked_tool_loop: false,
     };
     let unmarked = HistoryScan::default();
+    // A tool loop whose thinking has no mark.
+    let unmarked_loop = HistoryScan {
+        unmarked_tool_loop: true,
+        ..HistoryScan::default()
+    };
+    let marked_loop = HistoryScan {
+        unmarked_tool_loop: true,
+        ..marked.clone()
+    };
     // (header, backend, capable, scan) → (declared, gate)
     let rows: Vec<PlanRow<'_>> = vec![
         (
@@ -960,6 +970,25 @@ fn plan_matrix() {
         (On, true, false, Some(&marked), true, ExecGate::Unavailable),
         (Absent, true, true, Some(&marked), true, ExecGate::Disabled),
         (Off, false, false, Some(&marked), true, ExecGate::Disabled),
+        // A tool loop with unmarked thinking does not declare the tool; with
+        // marks it stays declared.
+        (
+            On,
+            true,
+            true,
+            Some(&unmarked_loop),
+            false,
+            ExecGate::Search,
+        ),
+        (On, true, true, Some(&marked_loop), true, ExecGate::Search),
+        (
+            Off,
+            true,
+            true,
+            Some(&marked_loop),
+            true,
+            ExecGate::Disabled,
+        ),
     ];
     for (header, backend, capable, scan, declared, gate) in rows {
         let plan = plan_web_search(header, backend, capable, scan);
@@ -2303,6 +2332,26 @@ fn gateway_stop_texts() {
         Exhaustion::OutputBudget.message(3),
         "The answer stopped after 3 web searches: the output token budget ran out."
     );
+    assert_eq!(
+        Exhaustion::ContentFilter.message(2),
+        "The answer stopped after 2 web searches: the content filter stopped the answer."
+    );
+    assert_eq!(
+        Exhaustion::NoAnswer.message(1),
+        "The answer stopped after 1 web search: the model gave no answer."
+    );
+    assert_eq!(
+        no_search_message(ExecGate::Disabled),
+        "The answer stopped: web search is off for this message."
+    );
+    assert_eq!(
+        no_search_message(ExecGate::Unavailable),
+        "The answer stopped: web search is unavailable."
+    );
+    assert_eq!(
+        no_search_message(ExecGate::Search),
+        "The answer stopped: the step limit was reached before any web search ran."
+    );
 }
 
 /// Without a real search in the answer a spent budget keeps the single-call
@@ -3626,28 +3675,398 @@ async fn truncated_client_call_after_search_is_not_handed_back() {
     }
 }
 
-/// Only `max_tokens` turns into the gateway's message: a content-filtered
-/// answer after a search stays `incomplete` (`content_filter`), which zuno
-/// does not retry.
+/// The stop reason a content-filtered step has on `path`: Messages calls it
+/// `refusal`, which the InvokeModel lane reads as Converse's
+/// `content_filtered`.
+fn filtered(path: Path) -> &'static str {
+    if path.tool_search() {
+        "refusal"
+    } else {
+        "content_filtered"
+    }
+}
+
+/// After a search, a content-filtered answer ends like a `max_tokens` stop:
+/// `completed` with the gateway's message, and a client call cut off with it
+/// is not handed back. zuno e97a2747 retries `incomplete` with
+/// `content_filter` (`codex-rs/protocol/src/error.rs`, `retry_delay`) after
+/// recording a developer message (`codex-rs/core/src/responses_retry.rs`);
+/// the gateway moves that message into `system`, so the retry would fail on
+/// every marked thinking block, and it would search again.
 #[tokio::test]
-async fn content_filter_after_search_stays_incomplete() {
-    for path in [Path::Converse, Path::ConverseStream] {
+async fn content_filter_after_search_ends_completed_with_gateway_message() {
+    for path in Path::ALL {
         let search = FakeSearch::new(Vec::new());
         let provider = provider(&search);
-        let req = normalized(request_1(false), WebSearchHeader::On);
+        let req = normalized(request_1(path.tool_search()), WebSearchHeader::On);
         let steps = [
             output(vec![search_call("t1", "q")], "tool_use", (10, 5)),
-            output(vec![say("Filtered")], "content_filtered", (10, 5)),
+            output(
+                vec![
+                    say("Filtered"),
+                    tool_call("fn1", "lookup_ticket", json!({ "id": "T" })),
+                ],
+                filtered(path),
+                (10, 5),
+            ),
         ];
+        let run = run_on(path, &provider, &req, &steps).await.unwrap();
+        assert!(
+            !run.types().iter().any(|t| t == "function_call"),
+            "{path:?}"
+        );
+        assert_eq!(
+            run.output()[run.output().len() - 2]["content"][0]["text"],
+            "Filtered",
+            "{path:?}: the step's text is still output"
+        );
+        assert_gateway_stop(
+            &run,
+            path,
+            "The answer stopped after 1 web search: the content filter stopped the answer.",
+        );
+    }
+}
+
+/// Without a real search in the answer, a content-filtered answer keeps the
+/// single-call meaning: `incomplete` with `content_filter`.
+#[tokio::test]
+async fn content_filter_without_search_stays_incomplete() {
+    for path in Path::ALL {
+        let search = FakeSearch::new(Vec::new());
+        let provider = provider(&search);
+        let req = normalized(request_1(path.tool_search()), WebSearchHeader::On);
+        let steps = [output(vec![say("Filtered")], filtered(path), (10, 5))];
         let run = run_on(path, &provider, &req, &steps).await.unwrap();
         assert_eq!(run.response().status, "incomplete", "{path:?}");
         assert_eq!(
             run.response().incomplete_details,
-            Some(json!({ "reason": "content_filter" }))
+            Some(json!({ "reason": "content_filter" })),
+            "{path:?}"
         );
-        assert!(!run
-            .output()
-            .iter()
-            .any(|i| i["id"].as_str().unwrap().ends_with("_stop")));
+        assert!(
+            !run.output()
+                .iter()
+                .any(|i| i["id"].as_str().unwrap().ends_with("_stop")),
+            "{path:?}"
+        );
     }
+}
+
+/// After a search the model may end its turn without an answer: an empty
+/// `end_turn`, or thinking only (more common right after tool results). The
+/// response then ends with the gateway's message instead of `completed`
+/// without an answer, which zuno would take as the end of the turn.
+#[tokio::test]
+async fn empty_answer_after_search_ends_completed_with_gateway_message() {
+    for path in Path::ALL {
+        for last in [Vec::new(), vec![think("Nothing to add.", "sig-x")]] {
+            let search = FakeSearch::new(vec![results(&[("A", "https://a.example/", "a")])]);
+            let provider = provider(&search);
+            let req = normalized(request_1(path.tool_search()), WebSearchHeader::On);
+            let steps = [
+                output(
+                    vec![
+                        think("s", "sig-s"),
+                        say("Let me look that up."),
+                        search_call("t1", "q"),
+                    ],
+                    "tool_use",
+                    (10, 5),
+                ),
+                output(last.clone(), "end_turn", (10, 5)),
+            ];
+            let run = run_on(path, &provider, &req, &steps).await.unwrap();
+            assert_eq!(run.sent.len(), 2, "{path:?}");
+            assert_gateway_stop(
+                &run,
+                path,
+                "The answer stopped after 1 web search: the model gave no answer.",
+            );
+            assert_unique_ids(&run, &format!("{path:?} empty answer"));
+        }
+    }
+}
+
+/// A final step that answers only with client calls is not an empty answer:
+/// the calls are handed back and the answer goes on after them.
+#[tokio::test]
+async fn client_calls_after_search_are_not_an_empty_answer() {
+    for path in Path::ALL {
+        let search = FakeSearch::new(Vec::new());
+        let provider = provider(&search);
+        let req = normalized(request_1(path.tool_search()), WebSearchHeader::On);
+        let steps = [
+            output(vec![search_call("t1", "q")], "tool_use", (10, 5)),
+            output(
+                vec![tool_call("fn1", "lookup_ticket", json!({ "id": "T" }))],
+                "tool_use",
+                (10, 5),
+            ),
+        ];
+        let run = run_on(path, &provider, &req, &steps).await.unwrap();
+        assert_eq!(run.response().status, "completed", "{path:?}");
+        assert_eq!(
+            run.types(),
+            vec!["web_search_call", "reasoning", "function_call"],
+            "{path:?}"
+        );
+    }
+}
+
+/// Without a real search an empty answer keeps the single-call shape.
+#[tokio::test]
+async fn empty_answer_without_search_has_no_gateway_message() {
+    for path in [Path::Converse, Path::ConverseStream] {
+        let search = FakeSearch::new(Vec::new());
+        let provider = provider(&search);
+        let req = normalized(request_1(false), WebSearchHeader::On);
+        let run = run_on(
+            path,
+            &provider,
+            &req,
+            &[output(Vec::new(), "end_turn", (10, 5))],
+        )
+        .await
+        .unwrap();
+        assert_eq!(run.response().status, "completed", "{path:?}");
+        assert!(
+            !run.output()
+                .iter()
+                .any(|i| i["id"].as_str().unwrap().ends_with("_stop")),
+            "{path:?}"
+        );
+    }
+}
+
+/// An input that ends on an assistant item (here a marked reasoning item, as
+/// a client replays it when it retries after a partial response) is sent to
+/// a model that cannot prefill with the continuation turn after it. The
+/// first step's thinking is bound to that turn, so every later step keeps it:
+/// each continuation extends the first call.
+#[tokio::test]
+async fn the_continuation_turn_stays_in_every_step() {
+    let marked = crate::bedrock::responses_translate::encode_reasoning_envelope_with(
+        &[think("Partial thinking.", "sig-b")],
+        Some(crate::bedrock::responses_translate::WEB_SEARCH_MARK),
+    )
+    .unwrap();
+    for path in Path::ALL {
+        let search = FakeSearch::new(vec![results(&[("A", "https://a.example/", "a")])]);
+        let provider = provider(&search);
+        let mut input = input_of(&request_1(path.tool_search()));
+        input.push(
+            json!({ "type": "reasoning", "id": "rs_earlier_1", "summary": [],
+                           "encrypted_content": marked }),
+        );
+        let req = normalized(
+            with_input(request_1(path.tool_search()), input),
+            WebSearchHeader::On,
+        );
+        let steps = [
+            output(
+                vec![think("Search it.", "sig-r"), search_call("t1", "q")],
+                "tool_use",
+                (10, 5),
+            ),
+            answer("Done."),
+        ];
+        let run = run_on(path, &provider, &req, &steps).await.unwrap();
+        assert_eq!(run.sent.len(), 2, "{path:?}");
+        let (tools_0, system_0, messages_0) = prefix_parts(&run.sent[0]);
+        let (tools_1, system_1, messages_1) = prefix_parts(&run.sent[1]);
+        let (first, second) = (strip_cache(&messages_0), strip_cache(&messages_1));
+        let last = first.last().unwrap();
+        assert_eq!(last["role"], "user", "{path:?}");
+        assert_eq!(
+            last["content"][0]["text"], "Please continue your response from where you left off.",
+            "{path:?}: the first call ends with the continuation turn"
+        );
+        assert_eq!(tools_1, tools_0, "{path:?}");
+        assert_eq!(system_1, system_0, "{path:?}");
+        assert!(second.len() > first.len(), "{path:?}");
+        assert_eq!(
+            &second[..first.len()],
+            first.as_slice(),
+            "{path:?}: the second call extends the first"
+        );
+    }
+}
+
+/// The step limit before any real search names what stopped the searches
+/// (web search is off for this message, or unavailable), not the search
+/// limit.
+#[tokio::test]
+async fn step_limit_without_a_search_names_the_reason() {
+    let marked = crate::bedrock::responses_translate::encode_reasoning_envelope_with(
+        &[think("Earlier.", "sig-e")],
+        Some(crate::bedrock::responses_translate::WEB_SEARCH_MARK),
+    )
+    .unwrap();
+    let mut input = input_of(&request_1(false));
+    input.push(json!({ "type": "reasoning", "id": "rs_e", "summary": [],
+                       "encrypted_content": marked }));
+    input.push(json!({ "type": "message", "role": "assistant",
+                       "content": [{ "type": "output_text", "text": "Earlier answer." }] }));
+    input.push(user("And now?"));
+    let limits = WebSearchLimits {
+        max_calls: 1,
+        ..limits()
+    };
+    let calls: Vec<Value> = (0..3)
+        .map(|i| {
+            output(
+                vec![search_call(&format!("t{i}"), "q")],
+                "tool_use",
+                (10, 5),
+            )
+        })
+        .collect();
+    let invalid: Vec<Value> = (0..3)
+        .map(|i| {
+            output(
+                vec![tool_call(
+                    &format!("t{i}"),
+                    "web_search",
+                    json!({ "query": "" }),
+                )],
+                "tool_use",
+                (10, 5),
+            )
+        })
+        .collect();
+    for (header, backend, steps, expected) in [
+        (
+            WebSearchHeader::Off,
+            true,
+            &calls,
+            "The answer stopped: web search is off for this message.",
+        ),
+        (
+            WebSearchHeader::On,
+            false,
+            &calls,
+            "The answer stopped: web search is unavailable.",
+        ),
+        (
+            WebSearchHeader::On,
+            true,
+            &invalid,
+            "The answer stopped: the step limit was reached before any web search ran.",
+        ),
+    ] {
+        for path in [Path::Converse, Path::ConverseStream] {
+            let search = FakeSearch::new(Vec::new());
+            let backend = backend.then(|| search.clone() as Arc<dyn WebSearchBackend>);
+            let provider = provider_with(backend, limits, None);
+            let req = normalized(with_input(request_1(false), input.clone()), header);
+            let run = run_on(path, &provider, &req, steps).await.unwrap();
+            assert!(search.queries().is_empty(), "{path:?} {header:?}");
+            assert_eq!(run.sent.len(), 3, "{path:?} {header:?}");
+            assert_gateway_stop(&run, path, expected);
+        }
+    }
+}
+
+/// A request in the middle of a tool loop whose thinking has no mark does not
+/// declare the tool now: the first declaration would drop that thinking,
+/// the thinking of the loop's last assistant message included. Search starts
+/// with the next user message; a marked history still declares, and so does
+/// a loop without gateway thinking, which loses nothing.
+#[test]
+fn first_declaration_waits_for_the_next_user_message() {
+    let search = FakeSearch::new(Vec::new());
+    let provider = provider(&search);
+    let unmarked = crate::bedrock::responses_translate::encode_reasoning_envelope(&[think(
+        "Look the ticket up.",
+        "sig-p",
+    )])
+    .unwrap();
+    let mut input = input_of(&request_1(false));
+    input.push(json!({ "type": "reasoning", "id": "rs_p", "summary": [],
+                       "encrypted_content": unmarked }));
+    input.push(
+        json!({ "type": "function_call", "call_id": "fn1", "name": "lookup_ticket",
+                       "arguments": "{\"id\":\"T-1\"}" }),
+    );
+    input.push(json!({ "type": "function_call_output", "call_id": "fn1", "output": "open" }));
+    let plan = |input: &[Value]| {
+        provider.web_search_plan(&normalized(
+            with_input(request_1(false), input.to_vec()),
+            WebSearchHeader::On,
+        ))
+    };
+    assert!(!plan(&input).declared, "a tool loop without marks");
+    // A developer message after the outputs does not end the loop.
+    let mut with_developer = input.clone();
+    with_developer.push(json!({ "type": "message", "role": "developer",
+                                "content": [{ "type": "input_text", "text": "note" }] }));
+    assert!(!plan(&with_developer).declared);
+    // The next user message starts a new answer: declared.
+    let mut next = input.clone();
+    next.push(user("And the quota?"));
+    assert!(plan(&next).declared);
+    // A marked history stays declared in a tool loop.
+    let marked = crate::bedrock::responses_translate::encode_reasoning_envelope_with(
+        &[think("Look the ticket up.", "sig-p")],
+        Some(crate::bedrock::responses_translate::WEB_SEARCH_MARK),
+    )
+    .unwrap();
+    let mut marked_loop = input.clone();
+    marked_loop[input.len() - 3] = json!({ "type": "reasoning", "id": "rs_p", "summary": [],
+                                           "encrypted_content": marked });
+    assert!(plan(&marked_loop).declared);
+    // A tool loop without gateway thinking (thinking off): declared.
+    let mut no_thinking = input.clone();
+    no_thinking.remove(input.len() - 3);
+    assert!(plan(&no_thinking).declared);
+}
+
+/// A gateway `web_search_call` after the newest carrier belongs to a step
+/// whose carrier never reached the client (the stream broke between that
+/// step's searches). The search ran, so it counts toward the answer's limit.
+#[tokio::test]
+async fn searches_without_a_carrier_count_toward_the_answer() {
+    let marked = crate::bedrock::responses_translate::encode_reasoning_envelope_with(
+        &[think("Search twice.", "sig-w")],
+        Some(crate::bedrock::responses_translate::WEB_SEARCH_MARK),
+    )
+    .unwrap();
+    let call = |id: &str| {
+        json!({ "type": "web_search_call", "id": format!("ws_bgw_{id}"), "status": "completed",
+                "action": { "type": "search", "query": id, "queries": [id] } })
+    };
+    let mut input = input_of(&request_1(false));
+    input.push(json!({ "type": "reasoning", "id": "rs_w", "summary": [],
+                       "encrypted_content": marked }));
+    for id in ["o1", "o2", "o3", "o4"] {
+        input.push(call(id));
+    }
+    // A GPT search (mantle's own id) is not the gateway's.
+    input.push(
+        json!({ "type": "web_search_call", "id": "ws_67f0", "status": "completed",
+                       "action": { "type": "search", "query": "gpt" } }),
+    );
+    let search = FakeSearch::new(Vec::new());
+    let provider = provider(&search);
+    let req = normalized(with_input(request_1(false), input), WebSearchHeader::On);
+    assert_eq!(provider.web_search_plan(&req).used_in_answer, 4);
+    let steps = [
+        output(
+            vec![search_call("t1", "five"), search_call("t2", "six")],
+            "tool_use",
+            (10, 5),
+        ),
+        answer("Done."),
+    ];
+    let run = run_on(Path::Converse, &provider, &req, &steps)
+        .await
+        .unwrap();
+    assert_eq!(search.queries(), vec!["five"], "one search left");
+    let carrier = &carriers(&run.output())[0];
+    assert_eq!(carrier["used"], 5);
+    assert_eq!(
+        carrier_results(carrier)[1]["error_code"],
+        "max_uses_exceeded"
+    );
 }

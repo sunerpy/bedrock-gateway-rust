@@ -57,7 +57,7 @@ use crate::bedrock::responses_translate::{
     ParsedInput, ResponsesToolRegistry, SearchedTool, TranslateOptions,
 };
 use crate::bedrock::responses_web_search::{
-    self, plan_web_search, Lane, StepTransport, WebSearchPlan,
+    self, plan_web_search, ExecGate, Lane, StepTransport, WebSearchPlan,
 };
 use crate::bedrock::translate::{merge_strict_text_format, ImageResolver};
 use crate::bedrock::web_search::{WebSearchBackend, WebSearchLimits};
@@ -131,6 +131,10 @@ impl BedrockResponsesProvider {
         self.image_resolver.as_ref()
     }
 
+    pub(crate) fn caps(&self) -> &dyn ModelCapabilities {
+        self.caps.as_ref()
+    }
+
     pub(crate) fn web_search_backend(&self) -> Option<&Arc<dyn WebSearchBackend>> {
         self.web_search.as_ref()
     }
@@ -151,7 +155,13 @@ impl BedrockResponsesProvider {
         let backend_on = self.web_search.is_some();
         let capable = self.caps.has(&req.resolved_model, Capability::WebSearch);
         let plan = plan_web_search(req.web_search, backend_on, capable, scan.as_ref());
-        if !plan.declared && req.web_search == WebSearchHeader::On {
+        if !plan.declared && plan.gate == ExecGate::Search {
+            tracing::warn!(
+                request_id = %req.request_id,
+                model = %req.request.model,
+                "web search requested in a tool loop whose thinking predates it; the request is served without it until the next user message"
+            );
+        } else if !plan.declared && req.web_search == WebSearchHeader::On {
             tracing::warn!(
                 request_id = %req.request_id,
                 model = %req.request.model,

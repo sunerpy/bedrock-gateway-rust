@@ -2403,7 +2403,8 @@ fn carrier_used_round_trips_through_the_history_scan() {
         HistoryScan {
             marked: true,
             carrier_payloads: Vec::new(),
-            used_in_answer: 0
+            used_in_answer: 0,
+            unmarked_tool_loop: false,
         }
     );
 
@@ -2427,6 +2428,168 @@ fn carrier_used_round_trips_through_the_history_scan() {
         scan_web_search_history(&broken),
         Err(AppError::BadRequest(_))
     ));
+}
+
+/// The scan knows whether the request continues a tool loop that holds
+/// gateway thinking without the mark: the last input item that becomes a
+/// Bedrock turn is a tool output, and unmarked gateway reasoning comes after
+/// the last user message. System and developer messages, skipped items and
+/// gateway reasoning do not end the loop.
+#[test]
+fn history_scan_sees_an_unmarked_tool_loop() {
+    let unmarked = encode_reasoning_envelope(&[signed("m", "s")]).unwrap();
+    let thinking = reasoning_item("rs_0", &unmarked);
+    let in_loop = |tail: Vec<Value>| {
+        let mut input = vec![json!({ "type": "message", "role": "user", "content": "q" })];
+        input.extend(tail);
+        scan_web_search_history(&req_from(json!({ "model": WS_MODEL, "input": input })))
+            .unwrap()
+            .unmarked_tool_loop
+    };
+    let call = json!({ "type": "function_call", "call_id": "c", "name": "f", "arguments": "{}" });
+    let output = json!({ "type": "function_call_output", "call_id": "c", "output": "o" });
+    assert!(!in_loop(Vec::new()));
+    assert!(in_loop(vec![
+        thinking.clone(),
+        call.clone(),
+        output.clone()
+    ]));
+    assert!(in_loop(vec![
+        thinking.clone(),
+        call.clone(),
+        output.clone(),
+        json!({ "type": "message", "role": "developer", "content": "note" }),
+        json!({ "type": "web_search_call", "id": "ws_1", "status": "completed",
+                "action": { "type": "search", "query": "q" } }),
+        reasoning_item("rs_1", &unmarked),
+        json!({ "type": "item_reference", "id": "x" }),
+    ]));
+    for (kind, output_kind) in [
+        ("custom_tool_call", "custom_tool_call_output"),
+        ("shell_call", "shell_call_output"),
+        ("apply_patch_call", "apply_patch_call_output"),
+        ("local_shell_call", "local_shell_call_output"),
+        ("tool_search_call", "tool_search_output"),
+    ] {
+        assert!(
+            in_loop(vec![
+                thinking.clone(),
+                json!({ "type": kind, "call_id": "c" }),
+                json!({ "type": output_kind, "call_id": "c" }),
+            ]),
+            "{output_kind}"
+        );
+        assert!(
+            !in_loop(vec![
+                thinking.clone(),
+                json!({ "type": kind, "call_id": "c" })
+            ]),
+            "{kind}"
+        );
+    }
+    assert!(!in_loop(vec![thinking.clone(), call.clone()]));
+    assert!(!in_loop(vec![
+        thinking.clone(),
+        call.clone(),
+        output.clone(),
+        json!({ "type": "message", "role": "assistant",
+                "content": [{ "type": "output_text", "text": "done" }] }),
+    ]));
+    assert!(!in_loop(vec![
+        thinking.clone(),
+        output.clone(),
+        json!({ "type": "message", "role": "user", "content": "next" }),
+    ]));
+    // A loop without gateway thinking loses nothing to a first declaration,
+    // and neither does one whose unmarked thinking precedes the last user
+    // message.
+    assert!(!in_loop(vec![call.clone(), output.clone()]));
+    assert!(!in_loop(vec![
+        thinking,
+        json!({ "type": "message", "role": "user", "content": "next" }),
+        call,
+        output,
+    ]));
+}
+
+/// A gateway `web_search_call` after the newest carrier (a step whose
+/// carrier never reached the client) counts toward the answer's searches;
+/// one before a carrier is covered by that carrier's `used`, and a user
+/// message starts a new answer. Other providers' search items do not count.
+#[test]
+fn history_scan_counts_searches_without_a_carrier() {
+    let carrier = encode_web_search_carrier(&[ws_call("t1", "a")], &[ws_result("t1", "{}")], 3);
+    let call = |id: &str| {
+        json!({ "type": "web_search_call", "id": id, "status": "completed",
+                "action": { "type": "search", "query": "q" } })
+    };
+    let used = |tail: Vec<Value>| {
+        let mut input = vec![json!({ "type": "message", "role": "user", "content": "q" })];
+        input.extend(tail);
+        scan_web_search_history(&req_from(json!({ "model": WS_MODEL, "input": input })))
+            .unwrap()
+            .used_in_answer
+    };
+    assert_eq!(used(vec![call("ws_bgw_a"), call("ws_bgw_b")]), 2);
+    assert_eq!(
+        used(vec![call("ws_bgw_t1"), reasoning_item("rs_1", &carrier)]),
+        3
+    );
+    assert_eq!(
+        used(vec![
+            call("ws_bgw_t1"),
+            reasoning_item("rs_1", &carrier),
+            call("ws_bgw_x")
+        ]),
+        4
+    );
+    assert_eq!(used(vec![call("ws_67f0"), call("ws_bgw_a")]), 1);
+    assert_eq!(
+        used(vec![
+            reasoning_item("rs_1", &carrier),
+            call("ws_bgw_x"),
+            json!({ "type": "message", "role": "user", "content": "next" }),
+        ]),
+        0
+    );
+}
+
+/// Pinning the no-prefill continuation turn into the parsed input changes
+/// nothing about the messages it finishes into; it only keeps the turn in
+/// place once more turns follow. Models that accept prefill, and inputs that
+/// end with a user turn, get no turn.
+#[tokio::test]
+async fn pinned_continuation_turn_finishes_into_the_same_messages() {
+    let c = caps();
+    let marked =
+        encode_reasoning_envelope_with(&[signed("m", "s")], Some(WEB_SEARCH_MARK)).unwrap();
+    let ending_on_assistant = req_from(json!({ "model": WS_MODEL, "input": [
+        { "type": "message", "role": "user", "content": "q" },
+        reasoning_item("rs_1", &marked)
+    ] }));
+    let parsed = parse_responses_input(&ending_on_assistant, WS_MODEL, &resolver(false), DECLARED)
+        .await
+        .unwrap();
+    let mut pinned = parsed.clone();
+    pinned.pin_no_prefill_continuation(WS_MODEL, &c);
+    assert_eq!(pinned.turns.len(), parsed.turns.len() + 1);
+    assert_eq!(
+        finish_messages(&pinned, WS_MODEL, &c),
+        finish_messages(&parsed, WS_MODEL, &c)
+    );
+    // A model that accepts prefill gets no turn.
+    let prefill_model = "anthropic.claude-3-sonnet-v1:0";
+    let mut unchanged = parsed.clone();
+    unchanged.pin_no_prefill_continuation(prefill_model, &c);
+    assert_eq!(unchanged, parsed);
+    // An input that ends with a user turn gets no turn.
+    let ending_on_user = req_from(json!({ "model": WS_MODEL, "input": "hi" }));
+    let parsed = parse_responses_input(&ending_on_user, WS_MODEL, &resolver(false), DECLARED)
+        .await
+        .unwrap();
+    let mut unchanged = parsed.clone();
+    unchanged.pin_no_prefill_continuation(WS_MODEL, &c);
+    assert_eq!(unchanged, parsed);
 }
 
 mod carrier_props {

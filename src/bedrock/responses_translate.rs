@@ -96,8 +96,8 @@ use crate::bedrock::translate::{
     ImageResolver,
 };
 use crate::bedrock::web_search::{
-    tool_result_block, web_search_tool_schema, WEB_SEARCH_TOOL_DESCRIPTION, WEB_SEARCH_TOOL_NAME,
-    WEB_SEARCH_TOOL_VERSION,
+    tool_result_block, web_search_tool_schema, WEB_SEARCH_CALL_ID_PREFIX,
+    WEB_SEARCH_TOOL_DESCRIPTION, WEB_SEARCH_TOOL_NAME, WEB_SEARCH_TOOL_VERSION,
 };
 use crate::domain::{Capability, ModelCapabilities};
 use crate::error::AppError;
@@ -357,8 +357,18 @@ pub(crate) struct HistoryScan {
     /// sources a citation may point at).
     pub carrier_payloads: Vec<String>,
     /// The searches of the current answer so far: the `used` of the newest
-    /// carrier when no `role: user` message comes after it, else 0.
+    /// carrier when no `role: user` message comes after it, else 0, plus the
+    /// gateway's `web_search_call` items after that carrier and that
+    /// message. Such an item belongs to a step whose carrier never reached
+    /// the client (the stream broke between the step's searches); its search
+    /// ran all the same.
     pub used_in_answer: u32,
+    /// The request continues a tool loop that holds gateway thinking without
+    /// the web search mark: the last input item that becomes a Bedrock turn
+    /// is a tool output, and unmarked gateway reasoning comes after the last
+    /// user message. A first declaration would drop that thinking from the
+    /// loop, the thinking of its last assistant message included.
+    pub unmarked_tool_loop: bool,
 }
 
 /// Scan the replayed `input` for the gateway's web search marks.
@@ -371,13 +381,50 @@ pub(crate) fn scan_web_search_history(req: &ResponsesRequest) -> Result<HistoryS
     let ResponsesInput::Items(items) = &req.input else {
         return Ok(scan);
     };
+    // Gateway searches after the newest carrier (and after the last user
+    // message).
+    let mut uncarried: u32 = 0;
+    // The last item that becomes a turn is a tool output (gateway reasoning
+    // left out: a first declaration drops the unmarked kind).
+    let mut ends_with_tool_output = false;
+    // Unmarked gateway reasoning after the last user message.
+    let mut unmarked_in_answer = false;
     for item in items {
         match item {
             // A user message starts a new answer; tool outputs do not.
             ResponseInputItem::Message {
                 role: ResponsesRole::User,
                 ..
-            } => scan.used_in_answer = 0,
+            } => {
+                scan.used_in_answer = 0;
+                uncarried = 0;
+                ends_with_tool_output = false;
+                unmarked_in_answer = false;
+            }
+            ResponseInputItem::Message {
+                role: ResponsesRole::Assistant,
+                ..
+            }
+            | ResponseInputItem::FunctionCall { .. } => ends_with_tool_output = false,
+            ResponseInputItem::FunctionCallOutput { .. } => ends_with_tool_output = true,
+            ResponseInputItem::Other { item_type, fields } => match item_type.as_str() {
+                "custom_tool_call" | "local_shell_call" | "shell_call" | "apply_patch_call"
+                | "tool_search_call" => ends_with_tool_output = false,
+                "custom_tool_call_output"
+                | "local_shell_call_output"
+                | "shell_call_output"
+                | "apply_patch_call_output"
+                | "tool_search_output" => ends_with_tool_output = true,
+                "web_search_call"
+                    if fields
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| id.starts_with(WEB_SEARCH_CALL_ID_PREFIX)) =>
+                {
+                    uncarried = uncarried.saturating_add(1);
+                }
+                _ => {}
+            },
             ResponseInputItem::Reasoning {
                 encrypted_content: Some(encrypted),
                 ..
@@ -386,12 +433,17 @@ pub(crate) fn scan_web_search_history(req: &ResponsesRequest) -> Result<HistoryS
                     continue;
                 };
                 match decode_gateway_envelope(payload)? {
-                    GatewayEnvelope::Reasoning { marked, .. } => scan.marked |= marked,
+                    GatewayEnvelope::Reasoning { marked, .. } => {
+                        scan.marked |= marked;
+                        unmarked_in_answer |= !marked;
+                    }
                     GatewayEnvelope::WebSearchStep {
                         tool_results, used, ..
                     } => {
                         scan.marked = true;
                         scan.used_in_answer = used;
+                        uncarried = 0;
+                        ends_with_tool_output = true;
                         scan.carrier_payloads
                             .extend(tool_results.iter().filter_map(|result| {
                                 result
@@ -405,6 +457,8 @@ pub(crate) fn scan_web_search_history(req: &ResponsesRequest) -> Result<HistoryS
             _ => {}
         }
     }
+    scan.used_in_answer = scan.used_in_answer.saturating_add(uncarried);
+    scan.unmarked_tool_loop = ends_with_tool_output && unmarked_in_answer;
     Ok(scan)
 }
 
@@ -1002,6 +1056,21 @@ impl ParsedInput {
         self.turns.extend(more.turns);
         self.system.extend(more.system);
         self.carrier_ids.extend(more.carrier_ids);
+    }
+
+    /// Add the no-prefill continuation turn to the turns themselves when
+    /// [`finish_messages`] would append it (the input ends with an assistant
+    /// turn on a model that does not accept prefill), so it keeps its place
+    /// once more turns follow. The web search loop does this before its first
+    /// step: that step's thinking is bound to the turn, and every later step
+    /// must send it again.
+    pub fn pin_no_prefill_continuation(&mut self, model_id: &str, caps: &dyn ModelCapabilities) {
+        if needs_no_prefill_continuation(&reframe_turns(self.turns.clone()), model_id, caps) {
+            self.turns.push(Turn {
+                role: "user".to_string(),
+                content: vec![json!({ "text": NO_PREFILL_CONTINUATION })],
+            });
+        }
     }
 }
 
@@ -1740,33 +1809,40 @@ fn reframe_turns(turns: Vec<Turn>) -> Value {
     )
 }
 
+/// The text of the user turn that follows a final assistant turn on a model
+/// that does not accept assistant prefill ([`Capability::NoAssistantPrefill`]).
+const NO_PREFILL_CONTINUATION: &str = "Please continue your response from where you left off.";
+
+/// `messages` end with an assistant turn on a model that does not accept
+/// prefill, so a continuation turn has to follow.
+fn needs_no_prefill_continuation(
+    messages: &Value,
+    model_id: &str,
+    caps: &dyn ModelCapabilities,
+) -> bool {
+    caps.has(model_id, Capability::NoAssistantPrefill)
+        && messages
+            .as_array()
+            .and_then(|turns| turns.last())
+            .and_then(|turn| turn.get("role"))
+            .and_then(Value::as_str)
+            == Some("assistant")
+}
+
 fn append_no_assistant_prefill_continuation(
     messages: &mut Value,
     model_id: &str,
     caps: &dyn ModelCapabilities,
 ) {
-    if !caps.has(model_id, Capability::NoAssistantPrefill) {
+    if !needs_no_prefill_continuation(messages, model_id, caps) {
         return;
     }
-
-    let Some(turns) = messages.as_array_mut() else {
-        return;
-    };
-    let ends_with_assistant = turns
-        .last()
-        .and_then(|turn| turn.get("role"))
-        .and_then(Value::as_str)
-        == Some("assistant");
-    if !ends_with_assistant {
-        return;
+    if let Some(turns) = messages.as_array_mut() {
+        turns.push(json!({
+            "role": "user",
+            "content": [{ "text": NO_PREFILL_CONTINUATION }]
+        }));
     }
-
-    turns.push(json!({
-        "role": "user",
-        "content": [{
-            "text": "Please continue your response from where you left off."
-        }]
-    }));
 }
 
 /// Test helper that returns only representable tool specs. Runtime assembly
