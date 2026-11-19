@@ -56,7 +56,9 @@
 //!   the search carries its query but not the results, and the image is not
 //!   output of the Bedrock model. Neither adds a Bedrock block, and the turns
 //!   around them merge as if they were absent. The hosted tools stay omitted.
-//!   Other untranslated item types are still a 400.
+//!   The gateway's own `web_search_call` items are skipped the same way: the
+//!   blocks of a gateway-executed search travel in a web search carrier (see
+//!   below). Other untranslated item types are still a 400.
 //! - `include: ["reasoning.encrypted_content"]` is accepted; signed reasoning
 //!   output carries the replay envelope.
 //! - tools in `tools[]` → function/custom/namespace and client-executed shell /
@@ -66,6 +68,20 @@
 //! - unsatisfiable `text.format` (a malformed / unsupported structured-output
 //!   schema) → **400**. A well-formed `json_schema` that can pass through to
 //!   Bedrock is accepted.
+//!
+//! ## Gateway-executed web search (plan C2)
+//!
+//! One exception to "hosted tools are omitted": a request that *declares* the
+//! gateway's web search (`X-Weniq-Web-Search: on` on a model with the
+//! `web_search` capability, or a history that already holds the gateway's web
+//! search marks) gets the frozen synthetic tool
+//! [`crate::bedrock::web_search::WEB_SEARCH_TOOL_NAME`] after the client tools,
+//! whatever the body's own hosted `web_search` tool says. The hidden blocks of
+//! each search step (`toolUse` and `toolResult`) ride in a reasoning item whose
+//! envelope payload is version 2 (the *carrier*); every other envelope a
+//! declared request produces is version 1 with `"ws": 1`. A declared request
+//! drops replayed gateway reasoning that has no mark (it was signed under a
+//! tool list without the synthetic tool). See `bedrock::responses_web_search`.
 
 use std::collections::HashSet;
 
@@ -78,6 +94,10 @@ use crate::bedrock::tools::{
 use crate::bedrock::translate::{
     json_object_schema, json_output_config, needs_strict_text_format_field, parse_image_data_uri,
     ImageResolver,
+};
+use crate::bedrock::web_search::{
+    tool_result_block, web_search_tool_schema, WEB_SEARCH_TOOL_DESCRIPTION, WEB_SEARCH_TOOL_NAME,
+    WEB_SEARCH_TOOL_VERSION,
 };
 use crate::domain::{Capability, ModelCapabilities};
 use crate::error::AppError;
@@ -95,11 +115,29 @@ use crate::openai::schema::{Function, ReasoningEffort};
 pub const NAMESPACE_DELIMITER: &str = "__";
 const REASONING_ENVELOPE_PREFIX: &str = "bedrock-reasoning-v1:";
 
+/// The web search mark (`"ws"` in an envelope payload): the version of the
+/// frozen synthetic tool the conversation declared.
+pub(crate) const WEB_SEARCH_MARK: u64 = WEB_SEARCH_TOOL_VERSION;
+
+/// Envelope payload version of a web search carrier.
+const WEB_SEARCH_CARRIER_VERSION: u64 = 2;
+
 /// Encode Bedrock reasoning blocks into the standard opaque Responses
 /// `encrypted_content` slot. The provider-issued signature inside the payload
 /// remains the authority: Bedrock rejects any altered text/signature pair when
 /// the client replays it.
 pub(crate) fn encode_reasoning_envelope(content: &[Value]) -> Option<String> {
+    encode_reasoning_envelope_with(content, None)
+}
+
+/// [`encode_reasoning_envelope`] with an optional web search mark. `None`
+/// gives the bytes an undeclared request has always produced
+/// (`{"blocks":[…],"version":1}`); `Some(mark)` adds `"ws": mark`, which a
+/// gateway without web search ignores.
+pub(crate) fn encode_reasoning_envelope_with(
+    content: &[Value],
+    mark: Option<u64>,
+) -> Option<String> {
     let blocks: Vec<Value> = content
         .iter()
         .filter_map(|block| {
@@ -119,11 +157,56 @@ pub(crate) fn encode_reasoning_envelope(content: &[Value]) -> Option<String> {
     if blocks.is_empty() {
         return None;
     }
-    let bytes = serde_json::to_vec(&json!({ "version": 1, "blocks": blocks })).ok()?;
+    let mut payload = json!({ "version": 1, "blocks": blocks });
+    if let (Some(mark), Value::Object(fields)) = (mark, &mut payload) {
+        fields.insert("ws".to_string(), json!(mark));
+    }
+    encode_envelope_payload(&payload)
+}
+
+/// One search step's hidden blocks, as a reasoning envelope (plan C2): the
+/// step's `web_search` `toolUse` blocks in Bedrock block order, their
+/// `toolResult` blocks in the same order, and `used`, the number of real
+/// searches of this answer up to and including this step.
+///
+/// Version 2, so a gateway that predates web search rejects it instead of
+/// silently replaying a history without the blocks.
+pub(crate) fn encode_web_search_carrier(
+    tool_uses: &[Value],
+    tool_results: &[Value],
+    used: u32,
+) -> String {
+    let payload = json!({
+        "tool_results": tool_results,
+        "tool_uses": tool_uses,
+        "used": used,
+        "version": WEB_SEARCH_CARRIER_VERSION,
+        "ws": WEB_SEARCH_MARK,
+    });
+    encode_envelope_payload(&payload).unwrap_or_default()
+}
+
+/// `bedrock-reasoning-v1:` + base64url (no padding) of the payload's JSON.
+/// serde_json writes object keys in sorted order, so equal payloads give
+/// equal envelopes.
+fn encode_envelope_payload(payload: &Value) -> Option<String> {
+    let bytes = serde_json::to_vec(payload).ok()?;
     Some(format!(
         "{REASONING_ENVELOPE_PREFIX}{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
     ))
+}
+
+/// The Converse `toolUse` block of one `web_search` call, as a carrier stores
+/// it and as the loop sends it back to Bedrock.
+pub(crate) fn web_search_tool_use_block(tool_use_id: &str, input: &Value) -> Value {
+    json!({
+        "toolUse": {
+            "toolUseId": tool_use_id,
+            "name": WEB_SEARCH_TOOL_NAME,
+            "input": input,
+        }
+    })
 }
 
 /// The payload of the gateway's own reasoning envelope, or `None` when
@@ -139,19 +222,194 @@ pub(crate) fn is_gateway_reasoning_envelope(encrypted_content: &str) -> bool {
     gateway_envelope_payload(encrypted_content).is_some()
 }
 
+/// A decoded gateway envelope.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum GatewayEnvelope {
+    /// Version 1: signed reasoning, as Converse `reasoningContent` blocks.
+    /// `marked` when the payload carries the web search mark (`"ws": 1`).
+    Reasoning { blocks: Vec<Value>, marked: bool },
+    /// Version 2: one search step's `toolUse` and `toolResult` blocks (same
+    /// order, same ids) and the answer's search count up to that step.
+    WebSearchStep {
+        tool_uses: Vec<Value>,
+        tool_results: Vec<Value>,
+        used: u32,
+    },
+}
+
 /// Decode a gateway envelope's payload (the text after
-/// [`REASONING_ENVELOPE_PREFIX`]) into Converse `reasoningContent` blocks.
-fn decode_reasoning_envelope(encoded: &str) -> Result<Vec<Value>, AppError> {
+/// [`REASONING_ENVELOPE_PREFIX`]).
+///
+/// # Errors
+/// [`AppError::BadRequest`] for a payload that is not base64url JSON, an
+/// unknown version, invalid reasoning blocks, a v1 `ws` other than
+/// [`WEB_SEARCH_MARK`], or a carrier that fails the checks of
+/// [`decode_web_search_carrier`]. The v1 messages are the ones the gateway has
+/// always returned.
+pub(crate) fn decode_gateway_envelope(encoded: &str) -> Result<GatewayEnvelope, AppError> {
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(encoded)
         .map_err(|_| AppError::BadRequest("malformed reasoning.encrypted_content".to_string()))?;
     let payload: Value = serde_json::from_slice(&bytes)
         .map_err(|_| AppError::BadRequest("malformed reasoning.encrypted_content".to_string()))?;
-    if payload.get("version").and_then(Value::as_u64) != Some(1) {
-        return Err(AppError::BadRequest(
+    match payload.get("version").and_then(Value::as_u64) {
+        Some(1) => {
+            let marked = match payload.get("ws") {
+                None => false,
+                Some(mark) if mark.as_u64() == Some(WEB_SEARCH_MARK) => true,
+                Some(_) => {
+                    return Err(AppError::BadRequest(
+                        "unsupported web search marker".to_string(),
+                    ))
+                }
+            };
+            Ok(GatewayEnvelope::Reasoning {
+                blocks: decode_reasoning_blocks(&payload)?,
+                marked,
+            })
+        }
+        Some(WEB_SEARCH_CARRIER_VERSION) => decode_web_search_carrier(&payload),
+        _ => Err(AppError::BadRequest(
             "unsupported reasoning.encrypted_content envelope version".to_string(),
-        ));
+        )),
     }
+}
+
+/// A version 2 payload: `ws` is [`WEB_SEARCH_MARK`]; `tool_uses` is a non-empty
+/// list of `web_search` calls, each with a non-empty string `toolUseId` and an
+/// object `input`; `tool_results` has the same length and ids in the same
+/// positions, each with exactly one non-empty text block; `used` is a
+/// non-negative integer. The blocks are rebuilt from the checked fields, so
+/// only those fields reach Bedrock.
+///
+/// # Errors
+/// [`AppError::BadRequest`] `malformed web search carrier` when any check
+/// fails.
+fn decode_web_search_carrier(payload: &Value) -> Result<GatewayEnvelope, AppError> {
+    let malformed = || AppError::BadRequest("malformed web search carrier".to_string());
+    if payload.get("ws").and_then(Value::as_u64) != Some(WEB_SEARCH_MARK) {
+        return Err(malformed());
+    }
+    let uses = payload
+        .get("tool_uses")
+        .and_then(Value::as_array)
+        .filter(|uses| !uses.is_empty())
+        .ok_or_else(malformed)?;
+    let results = payload
+        .get("tool_results")
+        .and_then(Value::as_array)
+        .filter(|results| results.len() == uses.len())
+        .ok_or_else(malformed)?;
+    let used = payload
+        .get("used")
+        .and_then(Value::as_u64)
+        .and_then(|used| u32::try_from(used).ok())
+        .ok_or_else(malformed)?;
+    let mut tool_uses = Vec::with_capacity(uses.len());
+    let mut tool_results = Vec::with_capacity(uses.len());
+    for (tool_use, tool_result) in uses.iter().zip(results) {
+        let call = tool_use.get("toolUse").ok_or_else(malformed)?;
+        let id = call
+            .get("toolUseId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(malformed)?;
+        if call.get("name").and_then(Value::as_str) != Some(WEB_SEARCH_TOOL_NAME) {
+            return Err(malformed());
+        }
+        let input = call
+            .get("input")
+            .filter(|input| input.is_object())
+            .ok_or_else(malformed)?;
+        let result = tool_result.get("toolResult").ok_or_else(malformed)?;
+        if result.get("toolUseId").and_then(Value::as_str) != Some(id) {
+            return Err(malformed());
+        }
+        let text = match result
+            .get("content")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+        {
+            Some([block]) => block
+                .get("text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty()),
+            _ => None,
+        }
+        .ok_or_else(malformed)?;
+        tool_uses.push(web_search_tool_use_block(id, input));
+        tool_results.push(tool_result_block(id, text));
+    }
+    Ok(GatewayEnvelope::WebSearchStep {
+        tool_uses,
+        tool_results,
+        used,
+    })
+}
+
+/// What the replayed history says about web search (plan C2 §2.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct HistoryScan {
+    /// Some gateway envelope carries the web search mark (a marked v1
+    /// envelope, or a carrier): the conversation declared the tool before.
+    pub marked: bool,
+    /// The payload text of every carrier `toolResult`, in input order (the
+    /// sources a citation may point at).
+    pub carrier_payloads: Vec<String>,
+    /// The searches of the current answer so far: the `used` of the newest
+    /// carrier when no `role: user` message comes after it, else 0.
+    pub used_in_answer: u32,
+}
+
+/// Scan the replayed `input` for the gateway's web search marks.
+///
+/// # Errors
+/// The [`decode_gateway_envelope`] error of the first malformed gateway
+/// envelope.
+pub(crate) fn scan_web_search_history(req: &ResponsesRequest) -> Result<HistoryScan, AppError> {
+    let mut scan = HistoryScan::default();
+    let ResponsesInput::Items(items) = &req.input else {
+        return Ok(scan);
+    };
+    for item in items {
+        match item {
+            // A user message starts a new answer; tool outputs do not.
+            ResponseInputItem::Message {
+                role: ResponsesRole::User,
+                ..
+            } => scan.used_in_answer = 0,
+            ResponseInputItem::Reasoning {
+                encrypted_content: Some(encrypted),
+                ..
+            } => {
+                let Some(payload) = gateway_envelope_payload(encrypted) else {
+                    continue;
+                };
+                match decode_gateway_envelope(payload)? {
+                    GatewayEnvelope::Reasoning { marked, .. } => scan.marked |= marked,
+                    GatewayEnvelope::WebSearchStep {
+                        tool_results, used, ..
+                    } => {
+                        scan.marked = true;
+                        scan.used_in_answer = used;
+                        scan.carrier_payloads
+                            .extend(tool_results.iter().filter_map(|result| {
+                                result
+                                    .pointer("/toolResult/content/0/text")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
+                            }));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(scan)
+}
+
+/// The Converse `reasoningContent` blocks of a version 1 payload.
+fn decode_reasoning_blocks(payload: &Value) -> Result<Vec<Value>, AppError> {
     let blocks = payload
         .get("blocks")
         .and_then(Value::as_array)
@@ -189,6 +447,9 @@ pub(crate) enum ResponsesToolKind {
     /// The client-executed `tool_search` tool: Claude's call maps back to a
     /// `tool_search_call` output item.
     ToolSearch,
+    /// The gateway-executed synthetic web search tool (plan C2): the gateway
+    /// runs Claude's call itself and reports it as a `web_search_call` item.
+    WebSearch,
 }
 
 /// The upstream name of the client-executed Responses `tool_search` tool. The
@@ -442,7 +703,7 @@ impl ResponsesToolRegistry {
 pub(crate) fn build_responses_tools(
     req: &ResponsesRequest,
 ) -> Result<(Vec<Value>, ResponsesToolRegistry), AppError> {
-    build_responses_tools_with(req, false)
+    build_responses_tools_with(req, false, false)
 }
 
 /// [`build_responses_tools`] with the tool-search lane switch. With
@@ -450,13 +711,18 @@ pub(crate) fn build_responses_tools(
 /// upstream tool [`TOOL_SEARCH_TOOL_NAME`] (zuno's description and parameters
 /// verbatim, at zuno's position); without it the tool is dropped like every
 /// other hosted tool.
+///
+/// With `web_search` (a request that declares the gateway's web search), the
+/// frozen synthetic tool [`WEB_SEARCH_TOOL_NAME`] is appended after every
+/// client tool, `tool_search` included, so it sits just before the tools
+/// cache point. A client tool that translates to the same name is then a 400:
+/// renaming either tool would change `tools` between turns.
 pub(crate) fn build_responses_tools_with(
     req: &ResponsesRequest,
     tool_search: bool,
+    web_search: bool,
 ) -> Result<(Vec<Value>, ResponsesToolRegistry), AppError> {
-    let Some(tools) = &req.tools else {
-        return Ok((Vec::new(), ResponsesToolRegistry::default()));
-    };
+    let tools = req.tools.as_deref().unwrap_or_default();
     let mut specs = Vec::new();
     let mut bindings = Vec::new();
     let mut names = HashSet::new();
@@ -654,6 +920,24 @@ pub(crate) fn build_responses_tools_with(
         }
     }
 
+    if web_search {
+        // `push` fails only on a duplicate name.
+        push(
+            WEB_SEARCH_TOOL_NAME.to_string(),
+            WEB_SEARCH_TOOL_NAME.to_string(),
+            None,
+            ResponsesToolKind::WebSearch,
+            Some(WEB_SEARCH_TOOL_DESCRIPTION),
+            Some(web_search_tool_schema()),
+        )
+        .map_err(|_| {
+            AppError::BadRequest(format!(
+                "tool name '{WEB_SEARCH_TOOL_NAME}' is reserved for the gateway's web search on \
+                 this request (X-Weniq-Web-Search)"
+            ))
+        })?;
+    }
+
     Ok((specs, ResponsesToolRegistry { bindings }))
 }
 
@@ -683,9 +967,42 @@ pub struct ResponsesConverseInput {
 
 /// A per-item intermediate before same-role reframing: a Bedrock role plus its
 /// content blocks. Mirrors the chat path's `IntermediateMessage`.
-struct Turn {
-    role: String,
-    content: Vec<Value>,
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Turn {
+    pub role: String,
+    pub content: Vec<Value>,
+}
+
+/// Switches of the input translation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TranslateOptions {
+    /// The tool-search lane: `tool_search_call` / `tool_search_output` items
+    /// translate (see [`to_responses_converse_input_with`]).
+    pub tool_search: bool,
+    /// The request declares the gateway's web search: replayed gateway
+    /// reasoning without the web search mark is dropped.
+    pub web_search: bool,
+}
+
+/// The parsed `input` before reframing: per-item turns, the system blocks
+/// (`instructions` first) and the ids of the `toolUse` blocks that web search
+/// carriers contributed. The search loop parses the original input once and
+/// appends each search step's replayed items, so its continuation request is
+/// built exactly as a client's replay of the same items would be.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct ParsedInput {
+    pub turns: Vec<Turn>,
+    pub system: Vec<Value>,
+    pub carrier_ids: HashSet<String>,
+}
+
+impl ParsedInput {
+    /// Append `more` (parsed from items that follow this input).
+    pub fn append(&mut self, more: ParsedInput) {
+        self.turns.extend(more.turns);
+        self.system.extend(more.system);
+        self.carrier_ids.extend(more.carrier_ids);
+    }
 }
 
 fn push_non_empty_text_block(blocks: &mut Vec<Value>, text: &str) {
@@ -736,54 +1053,174 @@ pub async fn to_responses_converse_input_with(
     caps: &dyn ModelCapabilities,
     tool_search: bool,
 ) -> Result<ResponsesConverseInput, AppError> {
+    let opts = TranslateOptions {
+        tool_search,
+        web_search: false,
+    };
+    let parsed = parse_responses_input(req, model_id, resolver, opts).await?;
+    Ok(ResponsesConverseInput {
+        messages: finish_messages(&parsed, model_id, caps),
+        system: Value::Array(parsed.system),
+    })
+}
+
+/// Validate the request and parse its `input` into per-item turns.
+///
+/// Runs request validation first (an unsatisfiable `text.format` is a 400),
+/// then puts `instructions` first among the system blocks and parses `input`
+/// (string or item array) with [`parse_items`]. Remote images are fetched
+/// here, once: the search loop reuses the result for every step.
+///
+/// # Errors
+/// As [`to_responses_converse_input_with`].
+pub(crate) async fn parse_responses_input(
+    req: &ResponsesRequest,
+    model_id: &str,
+    resolver: &dyn ImageResolver,
+    opts: TranslateOptions,
+) -> Result<ParsedInput, AppError> {
     // 1) Request validation. Tool availability is checked when the provider
     //    builds the reversible tool registry.
     reject_unsatisfiable_text_format(req)?;
 
     // 2) System blocks: `instructions` first (prepended), then any system /
     //    developer message-item blocks, in input order.
-    let mut system_blocks: Vec<Value> = Vec::new();
+    let mut parsed = ParsedInput::default();
     if let Some(instructions) = &req.instructions {
-        push_non_empty_text_block(&mut system_blocks, instructions);
+        push_non_empty_text_block(&mut parsed.system, instructions);
     }
 
     // 3) Parse input into per-item turns (system/developer items contribute to
-    //    `system_blocks` instead of producing a turn).
-    let turns = match &req.input {
+    //    the system blocks instead of producing a turn).
+    match &req.input {
         ResponsesInput::Text(text) => {
             if text.is_empty() {
                 return Err(AppError::BadRequest(
                     "input must contain non-empty text".to_string(),
                 ));
             }
-            vec![Turn {
+            parsed.turns.push(Turn {
                 role: "user".to_string(),
                 content: vec![json!({ "text": text })],
-            }]
+            });
         }
         ResponsesInput::Items(items) => {
-            parse_input_items(items, model_id, resolver, &mut system_blocks, tool_search).await?
+            parsed.append(parse_items(items, model_id, resolver, opts).await?);
         }
-    };
+    }
+    Ok(parsed)
+}
 
-    let mut messages = reframe_turns(turns);
+/// The Converse `messages` of a parsed input: contiguous same-role turns
+/// merged ([`reframe_turns`]), the `toolResult` blocks that answer carrier
+/// calls put in `toolUse` order ([`align_carrier_tool_results`]), and the
+/// no-prefill continuation turn when the model needs one.
+pub(crate) fn finish_messages(
+    parsed: &ParsedInput,
+    model_id: &str,
+    caps: &dyn ModelCapabilities,
+) -> Value {
+    let mut messages = reframe_turns(parsed.turns.clone());
+    align_carrier_tool_results(&mut messages, &parsed.carrier_ids);
     append_no_assistant_prefill_continuation(&mut messages, model_id, caps);
+    messages
+}
 
-    Ok(ResponsesConverseInput {
-        messages,
-        system: Value::Array(system_blocks),
-    })
+/// Put the `toolResult` blocks of every user message that answers a carrier
+/// call in the order of the `toolUse` blocks of the assistant message before
+/// it (a stable sort; results without a matching call keep their order at the
+/// end).
+///
+/// Only a mixed step changes anything: its carrier's results come first in
+/// the replayed input, then the client's results for its own calls, while the
+/// assistant message holds the client calls first. A history without carriers
+/// is never touched, and a message that holds anything but `toolResult`
+/// blocks is left as it is.
+fn align_carrier_tool_results(messages: &mut Value, carrier_ids: &HashSet<String>) {
+    if carrier_ids.is_empty() {
+        return;
+    }
+    let Some(turns) = messages.as_array_mut() else {
+        return;
+    };
+    let result_id = |block: &Value| {
+        block
+            .pointer("/toolResult/toolUseId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    for at in 1..turns.len() {
+        let (before, rest) = turns.split_at_mut(at);
+        let turn = &mut rest[0];
+        if turn.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        let Some(content) = turn.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        let all_results = content.iter().all(|block| result_id(block).is_some());
+        let answers_carrier = content
+            .iter()
+            .filter_map(result_id)
+            .any(|id| carrier_ids.contains(&id));
+        if !all_results || !answers_carrier {
+            continue;
+        }
+        let previous = &before[at - 1];
+        if previous.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let call_order: Vec<&str> = previous
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|block| block.pointer("/toolUse/toolUseId").and_then(Value::as_str))
+            .collect();
+        content.sort_by_key(|block| {
+            let id = result_id(block).unwrap_or_default();
+            call_order
+                .iter()
+                .position(|call| *call == id)
+                .unwrap_or(usize::MAX)
+        });
+    }
+}
+
+/// Parse array-form `input` items into Bedrock turns, routing
+/// system/developer message items into the system blocks.
+pub(crate) async fn parse_items(
+    items: &[ResponseInputItem],
+    model_id: &str,
+    resolver: &dyn ImageResolver,
+    opts: TranslateOptions,
+) -> Result<ParsedInput, AppError> {
+    let mut parsed = ParsedInput::default();
+    let turns = parse_input_items(
+        items,
+        model_id,
+        resolver,
+        &mut parsed.system,
+        &mut parsed.carrier_ids,
+        opts,
+    )
+    .await?;
+    parsed.turns = turns;
+    Ok(parsed)
 }
 
 /// Parse the array-form `input` items into Bedrock turns, routing
-/// system/developer message items into `system_blocks`.
+/// system/developer message items into `system_blocks` and the ids of carrier
+/// `toolUse` blocks into `carrier_ids`.
 async fn parse_input_items(
     items: &[ResponseInputItem],
     model_id: &str,
     resolver: &dyn ImageResolver,
     system_blocks: &mut Vec<Value>,
-    tool_search: bool,
+    carrier_ids: &mut HashSet<String>,
+    opts: TranslateOptions,
 ) -> Result<Vec<Turn>, AppError> {
+    let tool_search = opts.tool_search;
     let mut turns: Vec<Turn> = Vec::new();
     let top_level_searched = if tool_search {
         searched_top_level_functions(items)?
@@ -958,7 +1395,9 @@ async fn parse_input_items(
                 // web_search_call / image_generation_call → DROP. A hosted
                 // tool run on mantle, replayed after a GPT turn. The search
                 // carries its query but not the results, and the image is not
-                // output of the Bedrock model, so neither is replayed.
+                // output of the Bedrock model, so neither is replayed. The
+                // gateway's own web_search_call is dropped too: the blocks of
+                // that search replay from its carrier.
                 "web_search_call" | "image_generation_call" => {}
                 _ => {
                     return Err(AppError::BadRequest(format!(
@@ -981,10 +1420,39 @@ async fn parse_input_items(
                 else {
                     continue;
                 };
-                turns.push(Turn {
-                    role: "assistant".to_string(),
-                    content: decode_reasoning_envelope(encoded)?,
-                });
+                match decode_gateway_envelope(encoded)? {
+                    // A declared request drops the reasoning signed before the
+                    // conversation declared web search: its tool list had no
+                    // synthetic tool. Sticky marks put all of it first, so this
+                    // removes thinking from the start of the history only.
+                    GatewayEnvelope::Reasoning { marked: false, .. } if opts.web_search => {}
+                    GatewayEnvelope::Reasoning { blocks, .. } => turns.push(Turn {
+                        role: "assistant".to_string(),
+                        content: blocks,
+                    }),
+                    // A search step: its calls join the assistant message of
+                    // the step, its results open the next user message.
+                    GatewayEnvelope::WebSearchStep {
+                        tool_uses,
+                        tool_results,
+                        ..
+                    } => {
+                        carrier_ids.extend(tool_uses.iter().filter_map(|block| {
+                            block
+                                .pointer("/toolUse/toolUseId")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        }));
+                        turns.push(Turn {
+                            role: "assistant".to_string(),
+                            content: tool_uses,
+                        });
+                        turns.push(Turn {
+                            role: "user".to_string(),
+                            content: tool_results,
+                        });
+                    }
+                }
             }
         }
     }

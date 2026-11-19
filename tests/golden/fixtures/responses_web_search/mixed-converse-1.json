@@ -1,0 +1,41 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "reasoningContent": {
+            "reasoningText": {
+              "text": "Look up the ticket and search the web.",
+              "signature": "c3luLXNpZy1t"
+            }
+          }
+        },
+        {
+          "toolUse": {
+            "toolUseId": "tooluse_fn_1",
+            "name": "lookup_ticket",
+            "input": {
+              "id": "T-1042"
+            }
+          }
+        },
+        {
+          "toolUse": {
+            "toolUseId": "tooluse_ws_m",
+            "name": "web_search",
+            "input": {
+              "query": "AgentCore web search quota"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "stopReason": "tool_use",
+  "usage": {
+    "inputTokens": 2100,
+    "outputTokens": 70,
+    "totalTokens": 2170
+  }
+}

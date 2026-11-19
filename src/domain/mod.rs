@@ -176,6 +176,35 @@ pub trait ChatProvider: Send + Sync {
     }
 }
 
+/// The `X-Weniq-Web-Search` request header of a Responses request.
+///
+/// A client (Weniq's model broker) uses it to turn the gateway-executed web
+/// search on or off for one request. It is a header rather than a body field
+/// because the mantle lane forwards the body verbatim and the upstream rejects
+/// unknown body fields. Only the Bedrock Responses provider reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WebSearchHeader {
+    /// The request carries no such header.
+    #[default]
+    Absent,
+    /// `on`: run web search for this request when the gateway can.
+    On,
+    /// `off`: do not run web search for this request.
+    Off,
+}
+
+impl WebSearchHeader {
+    /// The log form: `absent`, `on` or `off`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+}
+
 /// A provider-agnostic, normalized Responses-API request.
 ///
 /// The Responses-API analogue of [`NormalizedChatRequest`]: the original
@@ -202,6 +231,8 @@ pub struct NormalizedResponsesRequest {
     /// OpenAI-compatible upstream) can forward the client's exact JSON body
     /// unchanged. The Converse path ignores this field. NEVER logged.
     pub raw_body: bytes::Bytes,
+    /// The request's `X-Weniq-Web-Search` header. The mantle lane ignores it.
+    pub web_search: WebSearchHeader,
 }
 
 /// A boxed, `'static` stream of Responses-API streaming events.

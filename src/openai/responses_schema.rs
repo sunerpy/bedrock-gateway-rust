@@ -179,9 +179,12 @@ pub enum ResponsesTool {
         #[serde(flatten)]
         fields: HashMap<String, Value>,
     },
-    /// OpenAI-hosted tools have no Bedrock Converse equivalent. They are
-    /// explicit variants so the provider can return a diagnostic error naming
-    /// the requested type instead of silently dropping it.
+    /// OpenAI-hosted tools have no Bedrock Converse equivalent; the Bedrock
+    /// Responses provider omits them from `toolConfig`. The one it runs
+    /// itself is web search, and never because of this variant: a request
+    /// that declares the gateway's web search (the `X-Weniq-Web-Search`
+    /// header, plan C2) gets the gateway's own synthetic `web_search` tool
+    /// whether or not the body lists a hosted one.
     #[serde(rename = "web_search")]
     WebSearch {
         #[serde(flatten)]

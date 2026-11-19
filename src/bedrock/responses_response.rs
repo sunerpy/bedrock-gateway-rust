@@ -38,9 +38,11 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use crate::bedrock::responses_translate::{
-    encode_reasoning_envelope, ResponsesToolKind, ResponsesToolRegistry,
+    encode_reasoning_envelope, encode_reasoning_envelope_with, ResponsesToolKind,
+    ResponsesToolRegistry, WEB_SEARCH_MARK,
 };
 use crate::bedrock::tokens::{compute_token_usage, estimate_reasoning_tokens};
+use crate::bedrock::web_search::{web_search_call_id, Source};
 use crate::error::AppError;
 use crate::openai::responses_schema::{
     InputTokensDetails, OutputContentPart, OutputTokensDetails, ResponseOutputItem,
@@ -286,6 +288,22 @@ pub(crate) fn tool_output_item(
         };
     }
 
+    // The gateway's web search runs its calls itself and never hands one to
+    // the client; the search loop emits its own `web_search_call` items. Kept
+    // as a defensive mapping so a stray call never reaches `unreachable!`.
+    if binding.kind == ResponsesToolKind::WebSearch {
+        let query = input
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        return web_search_call_item(
+            &web_search_call_id(call_id),
+            status.unwrap_or("completed"),
+            query,
+            None,
+        );
+    }
+
     let (item_type, id_prefix, payload_key, payload) = match binding.kind {
         ResponsesToolKind::Custom => (
             "custom_tool_call",
@@ -315,7 +333,9 @@ pub(crate) fn tool_output_item(
                 .cloned()
                 .unwrap_or_else(|| input.clone()),
         ),
-        ResponsesToolKind::Function | ResponsesToolKind::ToolSearch => unreachable!(),
+        ResponsesToolKind::Function
+        | ResponsesToolKind::ToolSearch
+        | ResponsesToolKind::WebSearch => unreachable!(),
     };
     let mut fields = HashMap::new();
     fields.insert("id".to_string(), json!(format!("{id_prefix}_{call_id}")));
@@ -336,6 +356,239 @@ pub(crate) fn tool_output_item(
         item_type: item_type.to_string(),
         fields,
     }
+}
+
+// ---------------------------------------------------------------------------
+// One step of the web search loop (plan C2)
+// ---------------------------------------------------------------------------
+
+/// The reasoning and message item ids of one Bedrock call (*step*) of a
+/// response. Step 0 keeps the ids a response without web search has
+/// (`rs_S`, `msg_S`, where `S` is the response id without `resp_`); step `k`
+/// gets `rs_S_k` and `msg_S_k`, so every item of the response has its own id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StepItemIds {
+    pub reasoning: String,
+    pub message: String,
+}
+
+impl StepItemIds {
+    #[must_use]
+    pub fn for_step(response_id: &str, step: usize) -> Self {
+        let s = response_id.trim_start_matches("resp_");
+        if step == 0 {
+            Self {
+                reasoning: format!("rs_{s}"),
+                message: format!("msg_{s}"),
+            }
+        } else {
+            Self {
+                reasoning: format!("rs_{s}_{step}"),
+                message: format!("msg_{s}_{step}"),
+            }
+        }
+    }
+}
+
+/// One `toolUse` block of a step, in Bedrock block order.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct StepToolUse {
+    pub call_id: String,
+    pub name: String,
+    pub input: Value,
+}
+
+/// A non-stream step mapped like [`from_converse_output_to_responses_with_tools`]
+/// maps a whole response, minus the item ordering, which the loop owns.
+#[derive(Debug, Clone)]
+pub(crate) struct MappedStep {
+    /// The step's reasoning item (summary and envelope), when it has reasoning.
+    pub reasoning: Option<ResponseOutputItem>,
+    /// Every text block of the step, concatenated.
+    pub text: String,
+    pub tool_uses: Vec<StepToolUse>,
+    pub stop_reason: Option<String>,
+    /// The raw Converse `usage` object, when present.
+    pub usage: Option<Value>,
+    pub reasoning_tokens: u32,
+}
+
+/// Map one Bedrock Converse output (Converse-shaped JSON, also what the
+/// InvokeModel lane converts to) of a step. `mark` writes the web search mark
+/// into the reasoning envelope.
+///
+/// # Errors
+/// [`AppError::Internal`] when the output has no `output.message.content`
+/// array.
+pub(crate) fn map_step(
+    output: &Value,
+    ids: &StepItemIds,
+    mark: bool,
+) -> Result<MappedStep, AppError> {
+    let content = output
+        .pointer("/output/message/content")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AppError::Internal(
+                "bedrock converse output missing output.message.content array".to_string(),
+            )
+        })?;
+    let reasoning_text = collect_reasoning_text(content);
+    let encrypted = encode_reasoning_envelope_with(content, mark.then_some(WEB_SEARCH_MARK));
+    let reasoning = (!reasoning_text.is_empty() || encrypted.is_some()).then(|| {
+        ResponseOutputItem::Reasoning {
+            id: ids.reasoning.clone(),
+            content: None,
+            summary: Some(json!([{ "type": "summary_text", "text": reasoning_text }])),
+            encrypted_content: encrypted,
+        }
+    });
+    let mut text = String::new();
+    let mut tool_uses = Vec::new();
+    for block in content {
+        if let Some(tool_use) = block.get("toolUse") {
+            let field = |key: &str| {
+                tool_use
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            tool_uses.push(StepToolUse {
+                call_id: field("toolUseId"),
+                name: field("name"),
+                input: tool_use.get("input").cloned().unwrap_or(Value::Null),
+            });
+        } else if let Some(t) = block.get("text").and_then(Value::as_str) {
+            text.push_str(t);
+        }
+    }
+    Ok(MappedStep {
+        reasoning,
+        reasoning_tokens: estimate_reasoning_tokens(&reasoning_text),
+        text,
+        tool_uses,
+        stop_reason: output
+            .get("stopReason")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        usage: output.get("usage").cloned(),
+    })
+}
+
+/// A finished assistant message item with one `output_text` part.
+pub(crate) fn message_item(id: &str, text: &str, annotations: Vec<Value>) -> ResponseOutputItem {
+    ResponseOutputItem::Message {
+        id: id.to_string(),
+        status: "completed".to_string(),
+        role: "assistant".to_string(),
+        content: vec![OutputContentPart::OutputText {
+            text: text.to_string(),
+            annotations,
+            logprobs: None,
+        }],
+    }
+}
+
+/// A `web_search_call` item: `action` is `{type: "search", query}` and, with
+/// `sources` (a finished call), also `queries` and the result URLs. A call
+/// that is still running or that failed carries no `sources`.
+pub(crate) fn web_search_call_item(
+    id: &str,
+    status: &str,
+    query: &str,
+    sources: Option<&[Source]>,
+) -> ResponseOutputItem {
+    let mut action = serde_json::Map::new();
+    action.insert("type".to_string(), json!("search"));
+    action.insert("query".to_string(), json!(query));
+    if status != "in_progress" {
+        action.insert("queries".to_string(), json!([query]));
+    }
+    if let Some(sources) = sources {
+        let sources: Vec<Value> = sources
+            .iter()
+            .map(|source| json!({ "type": "url", "url": source.url }))
+            .collect();
+        action.insert("sources".to_string(), Value::Array(sources));
+    }
+    let mut fields = HashMap::new();
+    fields.insert("id".to_string(), json!(id));
+    fields.insert("status".to_string(), json!(status));
+    fields.insert("action".to_string(), Value::Object(action));
+    ResponseOutputItem::Other {
+        item_type: "web_search_call".to_string(),
+        fields,
+    }
+}
+
+/// The reasoning item that carries a search step's hidden blocks. `summary`
+/// must be present (zuno drops a reasoning item without it); it is empty, so
+/// clients show nothing for it. `encrypted` is `None` for `output_item.added`.
+pub(crate) fn carrier_item(id: &str, encrypted: Option<&str>) -> ResponseOutputItem {
+    ResponseOutputItem::Reasoning {
+        id: id.to_string(),
+        content: None,
+        summary: Some(json!([])),
+        encrypted_content: encrypted.map(str::to_string),
+    }
+}
+
+/// Raw Bedrock token counts summed over the steps of one response, plus the
+/// summed reasoning-token estimates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct UsageSum {
+    pub input: i32,
+    pub output: i32,
+    pub cache_read: i32,
+    pub cache_write: i32,
+    pub reasoning_tokens: i32,
+}
+
+impl UsageSum {
+    /// Add one step's Converse `usage` object and reasoning estimate.
+    pub fn add_step(&mut self, usage: Option<&Value>, reasoning_tokens: u32) {
+        self.input = self.input.saturating_add(usage_field(usage, "inputTokens"));
+        self.output = self
+            .output
+            .saturating_add(usage_field(usage, "outputTokens"));
+        self.cache_read = self
+            .cache_read
+            .saturating_add(usage_field(usage, "cacheReadInputTokens"));
+        self.cache_write = self
+            .cache_write
+            .saturating_add(usage_field(usage, "cacheWriteInputTokens"));
+        self.reasoning_tokens = self
+            .reasoning_tokens
+            .saturating_add(i32::try_from(reasoning_tokens).unwrap_or(i32::MAX));
+    }
+}
+
+/// Responses usage of a multi-step response: the shared token formula applied
+/// once to the summed raw counts.
+pub(crate) fn usage_from_sum(sum: &UsageSum) -> ResponsesUsage {
+    let counts = compute_token_usage(sum.input, sum.output, sum.cache_read, sum.cache_write);
+    ResponsesUsage {
+        input_tokens: counts.prompt_tokens,
+        input_tokens_details: Some(InputTokensDetails {
+            cached_tokens: counts.cached_tokens,
+        }),
+        output_tokens: counts.completion_tokens,
+        output_tokens_details: Some(OutputTokensDetails {
+            reasoning_tokens: sum.reasoning_tokens,
+        }),
+        total_tokens: counts.total_tokens,
+    }
+}
+
+/// [`map_status`] for the loop's final step.
+pub(crate) fn step_status(stop_reason: Option<&str>) -> (String, Option<Value>) {
+    map_status(stop_reason)
+}
+
+/// Current Unix time in whole seconds, for a response the loop assembles.
+pub(crate) fn created_at_now() -> i64 {
+    now_unix_secs()
 }
 
 /// Concatenate every `reasoningContent.reasoningText.text` across blocks.

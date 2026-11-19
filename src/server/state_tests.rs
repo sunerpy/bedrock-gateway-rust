@@ -365,6 +365,7 @@ fn normalized_responses(model: &str) -> NormalizedResponsesRequest {
         request_id: Arc::from("req-test"),
         received_at: std::time::Instant::now(),
         raw_body: bytes::Bytes::new(),
+        web_search: crate::domain::WebSearchHeader::Absent,
     }
 }
 

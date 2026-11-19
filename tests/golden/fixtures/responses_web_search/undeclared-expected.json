@@ -1,0 +1,4784 @@
+{
+ "assembled": {
+  "converse-client-web-search-tool/tool_search=false": {
+   "additional_fields": null,
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "<environment_context> (omitted)"
+      },
+      {
+       "text": "run the alpha tool"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "reasoningContent": {
+        "reasoningText": {
+         "signature": "sig-hist-1",
+         "text": "The user wants the alpha tool."
+        }
+       }
+      },
+      {
+       "text": "Running it now."
+      },
+      {
+       "toolUse": {
+        "input": {},
+        "name": "mcp__ze_tools__direct_alpha",
+        "toolUseId": "toolu_h1"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "toolResult": {
+        "content": [
+         {
+          "text": "alpha ok"
+         }
+        ],
+        "toolUseId": "toolu_h1"
+       }
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "reasoningContent": {
+        "redactedContent": "cmVkYWN0ZWQ="
+       }
+      },
+      {
+       "reasoningContent": {
+        "reasoningText": {
+         "signature": "sig-hist-2",
+         "text": ""
+        }
+       }
+      },
+      {
+       "text": "The alpha tool says ok."
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "text": "what is new at AWS?"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "text": "AWS shipped [news](https://aws.amazon.com/new/)."
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "text": "and Bedrock?"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [ResponsesToolBinding { bedrock_name: \"get_goal\", client_name: \"get_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"lookup_ticket\", client_name: \"lookup_ticket\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_alpha\", client_name: \"direct_alpha\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_beta\", client_name: \"direct_beta\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"web_search\", client_name: \"web_search\", namespace: None, kind: Function }] }",
+   "searched_tools": "[]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    },
+    {
+     "text": "<permissions instructions> (omitted)"
+    }
+   ],
+   "tool_config": {
+    "toolChoice": {
+     "any": {}
+    },
+    "tools": [
+     {
+      "toolSpec": {
+       "description": "Get the current goal for this thread.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {},
+         "required": [],
+         "type": "object"
+        }
+       },
+       "name": "get_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Look up a support ticket by id.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "id": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "id"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "lookup_ticket"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Alpha direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_alpha"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Beta direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {
+          "n": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_beta"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "A client tool that happens to be called web_search.",
+       "inputSchema": {
+        "json": {
+         "properties": {
+          "q": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "web_search"
+      }
+     },
+     {
+      "cachePoint": {
+       "ttl": "5m",
+       "type": "default"
+      }
+     }
+    ]
+   }
+  },
+  "converse-client-web-search-tool/tool_search=true": {
+   "additional_fields": null,
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "<environment_context> (omitted)"
+      },
+      {
+       "text": "run the alpha tool"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "reasoningContent": {
+        "reasoningText": {
+         "signature": "sig-hist-1",
+         "text": "The user wants the alpha tool."
+        }
+       }
+      },
+      {
+       "text": "Running it now."
+      },
+      {
+       "toolUse": {
+        "input": {},
+        "name": "mcp__ze_tools__direct_alpha",
+        "toolUseId": "toolu_h1"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "toolResult": {
+        "content": [
+         {
+          "text": "alpha ok"
+         }
+        ],
+        "toolUseId": "toolu_h1"
+       }
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "reasoningContent": {
+        "redactedContent": "cmVkYWN0ZWQ="
+       }
+      },
+      {
+       "reasoningContent": {
+        "reasoningText": {
+         "signature": "sig-hist-2",
+         "text": ""
+        }
+       }
+      },
+      {
+       "text": "The alpha tool says ok."
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "text": "what is new at AWS?"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "text": "AWS shipped [news](https://aws.amazon.com/new/)."
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "text": "and Bedrock?"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [ResponsesToolBinding { bedrock_name: \"get_goal\", client_name: \"get_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"lookup_ticket\", client_name: \"lookup_ticket\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_alpha\", client_name: \"direct_alpha\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_beta\", client_name: \"direct_beta\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"web_search\", client_name: \"web_search\", namespace: None, kind: Function }] }",
+   "searched_tools": "[]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    },
+    {
+     "text": "<permissions instructions> (omitted)"
+    }
+   ],
+   "tool_config": {
+    "toolChoice": {
+     "any": {}
+    },
+    "tools": [
+     {
+      "toolSpec": {
+       "description": "Get the current goal for this thread.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {},
+         "required": [],
+         "type": "object"
+        }
+       },
+       "name": "get_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Look up a support ticket by id.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "id": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "id"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "lookup_ticket"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Alpha direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_alpha"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Beta direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {
+          "n": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_beta"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "A client tool that happens to be called web_search.",
+       "inputSchema": {
+        "json": {
+         "properties": {
+          "q": {
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "web_search"
+      }
+     },
+     {
+      "cachePoint": {
+       "ttl": "5m",
+       "type": "default"
+      }
+     }
+    ]
+   }
+  },
+  "converse-first-turn/tool_search=false": {
+   "additional_fields": {
+    "output_config": {
+     "effort": "medium"
+    },
+    "thinking": {
+     "display": "summarized",
+     "type": "adaptive"
+    }
+   },
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "<environment_context> (omitted)"
+      },
+      {
+       "text": "run the alpha tool"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [ResponsesToolBinding { bedrock_name: \"get_goal\", client_name: \"get_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"lookup_ticket\", client_name: \"lookup_ticket\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_alpha\", client_name: \"direct_alpha\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_beta\", client_name: \"direct_beta\", namespace: Some(\"mcp__ze_tools\"), kind: Function }] }",
+   "searched_tools": "[]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    },
+    {
+     "text": "<permissions instructions> (omitted)"
+    }
+   ],
+   "tool_config": {
+    "toolChoice": {
+     "auto": {}
+    },
+    "tools": [
+     {
+      "toolSpec": {
+       "description": "Get the current goal for this thread.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {},
+         "required": [],
+         "type": "object"
+        }
+       },
+       "name": "get_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Look up a support ticket by id.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "id": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "id"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "lookup_ticket"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Alpha direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_alpha"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Beta direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {
+          "n": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_beta"
+      }
+     },
+     {
+      "cachePoint": {
+       "ttl": "5m",
+       "type": "default"
+      }
+     }
+    ]
+   }
+  },
+  "converse-first-turn/tool_search=true": {
+   "additional_fields": {
+    "output_config": {
+     "effort": "medium"
+    },
+    "thinking": {
+     "display": "summarized",
+     "type": "adaptive"
+    }
+   },
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "<environment_context> (omitted)"
+      },
+      {
+       "text": "run the alpha tool"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [ResponsesToolBinding { bedrock_name: \"get_goal\", client_name: \"get_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"lookup_ticket\", client_name: \"lookup_ticket\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_alpha\", client_name: \"direct_alpha\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_beta\", client_name: \"direct_beta\", namespace: Some(\"mcp__ze_tools\"), kind: Function }] }",
+   "searched_tools": "[]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    },
+    {
+     "text": "<permissions instructions> (omitted)"
+    }
+   ],
+   "tool_config": {
+    "toolChoice": {
+     "auto": {}
+    },
+    "tools": [
+     {
+      "toolSpec": {
+       "description": "Get the current goal for this thread.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {},
+         "required": [],
+         "type": "object"
+        }
+       },
+       "name": "get_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Look up a support ticket by id.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "id": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "id"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "lookup_ticket"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Alpha direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_alpha"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Beta direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {
+          "n": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_beta"
+      }
+     },
+     {
+      "cachePoint": {
+       "ttl": "5m",
+       "type": "default"
+      }
+     }
+    ]
+   }
+  },
+  "converse-history/tool_search=false": {
+   "additional_fields": {
+    "output_config": {
+     "effort": "medium"
+    },
+    "thinking": {
+     "display": "summarized",
+     "type": "adaptive"
+    }
+   },
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "<environment_context> (omitted)"
+      },
+      {
+       "text": "run the alpha tool"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "reasoningContent": {
+        "reasoningText": {
+         "signature": "sig-hist-1",
+         "text": "The user wants the alpha tool."
+        }
+       }
+      },
+      {
+       "text": "Running it now."
+      },
+      {
+       "toolUse": {
+        "input": {},
+        "name": "mcp__ze_tools__direct_alpha",
+        "toolUseId": "toolu_h1"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "toolResult": {
+        "content": [
+         {
+          "text": "alpha ok"
+         }
+        ],
+        "toolUseId": "toolu_h1"
+       }
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "reasoningContent": {
+        "redactedContent": "cmVkYWN0ZWQ="
+       }
+      },
+      {
+       "reasoningContent": {
+        "reasoningText": {
+         "signature": "sig-hist-2",
+         "text": ""
+        }
+       }
+      },
+      {
+       "text": "The alpha tool says ok."
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "text": "what is new at AWS?"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "text": "AWS shipped [news](https://aws.amazon.com/new/)."
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "text": "and Bedrock?"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [ResponsesToolBinding { bedrock_name: \"get_goal\", client_name: \"get_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"lookup_ticket\", client_name: \"lookup_ticket\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_alpha\", client_name: \"direct_alpha\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_beta\", client_name: \"direct_beta\", namespace: Some(\"mcp__ze_tools\"), kind: Function }] }",
+   "searched_tools": "[]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    },
+    {
+     "text": "<permissions instructions> (omitted)"
+    }
+   ],
+   "tool_config": {
+    "toolChoice": {
+     "auto": {}
+    },
+    "tools": [
+     {
+      "toolSpec": {
+       "description": "Get the current goal for this thread.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {},
+         "required": [],
+         "type": "object"
+        }
+       },
+       "name": "get_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Look up a support ticket by id.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "id": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "id"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "lookup_ticket"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Alpha direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_alpha"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Beta direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {
+          "n": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_beta"
+      }
+     },
+     {
+      "cachePoint": {
+       "ttl": "5m",
+       "type": "default"
+      }
+     }
+    ]
+   }
+  },
+  "converse-history/tool_search=true": {
+   "additional_fields": {
+    "output_config": {
+     "effort": "medium"
+    },
+    "thinking": {
+     "display": "summarized",
+     "type": "adaptive"
+    }
+   },
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "<environment_context> (omitted)"
+      },
+      {
+       "text": "run the alpha tool"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "reasoningContent": {
+        "reasoningText": {
+         "signature": "sig-hist-1",
+         "text": "The user wants the alpha tool."
+        }
+       }
+      },
+      {
+       "text": "Running it now."
+      },
+      {
+       "toolUse": {
+        "input": {},
+        "name": "mcp__ze_tools__direct_alpha",
+        "toolUseId": "toolu_h1"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "toolResult": {
+        "content": [
+         {
+          "text": "alpha ok"
+         }
+        ],
+        "toolUseId": "toolu_h1"
+       }
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "reasoningContent": {
+        "redactedContent": "cmVkYWN0ZWQ="
+       }
+      },
+      {
+       "reasoningContent": {
+        "reasoningText": {
+         "signature": "sig-hist-2",
+         "text": ""
+        }
+       }
+      },
+      {
+       "text": "The alpha tool says ok."
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "text": "what is new at AWS?"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "text": "AWS shipped [news](https://aws.amazon.com/new/)."
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "text": "and Bedrock?"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [ResponsesToolBinding { bedrock_name: \"get_goal\", client_name: \"get_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"lookup_ticket\", client_name: \"lookup_ticket\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_alpha\", client_name: \"direct_alpha\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_beta\", client_name: \"direct_beta\", namespace: Some(\"mcp__ze_tools\"), kind: Function }] }",
+   "searched_tools": "[]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    },
+    {
+     "text": "<permissions instructions> (omitted)"
+    }
+   ],
+   "tool_config": {
+    "toolChoice": {
+     "auto": {}
+    },
+    "tools": [
+     {
+      "toolSpec": {
+       "description": "Get the current goal for this thread.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {},
+         "required": [],
+         "type": "object"
+        }
+       },
+       "name": "get_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Look up a support ticket by id.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "id": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "id"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "lookup_ticket"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Alpha direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_alpha"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Beta direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {
+          "n": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_beta"
+      }
+     },
+     {
+      "cachePoint": {
+       "ttl": "5m",
+       "type": "default"
+      }
+     }
+    ]
+   }
+  },
+  "converse-hosted-only-gpt-history/tool_search=false": {
+   "additional_fields": {
+    "output_config": {
+     "effort": "medium"
+    },
+    "thinking": {
+     "display": "summarized",
+     "type": "adaptive"
+    }
+   },
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "what is new at AWS?"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "text": "AWS shipped [news](https://aws.amazon.com/new/)."
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "text": "and Bedrock?"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [] }",
+   "searched_tools": "[]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    }
+   ],
+   "tool_config": null
+  },
+  "converse-hosted-only-gpt-history/tool_search=true": {
+   "additional_fields": {
+    "output_config": {
+     "effort": "medium"
+    },
+    "thinking": {
+     "display": "summarized",
+     "type": "adaptive"
+    }
+   },
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "what is new at AWS?"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "text": "AWS shipped [news](https://aws.amazon.com/new/)."
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "text": "and Bedrock?"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [] }",
+   "searched_tools": "[]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    }
+   ],
+   "tool_config": null
+  },
+  "converse-nova-incapable/tool_search=false": {
+   "additional_fields": null,
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "<environment_context> (omitted)"
+      },
+      {
+       "text": "run the alpha tool"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "reasoningContent": {
+        "reasoningText": {
+         "signature": "sig-hist-1",
+         "text": "The user wants the alpha tool."
+        }
+       }
+      },
+      {
+       "text": "Running it now."
+      },
+      {
+       "toolUse": {
+        "input": {},
+        "name": "mcp__ze_tools__direct_alpha",
+        "toolUseId": "toolu_h1"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "toolResult": {
+        "content": [
+         {
+          "text": "alpha ok"
+         }
+        ],
+        "toolUseId": "toolu_h1"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [ResponsesToolBinding { bedrock_name: \"get_goal\", client_name: \"get_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"lookup_ticket\", client_name: \"lookup_ticket\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_alpha\", client_name: \"direct_alpha\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_beta\", client_name: \"direct_beta\", namespace: Some(\"mcp__ze_tools\"), kind: Function }] }",
+   "searched_tools": "[]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    },
+    {
+     "text": "<permissions instructions> (omitted)"
+    }
+   ],
+   "tool_config": {
+    "toolChoice": {
+     "auto": {}
+    },
+    "tools": [
+     {
+      "toolSpec": {
+       "description": "Get the current goal for this thread.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {},
+         "required": [],
+         "type": "object"
+        }
+       },
+       "name": "get_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Look up a support ticket by id.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "id": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "id"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "lookup_ticket"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Alpha direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_alpha"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Beta direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {
+          "n": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_beta"
+      }
+     },
+     {
+      "cachePoint": {
+       "ttl": "5m",
+       "type": "default"
+      }
+     }
+    ]
+   }
+  },
+  "converse-nova-incapable/tool_search=true": {
+   "additional_fields": null,
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "<environment_context> (omitted)"
+      },
+      {
+       "text": "run the alpha tool"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "reasoningContent": {
+        "reasoningText": {
+         "signature": "sig-hist-1",
+         "text": "The user wants the alpha tool."
+        }
+       }
+      },
+      {
+       "text": "Running it now."
+      },
+      {
+       "toolUse": {
+        "input": {},
+        "name": "mcp__ze_tools__direct_alpha",
+        "toolUseId": "toolu_h1"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "toolResult": {
+        "content": [
+         {
+          "text": "alpha ok"
+         }
+        ],
+        "toolUseId": "toolu_h1"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [ResponsesToolBinding { bedrock_name: \"get_goal\", client_name: \"get_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"lookup_ticket\", client_name: \"lookup_ticket\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_alpha\", client_name: \"direct_alpha\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_beta\", client_name: \"direct_beta\", namespace: Some(\"mcp__ze_tools\"), kind: Function }] }",
+   "searched_tools": "[]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    },
+    {
+     "text": "<permissions instructions> (omitted)"
+    }
+   ],
+   "tool_config": {
+    "toolChoice": {
+     "auto": {}
+    },
+    "tools": [
+     {
+      "toolSpec": {
+       "description": "Get the current goal for this thread.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {},
+         "required": [],
+         "type": "object"
+        }
+       },
+       "name": "get_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Look up a support ticket by id.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "id": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "id"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "lookup_ticket"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Alpha direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_alpha"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Beta direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {
+          "n": {
+           "type": "integer"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_beta"
+      }
+     },
+     {
+      "cachePoint": {
+       "ttl": "5m",
+       "type": "default"
+      }
+     }
+    ]
+   }
+  },
+  "converse-text-no-tools/tool_search=false": {
+   "additional_fields": null,
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 1000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "What is new at AWS?"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [] }",
+   "searched_tools": "[]",
+   "system": [],
+   "tool_config": null
+  },
+  "converse-text-no-tools/tool_search=true": {
+   "additional_fields": null,
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 1000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "What is new at AWS?"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [] }",
+   "searched_tools": "[]",
+   "system": [],
+   "tool_config": null
+  },
+  "tool_search_golden/request-1/tool_search=false": {
+   "additional_fields": {
+    "output_config": {
+     "effort": "medium"
+    },
+    "thinking": {
+     "display": "summarized",
+     "type": "adaptive"
+    }
+   },
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "<environment_context>…</environment_context> (omitted)"
+      },
+      {
+       "text": "find the ticket tools and use one"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [ResponsesToolBinding { bedrock_name: \"list_mcp_resources\", client_name: \"list_mcp_resources\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"list_mcp_resource_templates\", client_name: \"list_mcp_resource_templates\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"read_mcp_resource\", client_name: \"read_mcp_resource\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"request_user_input\", client_name: \"request_user_input\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_alpha\", client_name: \"direct_alpha\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_beta\", client_name: \"direct_beta\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"get_goal\", client_name: \"get_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"create_goal\", client_name: \"create_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"update_goal\", client_name: \"update_goal\", namespace: None, kind: Function }] }",
+   "searched_tools": "[]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    },
+    {
+     "text": "<skills_instructions>…</skills_instructions> (omitted)"
+    },
+    {
+     "text": "<permissions instructions>…</permissions instructions> (omitted)"
+    }
+   ],
+   "tool_config": {
+    "toolChoice": {
+     "auto": {}
+    },
+    "tools": [
+     {
+      "toolSpec": {
+       "description": "Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "cursor": {
+           "description": "Opaque cursor from a previous list_mcp_resources call; omit for the first page.",
+           "type": "string"
+          },
+          "server": {
+           "description": "MCP server name. Omit to list resources from every configured server.",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "list_mcp_resources"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "cursor": {
+           "description": "Opaque cursor from a previous list_mcp_resource_templates call; omit for the first page.",
+           "type": "string"
+          },
+          "server": {
+           "description": "MCP server name. Omit to list resource templates from every configured server.",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "list_mcp_resource_templates"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Read a specific resource from an MCP server given the server name and resource URI.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "server": {
+           "description": "MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources.",
+           "type": "string"
+          },
+          "uri": {
+           "description": "Resource URI to read. Must be one of the URIs returned by list_mcp_resources.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "server",
+          "uri"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "read_mcp_resource"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "questions": {
+           "description": "Questions to show the user. Prefer 1 and do not exceed 3",
+           "items": {
+            "additionalProperties": false,
+            "properties": {
+             "header": {
+              "description": "Short header label shown in the UI (12 or fewer chars).",
+              "type": "string"
+             },
+             "id": {
+              "description": "Stable identifier for mapping answers (snake_case).",
+              "type": "string"
+             },
+             "options": {
+              "description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.",
+              "items": {
+               "additionalProperties": false,
+               "properties": {
+                "description": {
+                 "description": "One short sentence explaining impact/tradeoff if selected.",
+                 "type": "string"
+                },
+                "label": {
+                 "description": "User-facing label (1-5 words).",
+                 "type": "string"
+                }
+               },
+               "required": [
+                "label",
+                "description"
+               ],
+               "type": "object"
+              },
+              "type": "array"
+             },
+             "question": {
+              "description": "Single-sentence prompt shown to the user.",
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "header",
+             "question",
+             "options"
+            ],
+            "type": "object"
+           },
+           "type": "array"
+          }
+         },
+         "required": [
+          "questions"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "request_user_input"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Alpha direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_alpha"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Beta direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_beta"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {},
+         "required": [],
+         "type": "object"
+        }
+       },
+       "name": "get_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "objective": {
+           "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete.",
+           "type": "string"
+          },
+          "token_budget": {
+           "description": "Positive token budget for the new goal. Omit unless explicitly requested.",
+           "type": "integer"
+          }
+         },
+         "required": [
+          "objective"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "create_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Update the existing goal.\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "status": {
+           "description": "Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.",
+           "enum": [
+            "complete",
+            "blocked",
+            "paused"
+           ],
+           "type": "string"
+          }
+         },
+         "required": [
+          "status"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "update_goal"
+      }
+     },
+     {
+      "cachePoint": {
+       "ttl": "5m",
+       "type": "default"
+      }
+     }
+    ]
+   }
+  },
+  "tool_search_golden/request-1/tool_search=true": {
+   "additional_fields": {
+    "output_config": {
+     "effort": "medium"
+    },
+    "thinking": {
+     "display": "summarized",
+     "type": "adaptive"
+    }
+   },
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "<environment_context>…</environment_context> (omitted)"
+      },
+      {
+       "text": "find the ticket tools and use one"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [ResponsesToolBinding { bedrock_name: \"list_mcp_resources\", client_name: \"list_mcp_resources\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"list_mcp_resource_templates\", client_name: \"list_mcp_resource_templates\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"read_mcp_resource\", client_name: \"read_mcp_resource\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"request_user_input\", client_name: \"request_user_input\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_alpha\", client_name: \"direct_alpha\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_beta\", client_name: \"direct_beta\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"get_goal\", client_name: \"get_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"create_goal\", client_name: \"create_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"update_goal\", client_name: \"update_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"tool_search\", client_name: \"tool_search\", namespace: None, kind: ToolSearch }] }",
+   "searched_tools": "[]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    },
+    {
+     "text": "<skills_instructions>…</skills_instructions> (omitted)"
+    },
+    {
+     "text": "<permissions instructions>…</permissions instructions> (omitted)"
+    }
+   ],
+   "tool_config": {
+    "toolChoice": {
+     "auto": {}
+    },
+    "tools": [
+     {
+      "toolSpec": {
+       "description": "Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "cursor": {
+           "description": "Opaque cursor from a previous list_mcp_resources call; omit for the first page.",
+           "type": "string"
+          },
+          "server": {
+           "description": "MCP server name. Omit to list resources from every configured server.",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "list_mcp_resources"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "cursor": {
+           "description": "Opaque cursor from a previous list_mcp_resource_templates call; omit for the first page.",
+           "type": "string"
+          },
+          "server": {
+           "description": "MCP server name. Omit to list resource templates from every configured server.",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "list_mcp_resource_templates"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Read a specific resource from an MCP server given the server name and resource URI.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "server": {
+           "description": "MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources.",
+           "type": "string"
+          },
+          "uri": {
+           "description": "Resource URI to read. Must be one of the URIs returned by list_mcp_resources.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "server",
+          "uri"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "read_mcp_resource"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "questions": {
+           "description": "Questions to show the user. Prefer 1 and do not exceed 3",
+           "items": {
+            "additionalProperties": false,
+            "properties": {
+             "header": {
+              "description": "Short header label shown in the UI (12 or fewer chars).",
+              "type": "string"
+             },
+             "id": {
+              "description": "Stable identifier for mapping answers (snake_case).",
+              "type": "string"
+             },
+             "options": {
+              "description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.",
+              "items": {
+               "additionalProperties": false,
+               "properties": {
+                "description": {
+                 "description": "One short sentence explaining impact/tradeoff if selected.",
+                 "type": "string"
+                },
+                "label": {
+                 "description": "User-facing label (1-5 words).",
+                 "type": "string"
+                }
+               },
+               "required": [
+                "label",
+                "description"
+               ],
+               "type": "object"
+              },
+              "type": "array"
+             },
+             "question": {
+              "description": "Single-sentence prompt shown to the user.",
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "header",
+             "question",
+             "options"
+            ],
+            "type": "object"
+           },
+           "type": "array"
+          }
+         },
+         "required": [
+          "questions"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "request_user_input"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Alpha direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_alpha"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Beta direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_beta"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {},
+         "required": [],
+         "type": "object"
+        }
+       },
+       "name": "get_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "objective": {
+           "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete.",
+           "type": "string"
+          },
+          "token_budget": {
+           "description": "Positive token budget for the new goal. Omit unless explicitly requested.",
+           "type": "integer"
+          }
+         },
+         "required": [
+          "objective"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "create_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Update the existing goal.\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "status": {
+           "description": "Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.",
+           "enum": [
+            "complete",
+            "blocked",
+            "paused"
+           ],
+           "type": "string"
+          }
+         },
+         "required": [
+          "status"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "update_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\n\nYou have access to tools from the following sources:\n- Multi-agent tools: Spawn and manage sub-agents.\n- ze_tools_deferred\nSome of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "limit": {
+           "description": "Maximum number of tools to return. Defaults to 8.",
+           "type": "number"
+          },
+          "query": {
+           "description": "Search query for deferred tools.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "query"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "tool_search"
+      }
+     },
+     {
+      "cachePoint": {
+       "ttl": "5m",
+       "type": "default"
+      }
+     }
+    ]
+   }
+  },
+  "tool_search_golden/request-2-no-match/tool_search=false": {
+   "error": "bad request: Responses input item type 'tool_search_call' is not supported"
+  },
+  "tool_search_golden/request-2-no-match/tool_search=true": {
+   "additional_fields": {
+    "output_config": {
+     "effort": "medium"
+    },
+    "thinking": {
+     "display": "summarized",
+     "type": "adaptive"
+    }
+   },
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "<environment_context>…</environment_context> (omitted)"
+      },
+      {
+       "text": "find the ticket tools and use one"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "toolUse": {
+        "input": {
+         "limit": 5,
+         "query": "weather"
+        },
+        "name": "tool_search",
+        "toolUseId": "tscall_1"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "toolResult": {
+        "content": [
+         {
+          "text": "No tools matched the query."
+         }
+        ],
+        "toolUseId": "tscall_1"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [ResponsesToolBinding { bedrock_name: \"list_mcp_resources\", client_name: \"list_mcp_resources\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"list_mcp_resource_templates\", client_name: \"list_mcp_resource_templates\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"read_mcp_resource\", client_name: \"read_mcp_resource\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"request_user_input\", client_name: \"request_user_input\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_alpha\", client_name: \"direct_alpha\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_beta\", client_name: \"direct_beta\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"get_goal\", client_name: \"get_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"create_goal\", client_name: \"create_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"update_goal\", client_name: \"update_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"tool_search\", client_name: \"tool_search\", namespace: None, kind: ToolSearch }] }",
+   "searched_tools": "[]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    },
+    {
+     "text": "<skills_instructions>…</skills_instructions> (omitted)"
+    },
+    {
+     "text": "<permissions instructions>…</permissions instructions> (omitted)"
+    }
+   ],
+   "tool_config": {
+    "toolChoice": {
+     "auto": {}
+    },
+    "tools": [
+     {
+      "toolSpec": {
+       "description": "Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "cursor": {
+           "description": "Opaque cursor from a previous list_mcp_resources call; omit for the first page.",
+           "type": "string"
+          },
+          "server": {
+           "description": "MCP server name. Omit to list resources from every configured server.",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "list_mcp_resources"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "cursor": {
+           "description": "Opaque cursor from a previous list_mcp_resource_templates call; omit for the first page.",
+           "type": "string"
+          },
+          "server": {
+           "description": "MCP server name. Omit to list resource templates from every configured server.",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "list_mcp_resource_templates"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Read a specific resource from an MCP server given the server name and resource URI.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "server": {
+           "description": "MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources.",
+           "type": "string"
+          },
+          "uri": {
+           "description": "Resource URI to read. Must be one of the URIs returned by list_mcp_resources.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "server",
+          "uri"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "read_mcp_resource"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "questions": {
+           "description": "Questions to show the user. Prefer 1 and do not exceed 3",
+           "items": {
+            "additionalProperties": false,
+            "properties": {
+             "header": {
+              "description": "Short header label shown in the UI (12 or fewer chars).",
+              "type": "string"
+             },
+             "id": {
+              "description": "Stable identifier for mapping answers (snake_case).",
+              "type": "string"
+             },
+             "options": {
+              "description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.",
+              "items": {
+               "additionalProperties": false,
+               "properties": {
+                "description": {
+                 "description": "One short sentence explaining impact/tradeoff if selected.",
+                 "type": "string"
+                },
+                "label": {
+                 "description": "User-facing label (1-5 words).",
+                 "type": "string"
+                }
+               },
+               "required": [
+                "label",
+                "description"
+               ],
+               "type": "object"
+              },
+              "type": "array"
+             },
+             "question": {
+              "description": "Single-sentence prompt shown to the user.",
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "header",
+             "question",
+             "options"
+            ],
+            "type": "object"
+           },
+           "type": "array"
+          }
+         },
+         "required": [
+          "questions"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "request_user_input"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Alpha direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_alpha"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Beta direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_beta"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {},
+         "required": [],
+         "type": "object"
+        }
+       },
+       "name": "get_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "objective": {
+           "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete.",
+           "type": "string"
+          },
+          "token_budget": {
+           "description": "Positive token budget for the new goal. Omit unless explicitly requested.",
+           "type": "integer"
+          }
+         },
+         "required": [
+          "objective"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "create_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Update the existing goal.\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "status": {
+           "description": "Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.",
+           "enum": [
+            "complete",
+            "blocked",
+            "paused"
+           ],
+           "type": "string"
+          }
+         },
+         "required": [
+          "status"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "update_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\n\nYou have access to tools from the following sources:\n- Multi-agent tools: Spawn and manage sub-agents.\n- ze_tools_deferred\nSome of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "limit": {
+           "description": "Maximum number of tools to return. Defaults to 8.",
+           "type": "number"
+          },
+          "query": {
+           "description": "Search query for deferred tools.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "query"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "tool_search"
+      }
+     },
+     {
+      "cachePoint": {
+       "ttl": "5m",
+       "type": "default"
+      }
+     }
+    ]
+   }
+  },
+  "tool_search_golden/request-2/tool_search=false": {
+   "error": "bad request: Responses input item type 'tool_search_call' is not supported"
+  },
+  "tool_search_golden/request-2/tool_search=true": {
+   "additional_fields": {
+    "output_config": {
+     "effort": "medium"
+    },
+    "thinking": {
+     "display": "summarized",
+     "type": "adaptive"
+    }
+   },
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "<environment_context>…</environment_context> (omitted)"
+      },
+      {
+       "text": "find the ticket tools and use one"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "toolUse": {
+        "input": {
+         "limit": 5,
+         "query": "ticket"
+        },
+        "name": "tool_search",
+        "toolUseId": "tscall_1"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "toolResult": {
+        "content": [
+         {
+          "toolReference": {
+           "toolName": "mcp__ze_tools_deferred__ticket_search"
+          }
+         },
+         {
+          "toolReference": {
+           "toolName": "mcp__ze_tools_deferred__ticket_get"
+          }
+         }
+        ],
+        "toolUseId": "tscall_1"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [ResponsesToolBinding { bedrock_name: \"list_mcp_resources\", client_name: \"list_mcp_resources\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"list_mcp_resource_templates\", client_name: \"list_mcp_resource_templates\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"read_mcp_resource\", client_name: \"read_mcp_resource\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"request_user_input\", client_name: \"request_user_input\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_alpha\", client_name: \"direct_alpha\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_beta\", client_name: \"direct_beta\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"get_goal\", client_name: \"get_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"create_goal\", client_name: \"create_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"update_goal\", client_name: \"update_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"tool_search\", client_name: \"tool_search\", namespace: None, kind: ToolSearch }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools_deferred__ticket_search\", client_name: \"ticket_search\", namespace: Some(\"mcp__ze_tools_deferred\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools_deferred__ticket_get\", client_name: \"ticket_get\", namespace: Some(\"mcp__ze_tools_deferred\"), kind: Function }] }",
+   "searched_tools": "[SearchedTool { bedrock_name: \"mcp__ze_tools_deferred__ticket_search\", client_name: \"ticket_search\", namespace: Some(\"mcp__ze_tools_deferred\"), kind: Function, description: Some(\"Search tickets by keyword.\"), input_schema: Object {\"properties\": Object {}, \"type\": String(\"object\")} }, SearchedTool { bedrock_name: \"mcp__ze_tools_deferred__ticket_get\", client_name: \"ticket_get\", namespace: Some(\"mcp__ze_tools_deferred\"), kind: Function, description: Some(\"Get one ticket by id.\"), input_schema: Object {\"properties\": Object {}, \"type\": String(\"object\")} }]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    },
+    {
+     "text": "<skills_instructions>…</skills_instructions> (omitted)"
+    },
+    {
+     "text": "<permissions instructions>…</permissions instructions> (omitted)"
+    }
+   ],
+   "tool_config": {
+    "toolChoice": {
+     "auto": {}
+    },
+    "tools": [
+     {
+      "toolSpec": {
+       "description": "Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "cursor": {
+           "description": "Opaque cursor from a previous list_mcp_resources call; omit for the first page.",
+           "type": "string"
+          },
+          "server": {
+           "description": "MCP server name. Omit to list resources from every configured server.",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "list_mcp_resources"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "cursor": {
+           "description": "Opaque cursor from a previous list_mcp_resource_templates call; omit for the first page.",
+           "type": "string"
+          },
+          "server": {
+           "description": "MCP server name. Omit to list resource templates from every configured server.",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "list_mcp_resource_templates"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Read a specific resource from an MCP server given the server name and resource URI.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "server": {
+           "description": "MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources.",
+           "type": "string"
+          },
+          "uri": {
+           "description": "Resource URI to read. Must be one of the URIs returned by list_mcp_resources.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "server",
+          "uri"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "read_mcp_resource"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "questions": {
+           "description": "Questions to show the user. Prefer 1 and do not exceed 3",
+           "items": {
+            "additionalProperties": false,
+            "properties": {
+             "header": {
+              "description": "Short header label shown in the UI (12 or fewer chars).",
+              "type": "string"
+             },
+             "id": {
+              "description": "Stable identifier for mapping answers (snake_case).",
+              "type": "string"
+             },
+             "options": {
+              "description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.",
+              "items": {
+               "additionalProperties": false,
+               "properties": {
+                "description": {
+                 "description": "One short sentence explaining impact/tradeoff if selected.",
+                 "type": "string"
+                },
+                "label": {
+                 "description": "User-facing label (1-5 words).",
+                 "type": "string"
+                }
+               },
+               "required": [
+                "label",
+                "description"
+               ],
+               "type": "object"
+              },
+              "type": "array"
+             },
+             "question": {
+              "description": "Single-sentence prompt shown to the user.",
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "header",
+             "question",
+             "options"
+            ],
+            "type": "object"
+           },
+           "type": "array"
+          }
+         },
+         "required": [
+          "questions"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "request_user_input"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Alpha direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_alpha"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Beta direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_beta"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {},
+         "required": [],
+         "type": "object"
+        }
+       },
+       "name": "get_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "objective": {
+           "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete.",
+           "type": "string"
+          },
+          "token_budget": {
+           "description": "Positive token budget for the new goal. Omit unless explicitly requested.",
+           "type": "integer"
+          }
+         },
+         "required": [
+          "objective"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "create_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Update the existing goal.\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "status": {
+           "description": "Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.",
+           "enum": [
+            "complete",
+            "blocked",
+            "paused"
+           ],
+           "type": "string"
+          }
+         },
+         "required": [
+          "status"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "update_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\n\nYou have access to tools from the following sources:\n- Multi-agent tools: Spawn and manage sub-agents.\n- ze_tools_deferred\nSome of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "limit": {
+           "description": "Maximum number of tools to return. Defaults to 8.",
+           "type": "number"
+          },
+          "query": {
+           "description": "Search query for deferred tools.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "query"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "tool_search"
+      }
+     },
+     {
+      "cachePoint": {
+       "ttl": "5m",
+       "type": "default"
+      }
+     }
+    ]
+   }
+  },
+  "tool_search_golden/request-3/tool_search=false": {
+   "error": "bad request: Responses input item type 'tool_search_call' is not supported"
+  },
+  "tool_search_golden/request-3/tool_search=true": {
+   "additional_fields": {
+    "output_config": {
+     "effort": "medium"
+    },
+    "thinking": {
+     "display": "summarized",
+     "type": "adaptive"
+    }
+   },
+   "cache_points_injected": true,
+   "inference_config": {
+    "maxTokens": 32000
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "text": "<environment_context>…</environment_context> (omitted)"
+      },
+      {
+       "text": "find the ticket tools and use one"
+      },
+      {
+       "cachePoint": {
+        "ttl": "5m",
+        "type": "default"
+       }
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "toolUse": {
+        "input": {
+         "limit": 5,
+         "query": "ticket"
+        },
+        "name": "tool_search",
+        "toolUseId": "tscall_1"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "toolResult": {
+        "content": [
+         {
+          "toolReference": {
+           "toolName": "mcp__ze_tools_deferred__ticket_search"
+          }
+         },
+         {
+          "toolReference": {
+           "toolName": "mcp__ze_tools_deferred__ticket_get"
+          }
+         }
+        ],
+        "toolUseId": "tscall_1"
+       }
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": [
+      {
+       "toolUse": {
+        "input": {},
+        "name": "mcp__ze_tools_deferred__ticket_search",
+        "toolUseId": "call_2"
+       }
+      }
+     ],
+     "role": "assistant"
+    },
+    {
+     "content": [
+      {
+       "toolResult": {
+        "content": [
+         {
+          "text": "Wall time: 0.0023 seconds\nOutput:"
+         },
+         {
+          "text": "called ticket_search"
+         }
+        ],
+        "toolUseId": "call_2"
+       }
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "output_config": null,
+   "registry": "ResponsesToolRegistry { bindings: [ResponsesToolBinding { bedrock_name: \"list_mcp_resources\", client_name: \"list_mcp_resources\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"list_mcp_resource_templates\", client_name: \"list_mcp_resource_templates\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"read_mcp_resource\", client_name: \"read_mcp_resource\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"request_user_input\", client_name: \"request_user_input\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_alpha\", client_name: \"direct_alpha\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools__direct_beta\", client_name: \"direct_beta\", namespace: Some(\"mcp__ze_tools\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"get_goal\", client_name: \"get_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"create_goal\", client_name: \"create_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"update_goal\", client_name: \"update_goal\", namespace: None, kind: Function }, ResponsesToolBinding { bedrock_name: \"tool_search\", client_name: \"tool_search\", namespace: None, kind: ToolSearch }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools_deferred__ticket_search\", client_name: \"ticket_search\", namespace: Some(\"mcp__ze_tools_deferred\"), kind: Function }, ResponsesToolBinding { bedrock_name: \"mcp__ze_tools_deferred__ticket_get\", client_name: \"ticket_get\", namespace: Some(\"mcp__ze_tools_deferred\"), kind: Function }] }",
+   "searched_tools": "[SearchedTool { bedrock_name: \"mcp__ze_tools_deferred__ticket_search\", client_name: \"ticket_search\", namespace: Some(\"mcp__ze_tools_deferred\"), kind: Function, description: Some(\"Search tickets by keyword.\"), input_schema: Object {\"properties\": Object {}, \"type\": String(\"object\")} }, SearchedTool { bedrock_name: \"mcp__ze_tools_deferred__ticket_get\", client_name: \"ticket_get\", namespace: Some(\"mcp__ze_tools_deferred\"), kind: Function, description: Some(\"Get one ticket by id.\"), input_schema: Object {\"properties\": Object {}, \"type\": String(\"object\")} }]",
+   "system": [
+    {
+     "text": "<zuno base instructions, omitted>"
+    },
+    {
+     "text": "<skills_instructions>…</skills_instructions> (omitted)"
+    },
+    {
+     "text": "<permissions instructions>…</permissions instructions> (omitted)"
+    }
+   ],
+   "tool_config": {
+    "toolChoice": {
+     "auto": {}
+    },
+    "tools": [
+     {
+      "toolSpec": {
+       "description": "Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "cursor": {
+           "description": "Opaque cursor from a previous list_mcp_resources call; omit for the first page.",
+           "type": "string"
+          },
+          "server": {
+           "description": "MCP server name. Omit to list resources from every configured server.",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "list_mcp_resources"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "cursor": {
+           "description": "Opaque cursor from a previous list_mcp_resource_templates call; omit for the first page.",
+           "type": "string"
+          },
+          "server": {
+           "description": "MCP server name. Omit to list resource templates from every configured server.",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "name": "list_mcp_resource_templates"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Read a specific resource from an MCP server given the server name and resource URI.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "server": {
+           "description": "MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources.",
+           "type": "string"
+          },
+          "uri": {
+           "description": "Resource URI to read. Must be one of the URIs returned by list_mcp_resources.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "server",
+          "uri"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "read_mcp_resource"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "questions": {
+           "description": "Questions to show the user. Prefer 1 and do not exceed 3",
+           "items": {
+            "additionalProperties": false,
+            "properties": {
+             "header": {
+              "description": "Short header label shown in the UI (12 or fewer chars).",
+              "type": "string"
+             },
+             "id": {
+              "description": "Stable identifier for mapping answers (snake_case).",
+              "type": "string"
+             },
+             "options": {
+              "description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.",
+              "items": {
+               "additionalProperties": false,
+               "properties": {
+                "description": {
+                 "description": "One short sentence explaining impact/tradeoff if selected.",
+                 "type": "string"
+                },
+                "label": {
+                 "description": "User-facing label (1-5 words).",
+                 "type": "string"
+                }
+               },
+               "required": [
+                "label",
+                "description"
+               ],
+               "type": "object"
+              },
+              "type": "array"
+             },
+             "question": {
+              "description": "Single-sentence prompt shown to the user.",
+              "type": "string"
+             }
+            },
+            "required": [
+             "id",
+             "header",
+             "question",
+             "options"
+            ],
+            "type": "object"
+           },
+           "type": "array"
+          }
+         },
+         "required": [
+          "questions"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "request_user_input"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Alpha direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_alpha"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Beta direct tool.",
+       "inputSchema": {
+        "json": {
+         "properties": {},
+         "type": "object"
+        }
+       },
+       "name": "mcp__ze_tools__direct_beta"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {},
+         "required": [],
+         "type": "object"
+        }
+       },
+       "name": "get_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "objective": {
+           "description": "Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete.",
+           "type": "string"
+          },
+          "token_budget": {
+           "description": "Positive token budget for the new goal. Omit unless explicitly requested.",
+           "type": "integer"
+          }
+         },
+         "required": [
+          "objective"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "create_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "Update the existing goal.\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "status": {
+           "description": "Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.",
+           "enum": [
+            "complete",
+            "blocked",
+            "paused"
+           ],
+           "type": "string"
+          }
+         },
+         "required": [
+          "status"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "update_goal"
+      }
+     },
+     {
+      "toolSpec": {
+       "description": "# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\n\nYou have access to tools from the following sources:\n- Multi-agent tools: Spawn and manage sub-agents.\n- ze_tools_deferred\nSome of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.",
+       "inputSchema": {
+        "json": {
+         "additionalProperties": false,
+         "properties": {
+          "limit": {
+           "description": "Maximum number of tools to return. Defaults to 8.",
+           "type": "number"
+          },
+          "query": {
+           "description": "Search query for deferred tools.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "query"
+         ],
+         "type": "object"
+        }
+       },
+       "name": "tool_search"
+      }
+     },
+     {
+      "cachePoint": {
+       "ttl": "5m",
+       "type": "default"
+      }
+     }
+    ]
+   }
+  }
+ },
+ "captured_from": "9430024 (feat/claude-web-search before PR 2), by a throwaway test that called BedrockResponsesProvider::assemble, messages_body and ResponsesStreamState::new_with_tools",
+ "messages_bodies": {
+  "converse-client-web-search-tool/tool_search=true": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":32000,\"messages\":[{\"content\":[{\"text\":\"<environment_context> (omitted)\",\"type\":\"text\"},{\"text\":\"run the alpha tool\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"signature\":\"sig-hist-1\",\"thinking\":\"The user wants the alpha tool.\",\"type\":\"thinking\"},{\"text\":\"Running it now.\",\"type\":\"text\"},{\"id\":\"toolu_h1\",\"input\":{},\"name\":\"mcp__ze_tools__direct_alpha\",\"type\":\"tool_use\"}],\"role\":\"assistant\"},{\"content\":[{\"content\":[{\"text\":\"alpha ok\",\"type\":\"text\"}],\"tool_use_id\":\"toolu_h1\",\"type\":\"tool_result\"}],\"role\":\"user\"},{\"content\":[{\"data\":\"redacted\",\"type\":\"redacted_thinking\"},{\"signature\":\"sig-hist-2\",\"thinking\":\"\",\"type\":\"thinking\"},{\"text\":\"The alpha tool says ok.\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"what is new at AWS?\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"AWS shipped [news](https://aws.amazon.com/new/).\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"text\":\"and Bedrock?\",\"type\":\"text\"}],\"role\":\"user\"}],\"system\":[{\"text\":\"<zuno base instructions, omitted>\",\"type\":\"text\"},{\"text\":\"<permissions instructions> (omitted)\",\"type\":\"text\"}],\"tool_choice\":{\"type\":\"any\"},\"tools\":[{\"description\":\"Get the current goal for this thread.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{},\"required\":[],\"type\":\"object\"},\"name\":\"get_goal\"},{\"description\":\"Look up a support ticket by id.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"],\"type\":\"object\"},\"name\":\"lookup_ticket\"},{\"description\":\"Alpha direct tool.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_alpha\"},{\"description\":\"Beta direct tool.\",\"input_schema\":{\"properties\":{\"n\":{\"type\":\"integer\"}},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_beta\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"description\":\"A client tool that happens to be called web_search.\",\"input_schema\":{\"properties\":{\"q\":{\"type\":\"string\"}},\"type\":\"object\"},\"name\":\"web_search\"}]}",
+  "converse-first-turn/tool_search=true": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":32000,\"messages\":[{\"content\":[{\"text\":\"<environment_context> (omitted)\",\"type\":\"text\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"text\":\"run the alpha tool\",\"type\":\"text\"}],\"role\":\"user\"}],\"output_config\":{\"effort\":\"medium\"},\"system\":[{\"text\":\"<zuno base instructions, omitted>\",\"type\":\"text\"},{\"text\":\"<permissions instructions> (omitted)\",\"type\":\"text\"}],\"thinking\":{\"display\":\"summarized\",\"type\":\"adaptive\"},\"tool_choice\":{\"type\":\"auto\"},\"tools\":[{\"description\":\"Get the current goal for this thread.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{},\"required\":[],\"type\":\"object\"},\"name\":\"get_goal\"},{\"description\":\"Look up a support ticket by id.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"],\"type\":\"object\"},\"name\":\"lookup_ticket\"},{\"description\":\"Alpha direct tool.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_alpha\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"description\":\"Beta direct tool.\",\"input_schema\":{\"properties\":{\"n\":{\"type\":\"integer\"}},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_beta\"}]}",
+  "converse-history/tool_search=true": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":32000,\"messages\":[{\"content\":[{\"text\":\"<environment_context> (omitted)\",\"type\":\"text\"},{\"text\":\"run the alpha tool\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"signature\":\"sig-hist-1\",\"thinking\":\"The user wants the alpha tool.\",\"type\":\"thinking\"},{\"text\":\"Running it now.\",\"type\":\"text\"},{\"id\":\"toolu_h1\",\"input\":{},\"name\":\"mcp__ze_tools__direct_alpha\",\"type\":\"tool_use\"}],\"role\":\"assistant\"},{\"content\":[{\"content\":[{\"text\":\"alpha ok\",\"type\":\"text\"}],\"tool_use_id\":\"toolu_h1\",\"type\":\"tool_result\"}],\"role\":\"user\"},{\"content\":[{\"data\":\"redacted\",\"type\":\"redacted_thinking\"},{\"signature\":\"sig-hist-2\",\"thinking\":\"\",\"type\":\"thinking\"},{\"text\":\"The alpha tool says ok.\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"what is new at AWS?\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"AWS shipped [news](https://aws.amazon.com/new/).\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"text\":\"and Bedrock?\",\"type\":\"text\"}],\"role\":\"user\"}],\"output_config\":{\"effort\":\"medium\"},\"system\":[{\"text\":\"<zuno base instructions, omitted>\",\"type\":\"text\"},{\"text\":\"<permissions instructions> (omitted)\",\"type\":\"text\"}],\"thinking\":{\"display\":\"summarized\",\"type\":\"adaptive\"},\"tool_choice\":{\"type\":\"auto\"},\"tools\":[{\"description\":\"Get the current goal for this thread.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{},\"required\":[],\"type\":\"object\"},\"name\":\"get_goal\"},{\"description\":\"Look up a support ticket by id.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"],\"type\":\"object\"},\"name\":\"lookup_ticket\"},{\"description\":\"Alpha direct tool.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_alpha\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"description\":\"Beta direct tool.\",\"input_schema\":{\"properties\":{\"n\":{\"type\":\"integer\"}},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_beta\"}]}",
+  "converse-hosted-only-gpt-history/tool_search=true": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":32000,\"messages\":[{\"content\":[{\"text\":\"what is new at AWS?\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"AWS shipped [news](https://aws.amazon.com/new/).\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"text\":\"and Bedrock?\",\"type\":\"text\"}],\"role\":\"user\"}],\"output_config\":{\"effort\":\"medium\"},\"system\":[{\"text\":\"<zuno base instructions, omitted>\",\"type\":\"text\"}],\"thinking\":{\"display\":\"summarized\",\"type\":\"adaptive\"}}",
+  "converse-nova-incapable/tool_search=true": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":32000,\"messages\":[{\"content\":[{\"text\":\"<environment_context> (omitted)\",\"type\":\"text\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"text\":\"run the alpha tool\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"signature\":\"sig-hist-1\",\"thinking\":\"The user wants the alpha tool.\",\"type\":\"thinking\"},{\"text\":\"Running it now.\",\"type\":\"text\"},{\"id\":\"toolu_h1\",\"input\":{},\"name\":\"mcp__ze_tools__direct_alpha\",\"type\":\"tool_use\"}],\"role\":\"assistant\"},{\"content\":[{\"content\":[{\"text\":\"alpha ok\",\"type\":\"text\"}],\"tool_use_id\":\"toolu_h1\",\"type\":\"tool_result\"}],\"role\":\"user\"}],\"system\":[{\"text\":\"<zuno base instructions, omitted>\",\"type\":\"text\"},{\"text\":\"<permissions instructions> (omitted)\",\"type\":\"text\"}],\"tool_choice\":{\"type\":\"auto\"},\"tools\":[{\"description\":\"Get the current goal for this thread.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{},\"required\":[],\"type\":\"object\"},\"name\":\"get_goal\"},{\"description\":\"Look up a support ticket by id.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"],\"type\":\"object\"},\"name\":\"lookup_ticket\"},{\"description\":\"Alpha direct tool.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_alpha\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"description\":\"Beta direct tool.\",\"input_schema\":{\"properties\":{\"n\":{\"type\":\"integer\"}},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_beta\"}]}",
+  "converse-text-no-tools/tool_search=true": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":1000,\"messages\":[{\"content\":[{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"text\":\"What is new at AWS?\",\"type\":\"text\"}],\"role\":\"user\"}]}",
+  "tool_search_golden/request-1/tool_search=true": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":32000,\"messages\":[{\"content\":[{\"text\":\"<environment_context>…</environment_context> (omitted)\",\"type\":\"text\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"text\":\"find the ticket tools and use one\",\"type\":\"text\"}],\"role\":\"user\"}],\"output_config\":{\"effort\":\"medium\"},\"system\":[{\"text\":\"<zuno base instructions, omitted>\",\"type\":\"text\"},{\"text\":\"<skills_instructions>…</skills_instructions> (omitted)\",\"type\":\"text\"},{\"text\":\"<permissions instructions>…</permissions instructions> (omitted)\",\"type\":\"text\"}],\"thinking\":{\"display\":\"summarized\",\"type\":\"adaptive\"},\"tool_choice\":{\"type\":\"auto\"},\"tools\":[{\"description\":\"Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"cursor\":{\"description\":\"Opaque cursor from a previous list_mcp_resources call; omit for the first page.\",\"type\":\"string\"},\"server\":{\"description\":\"MCP server name. Omit to list resources from every configured server.\",\"type\":\"string\"}},\"type\":\"object\"},\"name\":\"list_mcp_resources\"},{\"description\":\"Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"cursor\":{\"description\":\"Opaque cursor from a previous list_mcp_resource_templates call; omit for the first page.\",\"type\":\"string\"},\"server\":{\"description\":\"MCP server name. Omit to list resource templates from every configured server.\",\"type\":\"string\"}},\"type\":\"object\"},\"name\":\"list_mcp_resource_templates\"},{\"description\":\"Read a specific resource from an MCP server given the server name and resource URI.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"server\":{\"description\":\"MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources.\",\"type\":\"string\"},\"uri\":{\"description\":\"Resource URI to read. Must be one of the URIs returned by list_mcp_resources.\",\"type\":\"string\"}},\"required\":[\"server\",\"uri\"],\"type\":\"object\"},\"name\":\"read_mcp_resource\"},{\"description\":\"Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"questions\":{\"description\":\"Questions to show the user. Prefer 1 and do not exceed 3\",\"items\":{\"additionalProperties\":false,\"properties\":{\"header\":{\"description\":\"Short header label shown in the UI (12 or fewer chars).\",\"type\":\"string\"},\"id\":{\"description\":\"Stable identifier for mapping answers (snake_case).\",\"type\":\"string\"},\"options\":{\"description\":\"Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \\\"(Recommended)\\\". Do not include an \\\"Other\\\" option in this list; the client will add a free-form \\\"Other\\\" option automatically.\",\"items\":{\"additionalProperties\":false,\"properties\":{\"description\":{\"description\":\"One short sentence explaining impact/tradeoff if selected.\",\"type\":\"string\"},\"label\":{\"description\":\"User-facing label (1-5 words).\",\"type\":\"string\"}},\"required\":[\"label\",\"description\"],\"type\":\"object\"},\"type\":\"array\"},\"question\":{\"description\":\"Single-sentence prompt shown to the user.\",\"type\":\"string\"}},\"required\":[\"id\",\"header\",\"question\",\"options\"],\"type\":\"object\"},\"type\":\"array\"}},\"required\":[\"questions\"],\"type\":\"object\"},\"name\":\"request_user_input\"},{\"description\":\"Alpha direct tool.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_alpha\"},{\"description\":\"Beta direct tool.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_beta\"},{\"description\":\"Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{},\"required\":[],\"type\":\"object\"},\"name\":\"get_goal\"},{\"description\":\"Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"objective\":{\"description\":\"Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete.\",\"type\":\"string\"},\"token_budget\":{\"description\":\"Positive token budget for the new goal. Omit unless explicitly requested.\",\"type\":\"integer\"}},\"required\":[\"objective\"],\"type\":\"object\"},\"name\":\"create_goal\"},{\"description\":\"Update the existing goal.\\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"status\":{\"description\":\"Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.\",\"enum\":[\"complete\",\"blocked\",\"paused\"],\"type\":\"string\"}},\"required\":[\"status\"],\"type\":\"object\"},\"name\":\"update_goal\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"description\":\"# Tool discovery\\n\\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\\n\\nYou have access to tools from the following sources:\\n- Multi-agent tools: Spawn and manage sub-agents.\\n- ze_tools_deferred\\nSome of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"limit\":{\"description\":\"Maximum number of tools to return. Defaults to 8.\",\"type\":\"number\"},\"query\":{\"description\":\"Search query for deferred tools.\",\"type\":\"string\"}},\"required\":[\"query\"],\"type\":\"object\"},\"name\":\"tool_search\"}]}",
+  "tool_search_golden/request-2-no-match/tool_search=true": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":32000,\"messages\":[{\"content\":[{\"text\":\"<environment_context>…</environment_context> (omitted)\",\"type\":\"text\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"text\":\"find the ticket tools and use one\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"id\":\"tscall_1\",\"input\":{\"limit\":5,\"query\":\"weather\"},\"name\":\"tool_search\",\"type\":\"tool_use\"}],\"role\":\"assistant\"},{\"content\":[{\"content\":[{\"text\":\"No tools matched the query.\",\"type\":\"text\"}],\"tool_use_id\":\"tscall_1\",\"type\":\"tool_result\"}],\"role\":\"user\"}],\"output_config\":{\"effort\":\"medium\"},\"system\":[{\"text\":\"<zuno base instructions, omitted>\",\"type\":\"text\"},{\"text\":\"<skills_instructions>…</skills_instructions> (omitted)\",\"type\":\"text\"},{\"text\":\"<permissions instructions>…</permissions instructions> (omitted)\",\"type\":\"text\"}],\"thinking\":{\"display\":\"summarized\",\"type\":\"adaptive\"},\"tool_choice\":{\"type\":\"auto\"},\"tools\":[{\"description\":\"Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"cursor\":{\"description\":\"Opaque cursor from a previous list_mcp_resources call; omit for the first page.\",\"type\":\"string\"},\"server\":{\"description\":\"MCP server name. Omit to list resources from every configured server.\",\"type\":\"string\"}},\"type\":\"object\"},\"name\":\"list_mcp_resources\"},{\"description\":\"Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"cursor\":{\"description\":\"Opaque cursor from a previous list_mcp_resource_templates call; omit for the first page.\",\"type\":\"string\"},\"server\":{\"description\":\"MCP server name. Omit to list resource templates from every configured server.\",\"type\":\"string\"}},\"type\":\"object\"},\"name\":\"list_mcp_resource_templates\"},{\"description\":\"Read a specific resource from an MCP server given the server name and resource URI.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"server\":{\"description\":\"MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources.\",\"type\":\"string\"},\"uri\":{\"description\":\"Resource URI to read. Must be one of the URIs returned by list_mcp_resources.\",\"type\":\"string\"}},\"required\":[\"server\",\"uri\"],\"type\":\"object\"},\"name\":\"read_mcp_resource\"},{\"description\":\"Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"questions\":{\"description\":\"Questions to show the user. Prefer 1 and do not exceed 3\",\"items\":{\"additionalProperties\":false,\"properties\":{\"header\":{\"description\":\"Short header label shown in the UI (12 or fewer chars).\",\"type\":\"string\"},\"id\":{\"description\":\"Stable identifier for mapping answers (snake_case).\",\"type\":\"string\"},\"options\":{\"description\":\"Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \\\"(Recommended)\\\". Do not include an \\\"Other\\\" option in this list; the client will add a free-form \\\"Other\\\" option automatically.\",\"items\":{\"additionalProperties\":false,\"properties\":{\"description\":{\"description\":\"One short sentence explaining impact/tradeoff if selected.\",\"type\":\"string\"},\"label\":{\"description\":\"User-facing label (1-5 words).\",\"type\":\"string\"}},\"required\":[\"label\",\"description\"],\"type\":\"object\"},\"type\":\"array\"},\"question\":{\"description\":\"Single-sentence prompt shown to the user.\",\"type\":\"string\"}},\"required\":[\"id\",\"header\",\"question\",\"options\"],\"type\":\"object\"},\"type\":\"array\"}},\"required\":[\"questions\"],\"type\":\"object\"},\"name\":\"request_user_input\"},{\"description\":\"Alpha direct tool.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_alpha\"},{\"description\":\"Beta direct tool.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_beta\"},{\"description\":\"Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{},\"required\":[],\"type\":\"object\"},\"name\":\"get_goal\"},{\"description\":\"Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"objective\":{\"description\":\"Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete.\",\"type\":\"string\"},\"token_budget\":{\"description\":\"Positive token budget for the new goal. Omit unless explicitly requested.\",\"type\":\"integer\"}},\"required\":[\"objective\"],\"type\":\"object\"},\"name\":\"create_goal\"},{\"description\":\"Update the existing goal.\\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"status\":{\"description\":\"Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.\",\"enum\":[\"complete\",\"blocked\",\"paused\"],\"type\":\"string\"}},\"required\":[\"status\"],\"type\":\"object\"},\"name\":\"update_goal\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"description\":\"# Tool discovery\\n\\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\\n\\nYou have access to tools from the following sources:\\n- Multi-agent tools: Spawn and manage sub-agents.\\n- ze_tools_deferred\\nSome of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"limit\":{\"description\":\"Maximum number of tools to return. Defaults to 8.\",\"type\":\"number\"},\"query\":{\"description\":\"Search query for deferred tools.\",\"type\":\"string\"}},\"required\":[\"query\"],\"type\":\"object\"},\"name\":\"tool_search\"}]}",
+  "tool_search_golden/request-2/tool_search=true": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":32000,\"messages\":[{\"content\":[{\"text\":\"<environment_context>…</environment_context> (omitted)\",\"type\":\"text\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"text\":\"find the ticket tools and use one\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"id\":\"tscall_1\",\"input\":{\"limit\":5,\"query\":\"ticket\"},\"name\":\"tool_search\",\"type\":\"tool_use\"}],\"role\":\"assistant\"},{\"content\":[{\"content\":[{\"tool_name\":\"mcp__ze_tools_deferred__ticket_search\",\"type\":\"tool_reference\"},{\"tool_name\":\"mcp__ze_tools_deferred__ticket_get\",\"type\":\"tool_reference\"}],\"tool_use_id\":\"tscall_1\",\"type\":\"tool_result\"}],\"role\":\"user\"}],\"output_config\":{\"effort\":\"medium\"},\"system\":[{\"text\":\"<zuno base instructions, omitted>\",\"type\":\"text\"},{\"text\":\"<skills_instructions>…</skills_instructions> (omitted)\",\"type\":\"text\"},{\"text\":\"<permissions instructions>…</permissions instructions> (omitted)\",\"type\":\"text\"}],\"thinking\":{\"display\":\"summarized\",\"type\":\"adaptive\"},\"tool_choice\":{\"type\":\"auto\"},\"tools\":[{\"description\":\"Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"cursor\":{\"description\":\"Opaque cursor from a previous list_mcp_resources call; omit for the first page.\",\"type\":\"string\"},\"server\":{\"description\":\"MCP server name. Omit to list resources from every configured server.\",\"type\":\"string\"}},\"type\":\"object\"},\"name\":\"list_mcp_resources\"},{\"description\":\"Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"cursor\":{\"description\":\"Opaque cursor from a previous list_mcp_resource_templates call; omit for the first page.\",\"type\":\"string\"},\"server\":{\"description\":\"MCP server name. Omit to list resource templates from every configured server.\",\"type\":\"string\"}},\"type\":\"object\"},\"name\":\"list_mcp_resource_templates\"},{\"description\":\"Read a specific resource from an MCP server given the server name and resource URI.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"server\":{\"description\":\"MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources.\",\"type\":\"string\"},\"uri\":{\"description\":\"Resource URI to read. Must be one of the URIs returned by list_mcp_resources.\",\"type\":\"string\"}},\"required\":[\"server\",\"uri\"],\"type\":\"object\"},\"name\":\"read_mcp_resource\"},{\"description\":\"Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"questions\":{\"description\":\"Questions to show the user. Prefer 1 and do not exceed 3\",\"items\":{\"additionalProperties\":false,\"properties\":{\"header\":{\"description\":\"Short header label shown in the UI (12 or fewer chars).\",\"type\":\"string\"},\"id\":{\"description\":\"Stable identifier for mapping answers (snake_case).\",\"type\":\"string\"},\"options\":{\"description\":\"Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \\\"(Recommended)\\\". Do not include an \\\"Other\\\" option in this list; the client will add a free-form \\\"Other\\\" option automatically.\",\"items\":{\"additionalProperties\":false,\"properties\":{\"description\":{\"description\":\"One short sentence explaining impact/tradeoff if selected.\",\"type\":\"string\"},\"label\":{\"description\":\"User-facing label (1-5 words).\",\"type\":\"string\"}},\"required\":[\"label\",\"description\"],\"type\":\"object\"},\"type\":\"array\"},\"question\":{\"description\":\"Single-sentence prompt shown to the user.\",\"type\":\"string\"}},\"required\":[\"id\",\"header\",\"question\",\"options\"],\"type\":\"object\"},\"type\":\"array\"}},\"required\":[\"questions\"],\"type\":\"object\"},\"name\":\"request_user_input\"},{\"description\":\"Alpha direct tool.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_alpha\"},{\"description\":\"Beta direct tool.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_beta\"},{\"description\":\"Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{},\"required\":[],\"type\":\"object\"},\"name\":\"get_goal\"},{\"description\":\"Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"objective\":{\"description\":\"Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete.\",\"type\":\"string\"},\"token_budget\":{\"description\":\"Positive token budget for the new goal. Omit unless explicitly requested.\",\"type\":\"integer\"}},\"required\":[\"objective\"],\"type\":\"object\"},\"name\":\"create_goal\"},{\"description\":\"Update the existing goal.\\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"status\":{\"description\":\"Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.\",\"enum\":[\"complete\",\"blocked\",\"paused\"],\"type\":\"string\"}},\"required\":[\"status\"],\"type\":\"object\"},\"name\":\"update_goal\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"description\":\"# Tool discovery\\n\\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\\n\\nYou have access to tools from the following sources:\\n- Multi-agent tools: Spawn and manage sub-agents.\\n- ze_tools_deferred\\nSome of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"limit\":{\"description\":\"Maximum number of tools to return. Defaults to 8.\",\"type\":\"number\"},\"query\":{\"description\":\"Search query for deferred tools.\",\"type\":\"string\"}},\"required\":[\"query\"],\"type\":\"object\"},\"name\":\"tool_search\"},{\"defer_loading\":true,\"description\":\"Search tickets by keyword.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools_deferred__ticket_search\"},{\"defer_loading\":true,\"description\":\"Get one ticket by id.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools_deferred__ticket_get\"}]}",
+  "tool_search_golden/request-3/tool_search=true": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":32000,\"messages\":[{\"content\":[{\"text\":\"<environment_context>…</environment_context> (omitted)\",\"type\":\"text\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"text\":\"find the ticket tools and use one\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"id\":\"tscall_1\",\"input\":{\"limit\":5,\"query\":\"ticket\"},\"name\":\"tool_search\",\"type\":\"tool_use\"}],\"role\":\"assistant\"},{\"content\":[{\"content\":[{\"tool_name\":\"mcp__ze_tools_deferred__ticket_search\",\"type\":\"tool_reference\"},{\"tool_name\":\"mcp__ze_tools_deferred__ticket_get\",\"type\":\"tool_reference\"}],\"tool_use_id\":\"tscall_1\",\"type\":\"tool_result\"}],\"role\":\"user\"},{\"content\":[{\"id\":\"call_2\",\"input\":{},\"name\":\"mcp__ze_tools_deferred__ticket_search\",\"type\":\"tool_use\"}],\"role\":\"assistant\"},{\"content\":[{\"content\":[{\"text\":\"Wall time: 0.0023 seconds\\nOutput:\",\"type\":\"text\"},{\"text\":\"called ticket_search\",\"type\":\"text\"}],\"tool_use_id\":\"call_2\",\"type\":\"tool_result\"}],\"role\":\"user\"}],\"output_config\":{\"effort\":\"medium\"},\"system\":[{\"text\":\"<zuno base instructions, omitted>\",\"type\":\"text\"},{\"text\":\"<skills_instructions>…</skills_instructions> (omitted)\",\"type\":\"text\"},{\"text\":\"<permissions instructions>…</permissions instructions> (omitted)\",\"type\":\"text\"}],\"thinking\":{\"display\":\"summarized\",\"type\":\"adaptive\"},\"tool_choice\":{\"type\":\"auto\"},\"tools\":[{\"description\":\"Lists resources provided by MCP servers. Resources allow servers to share data that provides context to language models, such as files, database schemas, or application-specific information. Prefer resources over web search when possible.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"cursor\":{\"description\":\"Opaque cursor from a previous list_mcp_resources call; omit for the first page.\",\"type\":\"string\"},\"server\":{\"description\":\"MCP server name. Omit to list resources from every configured server.\",\"type\":\"string\"}},\"type\":\"object\"},\"name\":\"list_mcp_resources\"},{\"description\":\"Lists resource templates provided by MCP servers. Parameterized resource templates allow servers to share data that takes parameters and provides context to language models, such as files, database schemas, or application-specific information. Prefer resource templates over web search when possible.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"cursor\":{\"description\":\"Opaque cursor from a previous list_mcp_resource_templates call; omit for the first page.\",\"type\":\"string\"},\"server\":{\"description\":\"MCP server name. Omit to list resource templates from every configured server.\",\"type\":\"string\"}},\"type\":\"object\"},\"name\":\"list_mcp_resource_templates\"},{\"description\":\"Read a specific resource from an MCP server given the server name and resource URI.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"server\":{\"description\":\"MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources.\",\"type\":\"string\"},\"uri\":{\"description\":\"Resource URI to read. Must be one of the URIs returned by list_mcp_resources.\",\"type\":\"string\"}},\"required\":[\"server\",\"uri\"],\"type\":\"object\"},\"name\":\"read_mcp_resource\"},{\"description\":\"Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"questions\":{\"description\":\"Questions to show the user. Prefer 1 and do not exceed 3\",\"items\":{\"additionalProperties\":false,\"properties\":{\"header\":{\"description\":\"Short header label shown in the UI (12 or fewer chars).\",\"type\":\"string\"},\"id\":{\"description\":\"Stable identifier for mapping answers (snake_case).\",\"type\":\"string\"},\"options\":{\"description\":\"Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \\\"(Recommended)\\\". Do not include an \\\"Other\\\" option in this list; the client will add a free-form \\\"Other\\\" option automatically.\",\"items\":{\"additionalProperties\":false,\"properties\":{\"description\":{\"description\":\"One short sentence explaining impact/tradeoff if selected.\",\"type\":\"string\"},\"label\":{\"description\":\"User-facing label (1-5 words).\",\"type\":\"string\"}},\"required\":[\"label\",\"description\"],\"type\":\"object\"},\"type\":\"array\"},\"question\":{\"description\":\"Single-sentence prompt shown to the user.\",\"type\":\"string\"}},\"required\":[\"id\",\"header\",\"question\",\"options\"],\"type\":\"object\"},\"type\":\"array\"}},\"required\":[\"questions\"],\"type\":\"object\"},\"name\":\"request_user_input\"},{\"description\":\"Alpha direct tool.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_alpha\"},{\"description\":\"Beta direct tool.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools__direct_beta\"},{\"description\":\"Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{},\"required\":[],\"type\":\"object\"},\"name\":\"get_goal\"},{\"description\":\"Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\\nSet token_budget only when an explicit token budget is requested. Fails if an unfinished goal exists; use update_goal only for status.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"objective\":{\"description\":\"Required. The concrete objective to start pursuing. This starts a new active goal when no goal exists or replaces the current goal when it is complete.\",\"type\":\"string\"},\"token_budget\":{\"description\":\"Positive token budget for the new goal. Omit unless explicitly requested.\",\"type\":\"integer\"}},\"required\":[\"objective\"],\"type\":\"object\"},\"name\":\"create_goal\"},{\"description\":\"Update the existing goal.\\nSet status to `paused` only at the user's explicit request to pause this goal, never on your own initiative. Ask if unclear; a later resume revokes that request. Report the returned status and stop goal work. Budget limits take precedence over pausing.\\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\\nSet status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\\nIf the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\\nOnce the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\\nDo not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\\nYou cannot use this tool to resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"status\":{\"description\":\"Required. `paused` requires an explicit user request. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.\",\"enum\":[\"complete\",\"blocked\",\"paused\"],\"type\":\"string\"}},\"required\":[\"status\"],\"type\":\"object\"},\"name\":\"update_goal\"},{\"cache_control\":{\"ttl\":\"5m\",\"type\":\"ephemeral\"},\"description\":\"# Tool discovery\\n\\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\\n\\nYou have access to tools from the following sources:\\n- Multi-agent tools: Spawn and manage sub-agents.\\n- ze_tools_deferred\\nSome of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"limit\":{\"description\":\"Maximum number of tools to return. Defaults to 8.\",\"type\":\"number\"},\"query\":{\"description\":\"Search query for deferred tools.\",\"type\":\"string\"}},\"required\":[\"query\"],\"type\":\"object\"},\"name\":\"tool_search\"},{\"defer_loading\":true,\"description\":\"Search tickets by keyword.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools_deferred__ticket_search\"},{\"defer_loading\":true,\"description\":\"Get one ticket by id.\",\"input_schema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"mcp__ze_tools_deferred__ticket_get\"}]}"
+ },
+ "stream_events": {
+  "converse-client-web-search-tool/stream-1": [
+   {
+    "response": {
+     "created_at": 0,
+     "id": "resp_base",
+     "instructions": "<zuno base instructions, omitted>",
+     "max_output_tokens": 32000,
+     "model": "global.anthropic.claude-sonnet-5-5",
+     "object": "response",
+     "output": [],
+     "parallel_tool_calls": true,
+     "status": "in_progress",
+     "tool_choice": "required",
+     "tools": [
+      {
+       "description": "Get the current goal for this thread.",
+       "name": "get_goal",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Look up a support ticket by id.",
+       "name": "lookup_ticket",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {
+         "id": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "id"
+        ],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Tools in the mcp__ze_tools namespace.",
+       "name": "mcp__ze_tools",
+       "tools": [
+        {
+         "description": "Alpha direct tool.",
+         "name": "direct_alpha",
+         "parameters": {
+          "properties": {},
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        },
+        {
+         "description": "Beta direct tool.",
+         "name": "direct_beta",
+         "parameters": {
+          "properties": {
+           "n": {
+            "type": "integer"
+           }
+          },
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        }
+       ],
+       "type": "namespace"
+      },
+      {
+       "external_web_access": false,
+       "type": "web_search"
+      },
+      {
+       "description": "A client tool that happens to be called web_search.",
+       "name": "web_search",
+       "parameters": {
+        "properties": {
+         "q": {
+          "type": "string"
+         }
+        },
+        "type": "object"
+       },
+       "type": "function"
+      }
+     ],
+     "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0
+     }
+    },
+    "sequence_number": 0,
+    "type": "response.created"
+   },
+   {
+    "response": {
+     "created_at": 0,
+     "id": "resp_base",
+     "instructions": "<zuno base instructions, omitted>",
+     "max_output_tokens": 32000,
+     "model": "global.anthropic.claude-sonnet-5-5",
+     "object": "response",
+     "output": [],
+     "parallel_tool_calls": true,
+     "status": "in_progress",
+     "tool_choice": "required",
+     "tools": [
+      {
+       "description": "Get the current goal for this thread.",
+       "name": "get_goal",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Look up a support ticket by id.",
+       "name": "lookup_ticket",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {
+         "id": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "id"
+        ],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Tools in the mcp__ze_tools namespace.",
+       "name": "mcp__ze_tools",
+       "tools": [
+        {
+         "description": "Alpha direct tool.",
+         "name": "direct_alpha",
+         "parameters": {
+          "properties": {},
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        },
+        {
+         "description": "Beta direct tool.",
+         "name": "direct_beta",
+         "parameters": {
+          "properties": {
+           "n": {
+            "type": "integer"
+           }
+          },
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        }
+       ],
+       "type": "namespace"
+      },
+      {
+       "external_web_access": false,
+       "type": "web_search"
+      },
+      {
+       "description": "A client tool that happens to be called web_search.",
+       "name": "web_search",
+       "parameters": {
+        "properties": {
+         "q": {
+          "type": "string"
+         }
+        },
+        "type": "object"
+       },
+       "type": "function"
+      }
+     ],
+     "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0
+     }
+    },
+    "sequence_number": 1,
+    "type": "response.in_progress"
+   },
+   {
+    "item": {
+     "id": "rs_base",
+     "summary": [],
+     "type": "reasoning"
+    },
+    "output_index": 0,
+    "sequence_number": 2,
+    "type": "response.output_item.added"
+   },
+   {
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 3,
+    "summary_index": 0,
+    "type": "response.reasoning_summary_part.added"
+   },
+   {
+    "content_index": 0,
+    "delta": "Let me ",
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 4,
+    "type": "response.reasoning_text.delta"
+   },
+   {
+    "delta": "Let me ",
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 5,
+    "summary_index": 0,
+    "type": "response.reasoning_summary_text.delta"
+   },
+   {
+    "content_index": 0,
+    "delta": "think.",
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 6,
+    "type": "response.reasoning_text.delta"
+   },
+   {
+    "delta": "think.",
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 7,
+    "summary_index": 0,
+    "type": "response.reasoning_summary_text.delta"
+   },
+   {
+    "content_index": 0,
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 8,
+    "text": "Let me think.",
+    "type": "response.reasoning_text.done"
+   },
+   {
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 9,
+    "summary_index": 0,
+    "text": "Let me think.",
+    "type": "response.reasoning_summary_text.done"
+   },
+   {
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 10,
+    "summary_index": 0,
+    "type": "response.reasoning_summary_part.done"
+   },
+   {
+    "item": {
+     "encrypted_content": "bedrock-reasoning-v1:eyJibG9ja3MiOlt7InJlYXNvbmluZ1RleHQiOnsic2lnbmF0dXJlIjoic2lnLXN0cmVhbS0xIiwidGV4dCI6IkxldCBtZSB0aGluay4ifX1dLCJ2ZXJzaW9uIjoxfQ",
+     "id": "rs_base",
+     "summary": [
+      {
+       "text": "Let me think.",
+       "type": "summary_text"
+      }
+     ],
+     "type": "reasoning"
+    },
+    "output_index": 0,
+    "sequence_number": 11,
+    "type": "response.output_item.done"
+   },
+   {
+    "item": {
+     "content": [],
+     "id": "msg_base",
+     "role": "assistant",
+     "status": "in_progress",
+     "type": "message"
+    },
+    "output_index": 1,
+    "sequence_number": 12,
+    "type": "response.output_item.added"
+   },
+   {
+    "content_index": 0,
+    "item_id": "msg_base",
+    "output_index": 1,
+    "part": {
+     "annotations": [],
+     "text": "",
+     "type": "output_text"
+    },
+    "sequence_number": 13,
+    "type": "response.content_part.added"
+   },
+   {
+    "content_index": 0,
+    "delta": "I will call ",
+    "item_id": "msg_base",
+    "output_index": 1,
+    "sequence_number": 14,
+    "type": "response.output_text.delta"
+   },
+   {
+    "content_index": 0,
+    "delta": "the tools.",
+    "item_id": "msg_base",
+    "output_index": 1,
+    "sequence_number": 15,
+    "type": "response.output_text.delta"
+   },
+   {
+    "content_index": 0,
+    "item_id": "msg_base",
+    "output_index": 1,
+    "sequence_number": 16,
+    "text": "I will call the tools.",
+    "type": "response.output_text.done"
+   },
+   {
+    "content_index": 0,
+    "item_id": "msg_base",
+    "output_index": 1,
+    "part": {
+     "annotations": [],
+     "text": "I will call the tools.",
+     "type": "output_text"
+    },
+    "sequence_number": 17,
+    "type": "response.content_part.done"
+   },
+   {
+    "item": {
+     "content": [
+      {
+       "annotations": [],
+       "text": "I will call the tools.",
+       "type": "output_text"
+      }
+     ],
+     "id": "msg_base",
+     "role": "assistant",
+     "status": "completed",
+     "type": "message"
+    },
+    "output_index": 1,
+    "sequence_number": 18,
+    "type": "response.output_item.done"
+   },
+   {
+    "item": {
+     "arguments": "{}",
+     "call_id": "toolu_s2",
+     "id": "fc_toolu_s2",
+     "name": "direct_beta",
+     "namespace": "mcp__ze_tools",
+     "type": "function_call"
+    },
+    "output_index": 2,
+    "sequence_number": 19,
+    "type": "response.output_item.added"
+   },
+   {
+    "delta": "{\"n\":",
+    "item_id": "fc_toolu_s2",
+    "output_index": 2,
+    "sequence_number": 20,
+    "type": "response.function_call_arguments.delta"
+   },
+   {
+    "delta": "2}",
+    "item_id": "fc_toolu_s2",
+    "output_index": 2,
+    "sequence_number": 21,
+    "type": "response.function_call_arguments.delta"
+   },
+   {
+    "item": {
+     "arguments": "{}",
+     "call_id": "toolu_s3",
+     "id": "fc_toolu_s3",
+     "name": "web_search",
+     "type": "function_call"
+    },
+    "output_index": 3,
+    "sequence_number": 22,
+    "type": "response.output_item.added"
+   },
+   {
+    "delta": "{\"query\":\"aws\"}",
+    "item_id": "fc_toolu_s3",
+    "output_index": 3,
+    "sequence_number": 23,
+    "type": "response.function_call_arguments.delta"
+   },
+   {
+    "arguments": "{\"n\":2}",
+    "item_id": "fc_toolu_s2",
+    "name": "direct_beta",
+    "output_index": 2,
+    "sequence_number": 24,
+    "type": "response.function_call_arguments.done"
+   },
+   {
+    "item": {
+     "arguments": "{\"n\":2}",
+     "call_id": "toolu_s2",
+     "id": "fc_toolu_s2",
+     "name": "direct_beta",
+     "namespace": "mcp__ze_tools",
+     "status": "completed",
+     "type": "function_call"
+    },
+    "output_index": 2,
+    "sequence_number": 25,
+    "type": "response.output_item.done"
+   },
+   {
+    "arguments": "{\"query\":\"aws\"}",
+    "item_id": "fc_toolu_s3",
+    "name": "web_search",
+    "output_index": 3,
+    "sequence_number": 26,
+    "type": "response.function_call_arguments.done"
+   },
+   {
+    "item": {
+     "arguments": "{\"query\":\"aws\"}",
+     "call_id": "toolu_s3",
+     "id": "fc_toolu_s3",
+     "name": "web_search",
+     "status": "completed",
+     "type": "function_call"
+    },
+    "output_index": 3,
+    "sequence_number": 27,
+    "type": "response.output_item.done"
+   },
+   {
+    "response": {
+     "created_at": 0,
+     "id": "resp_base",
+     "instructions": "<zuno base instructions, omitted>",
+     "max_output_tokens": 32000,
+     "model": "global.anthropic.claude-sonnet-5-5",
+     "object": "response",
+     "output": [
+      {
+       "encrypted_content": "bedrock-reasoning-v1:eyJibG9ja3MiOlt7InJlYXNvbmluZ1RleHQiOnsic2lnbmF0dXJlIjoic2lnLXN0cmVhbS0xIiwidGV4dCI6IkxldCBtZSB0aGluay4ifX1dLCJ2ZXJzaW9uIjoxfQ",
+       "id": "rs_base",
+       "summary": [
+        {
+         "text": "Let me think.",
+         "type": "summary_text"
+        }
+       ],
+       "type": "reasoning"
+      },
+      {
+       "content": [
+        {
+         "annotations": [],
+         "text": "I will call the tools.",
+         "type": "output_text"
+        }
+       ],
+       "id": "msg_base",
+       "role": "assistant",
+       "status": "completed",
+       "type": "message"
+      },
+      {
+       "arguments": "{\"n\":2}",
+       "call_id": "toolu_s2",
+       "id": "fc_toolu_s2",
+       "name": "direct_beta",
+       "namespace": "mcp__ze_tools",
+       "type": "function_call"
+      },
+      {
+       "arguments": "{\"query\":\"aws\"}",
+       "call_id": "toolu_s3",
+       "id": "fc_toolu_s3",
+       "name": "web_search",
+       "type": "function_call"
+      }
+     ],
+     "parallel_tool_calls": true,
+     "status": "completed",
+     "tool_choice": "required",
+     "tools": [
+      {
+       "description": "Get the current goal for this thread.",
+       "name": "get_goal",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Look up a support ticket by id.",
+       "name": "lookup_ticket",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {
+         "id": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "id"
+        ],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Tools in the mcp__ze_tools namespace.",
+       "name": "mcp__ze_tools",
+       "tools": [
+        {
+         "description": "Alpha direct tool.",
+         "name": "direct_alpha",
+         "parameters": {
+          "properties": {},
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        },
+        {
+         "description": "Beta direct tool.",
+         "name": "direct_beta",
+         "parameters": {
+          "properties": {
+           "n": {
+            "type": "integer"
+           }
+          },
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        }
+       ],
+       "type": "namespace"
+      },
+      {
+       "external_web_access": false,
+       "type": "web_search"
+      },
+      {
+       "description": "A client tool that happens to be called web_search.",
+       "name": "web_search",
+       "parameters": {
+        "properties": {
+         "q": {
+          "type": "string"
+         }
+        },
+        "type": "object"
+       },
+       "type": "function"
+      }
+     ],
+     "usage": {
+      "input_tokens": 150,
+      "input_tokens_details": {
+       "cached_tokens": 20
+      },
+      "output_tokens": 40,
+      "output_tokens_details": {
+       "reasoning_tokens": 4
+      },
+      "total_tokens": 190
+     }
+    },
+    "sequence_number": 28,
+    "type": "response.completed"
+   }
+  ],
+  "converse-history/stream-1": [
+   {
+    "response": {
+     "created_at": 0,
+     "id": "resp_base",
+     "instructions": "<zuno base instructions, omitted>",
+     "max_output_tokens": 32000,
+     "model": "global.anthropic.claude-sonnet-5-5",
+     "object": "response",
+     "output": [],
+     "parallel_tool_calls": true,
+     "status": "in_progress",
+     "tool_choice": "auto",
+     "tools": [
+      {
+       "description": "Get the current goal for this thread.",
+       "name": "get_goal",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Look up a support ticket by id.",
+       "name": "lookup_ticket",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {
+         "id": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "id"
+        ],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Tools in the mcp__ze_tools namespace.",
+       "name": "mcp__ze_tools",
+       "tools": [
+        {
+         "description": "Alpha direct tool.",
+         "name": "direct_alpha",
+         "parameters": {
+          "properties": {},
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        },
+        {
+         "description": "Beta direct tool.",
+         "name": "direct_beta",
+         "parameters": {
+          "properties": {
+           "n": {
+            "type": "integer"
+           }
+          },
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        }
+       ],
+       "type": "namespace"
+      },
+      {
+       "external_web_access": false,
+       "type": "web_search"
+      }
+     ],
+     "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0
+     }
+    },
+    "sequence_number": 0,
+    "type": "response.created"
+   },
+   {
+    "response": {
+     "created_at": 0,
+     "id": "resp_base",
+     "instructions": "<zuno base instructions, omitted>",
+     "max_output_tokens": 32000,
+     "model": "global.anthropic.claude-sonnet-5-5",
+     "object": "response",
+     "output": [],
+     "parallel_tool_calls": true,
+     "status": "in_progress",
+     "tool_choice": "auto",
+     "tools": [
+      {
+       "description": "Get the current goal for this thread.",
+       "name": "get_goal",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Look up a support ticket by id.",
+       "name": "lookup_ticket",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {
+         "id": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "id"
+        ],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Tools in the mcp__ze_tools namespace.",
+       "name": "mcp__ze_tools",
+       "tools": [
+        {
+         "description": "Alpha direct tool.",
+         "name": "direct_alpha",
+         "parameters": {
+          "properties": {},
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        },
+        {
+         "description": "Beta direct tool.",
+         "name": "direct_beta",
+         "parameters": {
+          "properties": {
+           "n": {
+            "type": "integer"
+           }
+          },
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        }
+       ],
+       "type": "namespace"
+      },
+      {
+       "external_web_access": false,
+       "type": "web_search"
+      }
+     ],
+     "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0
+     }
+    },
+    "sequence_number": 1,
+    "type": "response.in_progress"
+   },
+   {
+    "item": {
+     "id": "rs_base",
+     "summary": [],
+     "type": "reasoning"
+    },
+    "output_index": 0,
+    "sequence_number": 2,
+    "type": "response.output_item.added"
+   },
+   {
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 3,
+    "summary_index": 0,
+    "type": "response.reasoning_summary_part.added"
+   },
+   {
+    "content_index": 0,
+    "delta": "Let me ",
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 4,
+    "type": "response.reasoning_text.delta"
+   },
+   {
+    "delta": "Let me ",
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 5,
+    "summary_index": 0,
+    "type": "response.reasoning_summary_text.delta"
+   },
+   {
+    "content_index": 0,
+    "delta": "think.",
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 6,
+    "type": "response.reasoning_text.delta"
+   },
+   {
+    "delta": "think.",
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 7,
+    "summary_index": 0,
+    "type": "response.reasoning_summary_text.delta"
+   },
+   {
+    "content_index": 0,
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 8,
+    "text": "Let me think.",
+    "type": "response.reasoning_text.done"
+   },
+   {
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 9,
+    "summary_index": 0,
+    "text": "Let me think.",
+    "type": "response.reasoning_summary_text.done"
+   },
+   {
+    "item_id": "rs_base",
+    "output_index": 0,
+    "sequence_number": 10,
+    "summary_index": 0,
+    "type": "response.reasoning_summary_part.done"
+   },
+   {
+    "item": {
+     "encrypted_content": "bedrock-reasoning-v1:eyJibG9ja3MiOlt7InJlYXNvbmluZ1RleHQiOnsic2lnbmF0dXJlIjoic2lnLXN0cmVhbS0xIiwidGV4dCI6IkxldCBtZSB0aGluay4ifX1dLCJ2ZXJzaW9uIjoxfQ",
+     "id": "rs_base",
+     "summary": [
+      {
+       "text": "Let me think.",
+       "type": "summary_text"
+      }
+     ],
+     "type": "reasoning"
+    },
+    "output_index": 0,
+    "sequence_number": 11,
+    "type": "response.output_item.done"
+   },
+   {
+    "item": {
+     "content": [],
+     "id": "msg_base",
+     "role": "assistant",
+     "status": "in_progress",
+     "type": "message"
+    },
+    "output_index": 1,
+    "sequence_number": 12,
+    "type": "response.output_item.added"
+   },
+   {
+    "content_index": 0,
+    "item_id": "msg_base",
+    "output_index": 1,
+    "part": {
+     "annotations": [],
+     "text": "",
+     "type": "output_text"
+    },
+    "sequence_number": 13,
+    "type": "response.content_part.added"
+   },
+   {
+    "content_index": 0,
+    "delta": "I will call ",
+    "item_id": "msg_base",
+    "output_index": 1,
+    "sequence_number": 14,
+    "type": "response.output_text.delta"
+   },
+   {
+    "content_index": 0,
+    "delta": "the tools.",
+    "item_id": "msg_base",
+    "output_index": 1,
+    "sequence_number": 15,
+    "type": "response.output_text.delta"
+   },
+   {
+    "content_index": 0,
+    "item_id": "msg_base",
+    "output_index": 1,
+    "sequence_number": 16,
+    "text": "I will call the tools.",
+    "type": "response.output_text.done"
+   },
+   {
+    "content_index": 0,
+    "item_id": "msg_base",
+    "output_index": 1,
+    "part": {
+     "annotations": [],
+     "text": "I will call the tools.",
+     "type": "output_text"
+    },
+    "sequence_number": 17,
+    "type": "response.content_part.done"
+   },
+   {
+    "item": {
+     "content": [
+      {
+       "annotations": [],
+       "text": "I will call the tools.",
+       "type": "output_text"
+      }
+     ],
+     "id": "msg_base",
+     "role": "assistant",
+     "status": "completed",
+     "type": "message"
+    },
+    "output_index": 1,
+    "sequence_number": 18,
+    "type": "response.output_item.done"
+   },
+   {
+    "item": {
+     "arguments": "{}",
+     "call_id": "toolu_s2",
+     "id": "fc_toolu_s2",
+     "name": "direct_beta",
+     "namespace": "mcp__ze_tools",
+     "type": "function_call"
+    },
+    "output_index": 2,
+    "sequence_number": 19,
+    "type": "response.output_item.added"
+   },
+   {
+    "delta": "{\"n\":",
+    "item_id": "fc_toolu_s2",
+    "output_index": 2,
+    "sequence_number": 20,
+    "type": "response.function_call_arguments.delta"
+   },
+   {
+    "delta": "2}",
+    "item_id": "fc_toolu_s2",
+    "output_index": 2,
+    "sequence_number": 21,
+    "type": "response.function_call_arguments.delta"
+   },
+   {
+    "item": {
+     "arguments": "{}",
+     "call_id": "toolu_s3",
+     "id": "fc_toolu_s3",
+     "name": "web_search",
+     "type": "function_call"
+    },
+    "output_index": 3,
+    "sequence_number": 22,
+    "type": "response.output_item.added"
+   },
+   {
+    "delta": "{\"query\":\"aws\"}",
+    "item_id": "fc_toolu_s3",
+    "output_index": 3,
+    "sequence_number": 23,
+    "type": "response.function_call_arguments.delta"
+   },
+   {
+    "arguments": "{\"n\":2}",
+    "item_id": "fc_toolu_s2",
+    "name": "direct_beta",
+    "output_index": 2,
+    "sequence_number": 24,
+    "type": "response.function_call_arguments.done"
+   },
+   {
+    "item": {
+     "arguments": "{\"n\":2}",
+     "call_id": "toolu_s2",
+     "id": "fc_toolu_s2",
+     "name": "direct_beta",
+     "namespace": "mcp__ze_tools",
+     "status": "completed",
+     "type": "function_call"
+    },
+    "output_index": 2,
+    "sequence_number": 25,
+    "type": "response.output_item.done"
+   },
+   {
+    "arguments": "{\"query\":\"aws\"}",
+    "item_id": "fc_toolu_s3",
+    "name": "web_search",
+    "output_index": 3,
+    "sequence_number": 26,
+    "type": "response.function_call_arguments.done"
+   },
+   {
+    "item": {
+     "arguments": "{\"query\":\"aws\"}",
+     "call_id": "toolu_s3",
+     "id": "fc_toolu_s3",
+     "name": "web_search",
+     "status": "completed",
+     "type": "function_call"
+    },
+    "output_index": 3,
+    "sequence_number": 27,
+    "type": "response.output_item.done"
+   },
+   {
+    "response": {
+     "created_at": 0,
+     "id": "resp_base",
+     "instructions": "<zuno base instructions, omitted>",
+     "max_output_tokens": 32000,
+     "model": "global.anthropic.claude-sonnet-5-5",
+     "object": "response",
+     "output": [
+      {
+       "encrypted_content": "bedrock-reasoning-v1:eyJibG9ja3MiOlt7InJlYXNvbmluZ1RleHQiOnsic2lnbmF0dXJlIjoic2lnLXN0cmVhbS0xIiwidGV4dCI6IkxldCBtZSB0aGluay4ifX1dLCJ2ZXJzaW9uIjoxfQ",
+       "id": "rs_base",
+       "summary": [
+        {
+         "text": "Let me think.",
+         "type": "summary_text"
+        }
+       ],
+       "type": "reasoning"
+      },
+      {
+       "content": [
+        {
+         "annotations": [],
+         "text": "I will call the tools.",
+         "type": "output_text"
+        }
+       ],
+       "id": "msg_base",
+       "role": "assistant",
+       "status": "completed",
+       "type": "message"
+      },
+      {
+       "arguments": "{\"n\":2}",
+       "call_id": "toolu_s2",
+       "id": "fc_toolu_s2",
+       "name": "direct_beta",
+       "namespace": "mcp__ze_tools",
+       "type": "function_call"
+      },
+      {
+       "arguments": "{\"query\":\"aws\"}",
+       "call_id": "toolu_s3",
+       "id": "fc_toolu_s3",
+       "name": "web_search",
+       "type": "function_call"
+      }
+     ],
+     "parallel_tool_calls": true,
+     "status": "completed",
+     "tool_choice": "auto",
+     "tools": [
+      {
+       "description": "Get the current goal for this thread.",
+       "name": "get_goal",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Look up a support ticket by id.",
+       "name": "lookup_ticket",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {
+         "id": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "id"
+        ],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Tools in the mcp__ze_tools namespace.",
+       "name": "mcp__ze_tools",
+       "tools": [
+        {
+         "description": "Alpha direct tool.",
+         "name": "direct_alpha",
+         "parameters": {
+          "properties": {},
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        },
+        {
+         "description": "Beta direct tool.",
+         "name": "direct_beta",
+         "parameters": {
+          "properties": {
+           "n": {
+            "type": "integer"
+           }
+          },
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        }
+       ],
+       "type": "namespace"
+      },
+      {
+       "external_web_access": false,
+       "type": "web_search"
+      }
+     ],
+     "usage": {
+      "input_tokens": 150,
+      "input_tokens_details": {
+       "cached_tokens": 20
+      },
+      "output_tokens": 40,
+      "output_tokens_details": {
+       "reasoning_tokens": 4
+      },
+      "total_tokens": 190
+     }
+    },
+    "sequence_number": 28,
+    "type": "response.completed"
+   }
+  ],
+  "converse-history/stream-2": [
+   {
+    "response": {
+     "created_at": 0,
+     "id": "resp_base",
+     "instructions": "<zuno base instructions, omitted>",
+     "max_output_tokens": 32000,
+     "model": "global.anthropic.claude-sonnet-5-5",
+     "object": "response",
+     "output": [],
+     "parallel_tool_calls": true,
+     "status": "in_progress",
+     "tool_choice": "auto",
+     "tools": [
+      {
+       "description": "Get the current goal for this thread.",
+       "name": "get_goal",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Look up a support ticket by id.",
+       "name": "lookup_ticket",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {
+         "id": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "id"
+        ],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Tools in the mcp__ze_tools namespace.",
+       "name": "mcp__ze_tools",
+       "tools": [
+        {
+         "description": "Alpha direct tool.",
+         "name": "direct_alpha",
+         "parameters": {
+          "properties": {},
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        },
+        {
+         "description": "Beta direct tool.",
+         "name": "direct_beta",
+         "parameters": {
+          "properties": {
+           "n": {
+            "type": "integer"
+           }
+          },
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        }
+       ],
+       "type": "namespace"
+      },
+      {
+       "external_web_access": false,
+       "type": "web_search"
+      }
+     ],
+     "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0
+     }
+    },
+    "sequence_number": 0,
+    "type": "response.created"
+   },
+   {
+    "response": {
+     "created_at": 0,
+     "id": "resp_base",
+     "instructions": "<zuno base instructions, omitted>",
+     "max_output_tokens": 32000,
+     "model": "global.anthropic.claude-sonnet-5-5",
+     "object": "response",
+     "output": [],
+     "parallel_tool_calls": true,
+     "status": "in_progress",
+     "tool_choice": "auto",
+     "tools": [
+      {
+       "description": "Get the current goal for this thread.",
+       "name": "get_goal",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Look up a support ticket by id.",
+       "name": "lookup_ticket",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {
+         "id": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "id"
+        ],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Tools in the mcp__ze_tools namespace.",
+       "name": "mcp__ze_tools",
+       "tools": [
+        {
+         "description": "Alpha direct tool.",
+         "name": "direct_alpha",
+         "parameters": {
+          "properties": {},
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        },
+        {
+         "description": "Beta direct tool.",
+         "name": "direct_beta",
+         "parameters": {
+          "properties": {
+           "n": {
+            "type": "integer"
+           }
+          },
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        }
+       ],
+       "type": "namespace"
+      },
+      {
+       "external_web_access": false,
+       "type": "web_search"
+      }
+     ],
+     "usage": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "total_tokens": 0
+     }
+    },
+    "sequence_number": 1,
+    "type": "response.in_progress"
+   },
+   {
+    "item": {
+     "content": [],
+     "id": "msg_base",
+     "role": "assistant",
+     "status": "in_progress",
+     "type": "message"
+    },
+    "output_index": 0,
+    "sequence_number": 2,
+    "type": "response.output_item.added"
+   },
+   {
+    "content_index": 0,
+    "item_id": "msg_base",
+    "output_index": 0,
+    "part": {
+     "annotations": [],
+     "text": "",
+     "type": "output_text"
+    },
+    "sequence_number": 3,
+    "type": "response.content_part.added"
+   },
+   {
+    "content_index": 0,
+    "delta": "Partial answer",
+    "item_id": "msg_base",
+    "output_index": 0,
+    "sequence_number": 4,
+    "type": "response.output_text.delta"
+   },
+   {
+    "content_index": 0,
+    "item_id": "msg_base",
+    "output_index": 0,
+    "sequence_number": 5,
+    "text": "Partial answer",
+    "type": "response.output_text.done"
+   },
+   {
+    "content_index": 0,
+    "item_id": "msg_base",
+    "output_index": 0,
+    "part": {
+     "annotations": [],
+     "text": "Partial answer",
+     "type": "output_text"
+    },
+    "sequence_number": 6,
+    "type": "response.content_part.done"
+   },
+   {
+    "item": {
+     "content": [
+      {
+       "annotations": [],
+       "text": "Partial answer",
+       "type": "output_text"
+      }
+     ],
+     "id": "msg_base",
+     "role": "assistant",
+     "status": "completed",
+     "type": "message"
+    },
+    "output_index": 0,
+    "sequence_number": 7,
+    "type": "response.output_item.done"
+   },
+   {
+    "item": {
+     "arguments": "{}",
+     "call_id": "toolu_t1",
+     "id": "fc_toolu_t1",
+     "name": "lookup_ticket",
+     "type": "function_call"
+    },
+    "output_index": 1,
+    "sequence_number": 8,
+    "type": "response.output_item.added"
+   },
+   {
+    "delta": "{\"id\":",
+    "item_id": "fc_toolu_t1",
+    "output_index": 1,
+    "sequence_number": 9,
+    "type": "response.function_call_arguments.delta"
+   },
+   {
+    "response": {
+     "created_at": 0,
+     "id": "resp_base",
+     "incomplete_details": {
+      "reason": "max_output_tokens"
+     },
+     "instructions": "<zuno base instructions, omitted>",
+     "max_output_tokens": 32000,
+     "model": "global.anthropic.claude-sonnet-5-5",
+     "object": "response",
+     "output": [
+      {
+       "content": [
+        {
+         "annotations": [],
+         "text": "Partial answer",
+         "type": "output_text"
+        }
+       ],
+       "id": "msg_base",
+       "role": "assistant",
+       "status": "completed",
+       "type": "message"
+      }
+     ],
+     "parallel_tool_calls": true,
+     "status": "incomplete",
+     "tool_choice": "auto",
+     "tools": [
+      {
+       "description": "Get the current goal for this thread.",
+       "name": "get_goal",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Look up a support ticket by id.",
+       "name": "lookup_ticket",
+       "parameters": {
+        "additionalProperties": false,
+        "properties": {
+         "id": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "id"
+        ],
+        "type": "object"
+       },
+       "strict": false,
+       "type": "function"
+      },
+      {
+       "description": "Tools in the mcp__ze_tools namespace.",
+       "name": "mcp__ze_tools",
+       "tools": [
+        {
+         "description": "Alpha direct tool.",
+         "name": "direct_alpha",
+         "parameters": {
+          "properties": {},
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        },
+        {
+         "description": "Beta direct tool.",
+         "name": "direct_beta",
+         "parameters": {
+          "properties": {
+           "n": {
+            "type": "integer"
+           }
+          },
+          "type": "object"
+         },
+         "strict": false,
+         "type": "function"
+        }
+       ],
+       "type": "namespace"
+      },
+      {
+       "external_web_access": false,
+       "type": "web_search"
+      }
+     ],
+     "usage": {
+      "input_tokens": 10,
+      "input_tokens_details": {
+       "cached_tokens": 0
+      },
+      "output_tokens": 5,
+      "output_tokens_details": {
+       "reasoning_tokens": 0
+      },
+      "total_tokens": 15
+     }
+    },
+    "sequence_number": 10,
+    "type": "response.incomplete"
+   }
+  ]
+ }
+}

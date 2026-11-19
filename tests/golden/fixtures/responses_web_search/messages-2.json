@@ -1,0 +1,24 @@
+{
+  "id": "msg_bdrk_02",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-5-5",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "Two results; the first answers the question.",
+      "signature": "c3luLXNpZy0x"
+    },
+    {
+      "type": "text",
+      "text": "AWS made AgentCore Web Search generally available ([What's New with AWS](https://aws.amazon.com/new/)). See also [the developer guide](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/)."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 2600,
+    "output_tokens": 140,
+    "cache_read_input_tokens": 1800
+  }
+}

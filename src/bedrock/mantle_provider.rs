@@ -17,10 +17,12 @@
 //!    raw request body to the canonical foundation id
 //!    ([`ModelCapabilities::resolve_foundation`], T2), keeping every other field
 //!    byte-stable (this is why T5 captured `raw_body` — to preserve
-//!    unknown/future fields). The one other change: `reasoning` items that
-//!    carry the gateway's own envelope (left by a Claude turn earlier in the
-//!    conversation) are removed from `input`, because mantle rejects them with
-//!    400 `invalid encrypted reasoning`. Forward that body upstream.
+//!    unknown/future fields). The other changes drop the gateway's own items
+//!    that a Claude turn earlier in the conversation left in `input`:
+//!    `reasoning` items with the gateway's envelope, which mantle rejects with
+//!    400 `invalid encrypted reasoning` (web search carriers included), and
+//!    the `web_search_call` items of gateway-executed searches (`ws_bgw_`
+//!    ids), which mantle never produced. Forward that body upstream.
 //! 3. **Non-stream** ([`Self::respond`]): call
 //!    [`MantleClient::responses_nonstream`], deserialize the mantle JSON into a
 //!    [`ResponsesResponse`], and re-normalize `usage` through the shared
@@ -47,6 +49,7 @@ use serde_json::Value;
 use crate::bedrock::mantle_client::{MantleClient, ResponsesStreamTerminal};
 use crate::bedrock::responses_translate::is_gateway_reasoning_envelope;
 use crate::bedrock::tokens::compute_token_usage;
+use crate::bedrock::web_search::WEB_SEARCH_CALL_ID_PREFIX;
 use crate::config::AppSettings;
 use crate::domain::{
     ModelCapabilities, NormalizedResponsesRequest, RawResponsesStream, ResponsesProvider,
@@ -132,6 +135,13 @@ impl MantleResponsesProvider {
                 if dropped > 0 {
                     tracing::debug!(dropped, "dropped Bedrock reasoning items from mantle input");
                 }
+                let dropped = drop_gateway_web_search_calls(obj);
+                if dropped > 0 {
+                    tracing::debug!(
+                        dropped,
+                        "dropped gateway web_search_call items from mantle input"
+                    );
+                }
             }
             None => {
                 return Err(AppError::BadRequest(
@@ -176,6 +186,29 @@ fn drop_gateway_reasoning(body: &mut serde_json::Map<String, Value>) -> usize {
                 .and_then(Value::as_str)
                 .is_some_and(is_gateway_reasoning_envelope);
         !gateway_reasoning
+    });
+    before - items.len()
+}
+
+/// Remove from the body's `input` array every `web_search_call` item whose id
+/// starts with [`WEB_SEARCH_CALL_ID_PREFIX`] (a search the gateway ran for a
+/// Claude turn), and return how many were removed.
+///
+/// The item carries no results and GPT never ran the search, so nothing is
+/// lost; whether mantle accepts a `web_search_call` it did not produce is not
+/// known. GPT's own `web_search_call` items (other ids) stay.
+fn drop_gateway_web_search_calls(body: &mut serde_json::Map<String, Value>) -> usize {
+    let Some(Value::Array(items)) = body.get_mut("input") else {
+        return 0;
+    };
+    let before = items.len();
+    items.retain(|item| {
+        let gateway_search = item.get("type").and_then(Value::as_str) == Some("web_search_call")
+            && item
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with(WEB_SEARCH_CALL_ID_PREFIX));
+        !gateway_search
     });
     before - items.len()
 }

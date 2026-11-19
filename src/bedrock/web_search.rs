@@ -81,7 +81,8 @@ pub const MAX_RESULTS_PER_SEARCH: u32 = 25;
 /// `max_calls + 2` Bedrock calls for one response (the first, one continuation
 /// per search, and one answer after the limit), so the cap keeps that step
 /// limit small: an operator typo cannot allow thousands of model calls. The
-/// loop (PR 2 of plan C2) still computes the step limit with `saturating_add`.
+/// loop ([`crate::bedrock::responses_web_search`]) still computes the step
+/// limit with `saturating_add`.
 pub const MAX_SEARCHES_PER_ANSWER: u32 = 20;
 
 /// Prefix of the `web_search_call` item ids the gateway emits, so the mantle

@@ -11,7 +11,12 @@
 //! provider's JSON→SDK bridge), then runs the pure non-stream mapper
 //! [`crate::bedrock::responses_response::from_converse_output_to_responses`].
 //!
-//! [`BedrockResponsesProvider::respond_stream`] remains a seam until T11/T13.
+//! [`BedrockResponsesProvider::respond_stream`] streams the same call through
+//! [`crate::bedrock::responses_stream`].
+//!
+//! A request that declares the gateway's web search (`X-Weniq-Web-Search`,
+//! plan C2) goes to the search loop in [`crate::bedrock::responses_web_search`]
+//! instead; every other request takes the single-call path below, unchanged.
 //!
 //! ## Shared converse-call reuse
 //!
@@ -43,19 +48,24 @@ use crate::bedrock::provider::{
 };
 use crate::bedrock::responses_response::from_converse_output_to_responses_with_tools;
 use crate::bedrock::responses_stream::{
-    converse_stream_to_openai_responses, invoke_stream_to_openai_responses, ResponsesStreamRuntime,
+    converse_events, converse_stream_to_openai_responses, invoke_events,
+    invoke_stream_to_openai_responses, ResponsesStreamRuntime, StepEvents,
 };
 use crate::bedrock::responses_translate::{
-    build_responses_tools_with, collect_searched_tools, reasoning_outcome,
-    request_uses_tool_search, responses_output_format, to_responses_converse_input_with,
-    ResponsesToolRegistry, SearchedTool,
+    build_responses_tools_with, collect_searched_tools, finish_messages, parse_responses_input,
+    reasoning_outcome, request_uses_tool_search, responses_output_format, scan_web_search_history,
+    ParsedInput, ResponsesToolRegistry, SearchedTool, TranslateOptions,
+};
+use crate::bedrock::responses_web_search::{
+    self, plan_web_search, Lane, StepTransport, WebSearchPlan,
 };
 use crate::bedrock::translate::{merge_strict_text_format, ImageResolver};
+use crate::bedrock::web_search::{WebSearchBackend, WebSearchLimits};
 use crate::bedrock::{cache, provider, tools};
 use crate::config::{AppSettings, Capability, RegionRoutingConfig};
 use crate::domain::{
     ModelCapabilities, NormalizedResponsesRequest, ResponsesProvider, ResponsesStream,
-    RouteOverride,
+    RouteOverride, WebSearchHeader,
 };
 use crate::error::{from_bedrock_sdk_error, AppError};
 use crate::openai::responses_schema::{ResponsesRequest, ResponsesResponse, ResponsesToolChoice};
@@ -79,11 +89,18 @@ pub struct BedrockResponsesProvider {
     /// Consulted by the read-gate in [`Self::assemble`] and updated by the
     /// strip-and-retry safety net at the send points.
     cache_support: Arc<CacheSupportRegistry>,
+    /// The web search backend (`WEB_SEARCH_BACKEND`), `None` when off. It only
+    /// decides whether a declared search can run; whether a request declares
+    /// the tool never depends on it (plan C2 §2.2).
+    web_search: Option<Arc<dyn WebSearchBackend>>,
+    /// The `WEB_SEARCH_*` limits, read once at boot.
+    web_search_limits: WebSearchLimits,
 }
 
 impl BedrockResponsesProvider {
     /// Construct a provider from its collaborators (mirrors
     /// [`crate::bedrock::provider::BedrockChatProvider::new`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         clients: BedrockClients,
         caps: Arc<dyn ModelCapabilities>,
@@ -91,6 +108,8 @@ impl BedrockResponsesProvider {
         image_resolver: Arc<dyn ImageResolver>,
         settings: Arc<AppSettings>,
         cache_support: Arc<CacheSupportRegistry>,
+        web_search: Option<Arc<dyn WebSearchBackend>>,
+        web_search_limits: WebSearchLimits,
     ) -> Self {
         Self {
             clients,
@@ -99,6 +118,57 @@ impl BedrockResponsesProvider {
             image_resolver,
             settings,
             cache_support,
+            web_search,
+            web_search_limits,
+        }
+    }
+
+    pub(crate) fn cache_support(&self) -> &Arc<CacheSupportRegistry> {
+        &self.cache_support
+    }
+
+    pub(crate) fn image_resolver(&self) -> &dyn ImageResolver {
+        self.image_resolver.as_ref()
+    }
+
+    pub(crate) fn web_search_backend(&self) -> Option<&Arc<dyn WebSearchBackend>> {
+        self.web_search.as_ref()
+    }
+
+    pub(crate) fn web_search_limits(&self) -> &WebSearchLimits {
+        &self.web_search_limits
+    }
+
+    /// Decide whether `req` declares the gateway's web search and whether its
+    /// calls can run (plan C2 §2.2), from the header, the backend switch, the
+    /// model's `web_search` capability and the replayed history's marks.
+    ///
+    /// A history whose gateway envelopes do not decode counts as unmarked
+    /// here: the input translation then rejects it with the same 400 it has
+    /// always returned, in the same order as any other request error.
+    pub(crate) fn web_search_plan(&self, req: &NormalizedResponsesRequest) -> WebSearchPlan {
+        let scan = scan_web_search_history(&req.request).ok();
+        let backend_on = self.web_search.is_some();
+        let capable = self.caps.has(&req.resolved_model, Capability::WebSearch);
+        let plan = plan_web_search(req.web_search, backend_on, capable, scan.as_ref());
+        if !plan.declared && req.web_search == WebSearchHeader::On {
+            tracing::warn!(
+                request_id = %req.request_id,
+                model = %req.request.model,
+                backend_on,
+                capable,
+                "web search requested, but this gateway cannot run it for this model; the request is served without it"
+            );
+        }
+        plan
+    }
+
+    /// The lane of `req`: InvokeModel for client tool search, else Converse.
+    pub(crate) fn lane(&self, req: &ResponsesRequest, resolved: &str) -> Lane {
+        if self.uses_tool_search(req, resolved) {
+            Lane::ToolSearch
+        } else {
+            Lane::Converse
         }
     }
 
@@ -119,7 +189,7 @@ impl BedrockResponsesProvider {
     ///
     /// `tool_search` selects the tool-search lane: the client `tool_search`
     /// tool and the search input items are translated (see
-    /// [`to_responses_converse_input_with`]) and the tools loaded by
+    /// [`crate::bedrock::responses_translate::to_responses_converse_input_with`]) and the tools loaded by
     /// `tool_search_output` items are collected for the Messages body.
     async fn assemble(
         &self,
@@ -128,18 +198,39 @@ impl BedrockResponsesProvider {
         force_caching_off: bool,
         tool_search: bool,
     ) -> Result<AssembledConverse, AppError> {
-        let caps = self.caps.as_ref();
-
-        let parsed = to_responses_converse_input_with(
+        let opts = TranslateOptions {
+            tool_search,
+            web_search: false,
+        };
+        let parsed =
+            parse_responses_input(req, resolved, self.image_resolver.as_ref(), opts).await?;
+        self.assemble_parsed(
             req,
             resolved,
-            self.image_resolver.as_ref(),
-            caps,
+            &parsed,
+            force_caching_off,
             tool_search,
+            false,
         )
-        .await?;
-        let mut messages = parsed.messages;
-        let mut system = parsed.system;
+    }
+
+    /// [`Self::assemble`] from an input that is already parsed. The web search
+    /// loop parses the original input once and appends each step, then
+    /// assembles every call from the result; `web_search` declares the
+    /// synthetic tool.
+    pub(crate) fn assemble_parsed(
+        &self,
+        req: &ResponsesRequest,
+        resolved: &str,
+        parsed: &ParsedInput,
+        force_caching_off: bool,
+        tool_search: bool,
+        web_search: bool,
+    ) -> Result<AssembledConverse, AppError> {
+        let caps = self.caps.as_ref();
+
+        let mut messages = finish_messages(parsed, resolved, caps);
+        let mut system = Value::Array(parsed.system.clone());
 
         let reasoning = reasoning_outcome(req, resolved, caps);
 
@@ -180,7 +271,7 @@ impl BedrockResponsesProvider {
         // toolConfig from the Responses flattened-function tools (the rejection
         // matrix in to_responses_converse_input already vetoed built-in tools).
         let (mut tool_config, mut tool_registry) =
-            build_responses_tool_config_with_registry(req, tool_search)?;
+            build_responses_tool_config_with_registry(req, tool_search, web_search)?;
         let searched_tools = if tool_search {
             collect_searched_tools(req)?
         } else {
@@ -423,7 +514,7 @@ impl BedrockResponsesProvider {
     }
 
     /// Serialize the Messages body for an assembled tool-search request.
-    fn messages_body(
+    pub(crate) fn messages_body(
         &self,
         resolved: &str,
         assembled: &AssembledConverse,
@@ -537,26 +628,30 @@ impl BedrockResponsesProvider {
 
 /// The assembled Bedrock Converse JSON slots produced by
 /// [`BedrockResponsesProvider::assemble`].
-struct AssembledConverse {
-    messages: Value,
-    system: Value,
-    inference_config: Value,
-    additional_fields: Option<Value>,
-    tool_config: Option<Value>,
+pub(crate) struct AssembledConverse {
+    pub(crate) messages: Value,
+    pub(crate) system: Value,
+    pub(crate) inference_config: Value,
+    pub(crate) additional_fields: Option<Value>,
+    pub(crate) tool_config: Option<Value>,
     /// `outputConfig` from `text.format` (structured output), when requested.
-    output_config: Option<Value>,
-    tool_registry: ResponsesToolRegistry,
+    pub(crate) output_config: Option<Value>,
+    pub(crate) tool_registry: ResponsesToolRegistry,
     /// Tools loaded by `tool_search_output` items (tool-search lane only),
     /// declared with `defer_loading` in the Messages body.
-    searched_tools: Vec<SearchedTool>,
+    pub(crate) searched_tools: Vec<SearchedTool>,
     /// Whether any `cachePoint` landed across the tools/system/messages zones —
     /// consumed by the cache safety net at the send points (read-gate strip).
-    cache_points_injected: bool,
+    pub(crate) cache_points_injected: bool,
 }
 
 /// Build Bedrock `toolConfig` together with the reversible Responses mapping.
 /// OpenAI-hosted tools without a Converse equivalent are omitted; supported
-/// client-executed tools retain a reversible output-item mapping.
+/// client-executed tools retain a reversible output-item mapping. The one
+/// hosted tool the gateway runs itself is web search: with `web_search` (a
+/// request that declares it, `X-Weniq-Web-Search`), the frozen synthetic
+/// `web_search` tool follows the client tools, whatever hosted tools the body
+/// lists.
 ///
 /// On the tool-search lane, `tool_choice: "none"` keeps the tools (with a
 /// `none` choice the Messages builder understands): searched tools referenced
@@ -564,8 +659,9 @@ struct AssembledConverse {
 fn build_responses_tool_config_with_registry(
     req: &ResponsesRequest,
     tool_search: bool,
+    web_search: bool,
 ) -> Result<(Option<Value>, ResponsesToolRegistry), AppError> {
-    let (specs, registry) = build_responses_tools_with(req, tool_search)?;
+    let (specs, registry) = build_responses_tools_with(req, tool_search, web_search)?;
     if specs.is_empty() {
         return Ok((None, registry));
     }
@@ -644,7 +740,7 @@ fn build_responses_tool_config_with_registry(
 
 #[cfg(test)]
 fn build_responses_tool_config(req: &ResponsesRequest) -> Option<Value> {
-    build_responses_tool_config_with_registry(req, false)
+    build_responses_tool_config_with_registry(req, false, false)
         .ok()
         .and_then(|(config, _)| config)
 }
@@ -676,7 +772,7 @@ fn drop_synthesized_searched(tool_config: &mut Option<Value>, searched: &[Search
 
 /// Generate a `resp_`-prefixed response id (mirrors the chat `chatcmpl-` id
 /// generation pattern: a Unix-nanos hex suffix, dependency-free).
-fn resp_id() -> String {
+pub(crate) fn resp_id() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -692,6 +788,12 @@ impl ResponsesProvider for BedrockResponsesProvider {
     ) -> Result<ResponsesResponse, AppError> {
         let resolved = &req.resolved_model;
         let request_model = &req.request.model;
+
+        let plan = self.web_search_plan(req);
+        if plan.declared {
+            let lane = self.lane(&req.request, resolved);
+            return responses_web_search::respond(self, self, req, plan, lane).await;
+        }
 
         if self.uses_tool_search(&req.request, resolved) {
             let assembled = self.assemble(&req.request, resolved, false, true).await?;
@@ -748,6 +850,20 @@ impl ResponsesProvider for BedrockResponsesProvider {
             std::time::Duration::from_secs(self.settings.responses_stream_idle_timeout_secs),
         );
 
+        let plan = self.web_search_plan(req);
+        if plan.declared {
+            let lane = self.lane(&req.request, resolved);
+            return responses_web_search::respond_stream(
+                self.clone(),
+                Arc::new(self.clone()),
+                req.clone(),
+                plan,
+                lane,
+                runtime,
+            )
+            .await;
+        }
+
         if self.uses_tool_search(&req.request, resolved) {
             let assembled = self.assemble(&req.request, resolved, false, true).await?;
             let body = self.messages_body(resolved, &assembled)?;
@@ -788,6 +904,45 @@ impl ResponsesProvider for BedrockResponsesProvider {
             assembled.tool_registry,
             runtime,
         ))
+    }
+}
+
+/// The provider's own Bedrock calls, for the web search loop. Each method is
+/// the matching single-call send; the loop composes them.
+#[async_trait::async_trait]
+impl StepTransport for BedrockResponsesProvider {
+    async fn converse(
+        &self,
+        request_model: &str,
+        assembled: &AssembledConverse,
+    ) -> Result<Value, SendError<ConverseError>> {
+        self.send_converse(request_model, assembled)
+            .await
+            .map(|output| converse_output_to_json(&output))
+    }
+
+    async fn converse_stream(
+        &self,
+        request_model: &str,
+        assembled: &AssembledConverse,
+    ) -> Result<StepEvents, SendError<ConverseStreamError>> {
+        self.send_converse_stream(request_model, assembled)
+            .await
+            .map(converse_events)
+    }
+
+    async fn invoke(&self, request_model: &str, body: Vec<u8>) -> Result<Value, AppError> {
+        self.send_invoke(request_model, body).await
+    }
+
+    async fn invoke_stream(
+        &self,
+        request_model: &str,
+        body: Vec<u8>,
+    ) -> Result<StepEvents, AppError> {
+        self.send_invoke_stream(request_model, body)
+            .await
+            .map(invoke_events)
     }
 }
 

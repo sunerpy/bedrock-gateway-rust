@@ -1,0 +1,14 @@
+{"messageStart":{"role":"assistant"}}
+{"contentBlockDelta":{"contentBlockIndex":0,"reasoningText":"The user asks for this wee"}}
+{"contentBlockDelta":{"contentBlockIndex":0,"reasoningText":"k's AWS news; search first."}}
+{"contentBlockDelta":{"contentBlockIndex":0,"reasoningSignature":"c3luLXNpZy0w"}}
+{"contentBlockStop":{"contentBlockIndex":0}}
+{"contentBlockDelta":{"contentBlockIndex":1,"text":"Let me loo"}}
+{"contentBlockDelta":{"contentBlockIndex":1,"text":"k that up."}}
+{"contentBlockStop":{"contentBlockIndex":1}}
+{"contentBlockStart":{"contentBlockIndex":2,"toolUse":{"toolUseId":"tooluse_ws_1","name":"web_search"}}}
+{"contentBlockDelta":{"contentBlockIndex":2,"toolUseInput":"{\"query\":\"AWS announc"}}
+{"contentBlockDelta":{"contentBlockIndex":2,"toolUseInput":"ements November 2026\"}"}}
+{"contentBlockStop":{"contentBlockIndex":2}}
+{"messageStop":{"stopReason":"tool_use"}}
+{"metadata":{"usage":{"inputTokens":2100,"outputTokens":95,"totalTokens":3995,"cacheReadInputTokens":0,"cacheWriteInputTokens":1800}}}

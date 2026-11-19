@@ -111,6 +111,7 @@ async fn test_provider_with_config(
     let regions = Arc::new(RegionRoutingConfig::default());
     let image_resolver = Arc::new(ReqwestImageResolver::new(|_: &str| false));
 
+    let limits = crate::bedrock::web_search::WebSearchLimits::from_settings(&settings);
     BedrockResponsesProvider::new(
         clients,
         caps,
@@ -118,6 +119,8 @@ async fn test_provider_with_config(
         image_resolver,
         settings,
         Arc::new(crate::bedrock::cache_support::CacheSupportRegistry::new()),
+        None,
+        limits,
     )
 }
 
@@ -176,24 +179,26 @@ fn responses_tool_choice_maps_all_bedrock_supported_modes() {
     }]);
 
     req.tool_choice = Some(ResponsesToolChoice::String("auto".to_string()));
-    let (auto, _) = build_responses_tool_config_with_registry(&req, false).expect("auto");
+    let (auto, _) = build_responses_tool_config_with_registry(&req, false, false).expect("auto");
     assert_eq!(auto.expect("config")["toolChoice"], json!({"auto": {}}));
 
     req.tool_choice = Some(ResponsesToolChoice::String("required".to_string()));
-    let (required, _) = build_responses_tool_config_with_registry(&req, false).expect("required");
+    let (required, _) =
+        build_responses_tool_config_with_registry(&req, false, false).expect("required");
     assert_eq!(required.expect("config")["toolChoice"], json!({"any": {}}));
 
     req.tool_choice = Some(ResponsesToolChoice::Object(json!({
         "type": "function", "name": "lookup"
     })));
-    let (specific, _) = build_responses_tool_config_with_registry(&req, false).expect("specific");
+    let (specific, _) =
+        build_responses_tool_config_with_registry(&req, false, false).expect("specific");
     assert_eq!(
         specific.expect("config")["toolChoice"],
         json!({"tool": {"name":"lookup"}})
     );
 
     req.tool_choice = Some(ResponsesToolChoice::String("none".to_string()));
-    let (none, _) = build_responses_tool_config_with_registry(&req, false).expect("none");
+    let (none, _) = build_responses_tool_config_with_registry(&req, false, false).expect("none");
     assert!(none.is_none());
 }
 
@@ -210,8 +215,8 @@ fn hosted_responses_tool_is_omitted_without_hiding_function_tools() {
         }))
         .unwrap(),
     ]);
-    let (config, registry) =
-        build_responses_tool_config_with_registry(&req, false).expect("hosted tool is ignored");
+    let (config, registry) = build_responses_tool_config_with_registry(&req, false, false)
+        .expect("hosted tool is ignored");
     let config = config.expect("supported tool config remains");
     let specs = config["tools"].as_array().expect("tools array");
     assert_eq!(specs.len(), 1);
@@ -386,6 +391,7 @@ async fn stream_path_invokes_converse_stream() {
         request_id: Arc::from("req-test"),
         received_at: std::time::Instant::now(),
         raw_body: bytes::Bytes::new(),
+        web_search: crate::domain::WebSearchHeader::Absent,
     };
     assert!(
         provider.respond_stream(&req).await.is_err(),
@@ -1016,4 +1022,146 @@ async fn tool_search_top_level_function_round_trips_bare_name() {
         assembled.messages[0]["content"][0]["toolUse"]["name"],
         "x__x"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Requests that do not declare web search keep today's bytes (plan C2 §0)
+// ---------------------------------------------------------------------------
+
+/// A backend that must never be called.
+struct NoSearch;
+
+#[async_trait::async_trait]
+impl crate::bedrock::web_search::WebSearchBackend for NoSearch {
+    async fn search(
+        &self,
+        _query: &str,
+        _max_results: u32,
+    ) -> Result<crate::bedrock::web_search::SearchOutcome, crate::bedrock::web_search::SearchError>
+    {
+        panic!("an undeclared request ran a web search");
+    }
+}
+
+fn normalized_with(
+    request: ResponsesRequest,
+    resolved: &str,
+    web_search: crate::domain::WebSearchHeader,
+) -> NormalizedResponsesRequest {
+    NormalizedResponsesRequest {
+        request,
+        resolved_model: resolved.to_string(),
+        request_id: Arc::from("req-undeclared"),
+        received_at: std::time::Instant::now(),
+        raw_body: bytes::Bytes::new(),
+        web_search,
+    }
+}
+
+fn assembled_snapshot(a: &AssembledConverse) -> Value {
+    json!({
+        "messages": a.messages,
+        "system": a.system,
+        "inference_config": a.inference_config,
+        "additional_fields": a.additional_fields,
+        "tool_config": a.tool_config,
+        "output_config": a.output_config,
+        "cache_points_injected": a.cache_points_injected,
+        "registry": format!("{:?}", a.tool_registry),
+        "searched_tools": format!("{:?}", a.searched_tools),
+    })
+}
+
+/// The single-call path is unchanged for every request that does not declare
+/// web search: the header is absent or `off` and the history has no marks,
+/// or the header is `on` but the backend is off or the model lacks the
+/// capability. Such a request never reaches the loop (its plan is not
+/// declared) and assembles exactly what the previous code assembled: the
+/// Converse slots, the tool registry and the InvokeModel body bytes recorded
+/// from it (`tests/golden/fixtures/responses_web_search/undeclared-expected.json`).
+#[tokio::test]
+async fn undeclared_requests_keep_todays_bytes() {
+    use crate::domain::WebSearchHeader;
+
+    let mut with_backend = tool_search_provider().await;
+    with_backend.web_search = Some(Arc::new(NoSearch));
+    let without_backend = tool_search_provider().await;
+
+    let cases: Vec<Value> = serde_json::from_str(include_str!(
+        "../../tests/golden/fixtures/responses_web_search/undeclared-requests.json"
+    ))
+    .unwrap();
+    let expected: Value = serde_json::from_str(include_str!(
+        "../../tests/golden/fixtures/responses_web_search/undeclared-expected.json"
+    ))
+    .unwrap();
+
+    let mut requests: Vec<(String, String, ResponsesRequest)> = cases
+        .iter()
+        .map(|case| {
+            (
+                case["name"].as_str().unwrap().to_string(),
+                case["model"].as_str().unwrap().to_string(),
+                serde_json::from_value(case["request"].clone()).unwrap(),
+            )
+        })
+        .collect();
+    for name in ["request-1", "request-2", "request-2-no-match", "request-3"] {
+        requests.push((
+            format!("tool_search_golden/{name}"),
+            TOOL_SEARCH_MODEL.to_string(),
+            golden(name),
+        ));
+    }
+
+    let mut compared = 0;
+    for (name, model, req) in &requests {
+        // Absent and off never declare an unmarked history; on declares only
+        // with a backend and the capability, which Nova lacks.
+        for (provider, header) in [
+            (&with_backend, WebSearchHeader::Absent),
+            (&with_backend, WebSearchHeader::Off),
+            (&without_backend, WebSearchHeader::On),
+            (&without_backend, WebSearchHeader::Absent),
+        ] {
+            let plan = provider.web_search_plan(&normalized_with(req.clone(), model, header));
+            assert!(!plan.declared, "{name} {header:?}");
+        }
+        if model.contains("nova") {
+            let plan = with_backend.web_search_plan(&normalized_with(
+                req.clone(),
+                model,
+                WebSearchHeader::On,
+            ));
+            assert!(!plan.declared, "{name}: Nova has no web_search capability");
+        }
+
+        for tool_search in [false, true] {
+            let key = format!("{name}/tool_search={tool_search}");
+            let recorded = &expected["assembled"][&key];
+            assert!(!recorded.is_null(), "no recording for {key}");
+            match with_backend.assemble(req, model, false, tool_search).await {
+                Ok(assembled) => {
+                    assert_eq!(&assembled_snapshot(&assembled), recorded, "{key}");
+                    if tool_search {
+                        let body = with_backend.messages_body(model, &assembled);
+                        let recorded_body = &expected["messages_bodies"][&key];
+                        match body {
+                            Ok(bytes) => assert_eq!(
+                                String::from_utf8(bytes).unwrap(),
+                                recorded_body.as_str().unwrap(),
+                                "{key}: InvokeModel body bytes"
+                            ),
+                            Err(e) => {
+                                assert_eq!(recorded_body["error"], e.to_string(), "{key}")
+                            }
+                        }
+                    }
+                }
+                Err(e) => assert_eq!(recorded["error"], e.to_string(), "{key}"),
+            }
+            compared += 1;
+        }
+    }
+    assert_eq!(compared, 20);
 }

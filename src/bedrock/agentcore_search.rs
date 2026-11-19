@@ -623,11 +623,14 @@ fn reserve(state: &mut BucketState, now: Instant, max_wait: Duration) -> Reserva
 /// `None` when the setting is `off` (the default), names an unknown backend,
 /// or AgentCore cannot be set up; every case but `off` logs a WARN, and boot
 /// carries on with web search off. AgentCore uses `aws`'s credential chain
-/// and `web_search_region` (default `aws_region`).
+/// and `web_search_region` (default `aws_region`). `limits` are the clamped
+/// `WEB_SEARCH_*` settings ([`WebSearchLimits::from_settings`]), read once by
+/// the caller, which hands the same values to the search loop.
 #[must_use]
 pub fn resolve_web_search_backend(
     settings: &AppSettings,
     aws: &aws_config::SdkConfig,
+    limits: &WebSearchLimits,
 ) -> Option<Arc<dyn WebSearchBackend>> {
     let backend = settings.web_search_backend.trim();
     if backend.is_empty() || backend.eq_ignore_ascii_case(BACKEND_OFF) {
@@ -659,8 +662,7 @@ pub fn resolve_web_search_backend(
         .map(str::trim)
         .filter(|region| !region.is_empty())
         .unwrap_or(settings.aws_region.as_str());
-    let limits = WebSearchLimits::from_settings(settings);
-    match AgentCoreWebSearch::new(region.to_string(), None, credentials, &limits) {
+    match AgentCoreWebSearch::new(region.to_string(), None, credentials, limits) {
         Ok(client) => {
             tracing::info!(
                 region,

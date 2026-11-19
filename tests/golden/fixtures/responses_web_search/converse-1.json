@@ -1,0 +1,37 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "reasoningContent": {
+            "reasoningText": {
+              "text": "The user asks for this week's AWS news; search first.",
+              "signature": "c3luLXNpZy0w"
+            }
+          }
+        },
+        {
+          "text": "Let me look that up."
+        },
+        {
+          "toolUse": {
+            "toolUseId": "tooluse_ws_1",
+            "name": "web_search",
+            "input": {
+              "query": "AWS announcements November 2026"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "stopReason": "tool_use",
+  "usage": {
+    "inputTokens": 2100,
+    "outputTokens": 95,
+    "totalTokens": 3995,
+    "cacheReadInputTokens": 0,
+    "cacheWriteInputTokens": 1800
+  }
+}

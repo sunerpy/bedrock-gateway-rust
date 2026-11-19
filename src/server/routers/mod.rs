@@ -53,7 +53,7 @@ use futures::StreamExt;
 
 use crate::domain::{
     gen_request_id, ChatBackend, NormalizedChatRequest, NormalizedResponsesRequest, RawChatStream,
-    ResponsesBackend,
+    ResponsesBackend, WebSearchHeader,
 };
 use crate::error::AppError;
 use crate::openai::completions_schema::{CompletionChoice, CompletionRequest, CompletionResponse};
@@ -69,6 +69,12 @@ const OPENAI_MODEL_HEADER: &str = "openai-model";
 
 /// Request header a client may use to supply its own correlation id.
 const REQUEST_ID_HEADER: &str = "x-request-id";
+
+/// Request header that turns the gateway-executed web search on or off for one
+/// `/responses` request (`on` / `off`). Weniq's model broker sends it on every
+/// request. It is a header, not a body field, because the mantle lane forwards
+/// the body verbatim and the upstream rejects unknown body fields.
+const WEB_SEARCH_HEADER: &str = "x-weniq-web-search";
 
 /// Anti-buffering header. Without `X-Accel-Buffering: no`, nginx/ALB/CloudFront
 /// buffer the SSE body until the connection closes, so the client renders
@@ -109,6 +115,28 @@ fn resolve_request_id(headers: &HeaderMap) -> std::sync::Arc<str> {
         .filter(|s| !s.is_empty())
         .map(std::sync::Arc::from)
         .unwrap_or_else(|| std::sync::Arc::from(gen_request_id()))
+}
+
+/// Read the `X-Weniq-Web-Search` header: `on` or `off` after trimming, in any
+/// ASCII case; [`WebSearchHeader::Absent`] when the request has none.
+///
+/// # Errors
+/// [`AppError::BadRequest`] for any other value. Only Weniq sends the header,
+/// so a wrong value is a contract error that should surface in testing.
+fn parse_web_search_header(headers: &HeaderMap) -> Result<WebSearchHeader, AppError> {
+    let Some(value) = headers.get(WEB_SEARCH_HEADER) else {
+        return Ok(WebSearchHeader::Absent);
+    };
+    let value = value.to_str().map(str::trim).unwrap_or_default();
+    if value.eq_ignore_ascii_case("on") {
+        Ok(WebSearchHeader::On)
+    } else if value.eq_ignore_ascii_case("off") {
+        Ok(WebSearchHeader::Off)
+    } else {
+        Err(AppError::BadRequest(
+            "invalid X-Weniq-Web-Search header: expected on or off".to_string(),
+        ))
+    }
 }
 
 /// `POST {prefix}/chat/completions`.
@@ -686,6 +714,9 @@ pub async fn responses(
 ) -> Result<Response, AppError> {
     let received_at = std::time::Instant::now();
     let request_id = resolve_request_id(&headers);
+    let web_search = parse_web_search_header(&headers).inspect_err(|e| {
+        tracing::warn!(request_id = %request_id, error = %e, "responses request rejected");
+    })?;
     let request: ResponsesRequest =
         serde_json::from_slice(&body).map_err(|e| AppError::BadRequest(e.to_string()))?;
 
@@ -698,6 +729,7 @@ pub async fn responses(
         model = %client_model,
         stream = is_stream,
         reasoning_effort = %reasoning_effort,
+        web_search = web_search.as_str(),
         "responses request received"
     );
     let normalized = NormalizedResponsesRequest {
@@ -706,6 +738,7 @@ pub async fn responses(
         request_id: request_id.clone(),
         received_at,
         raw_body: body,
+        web_search,
     };
 
     if is_stream {
@@ -2107,6 +2140,106 @@ mod tests {
         assert_eq!(value["error"]["type"], "invalid_request_error");
         assert_eq!(value["error"]["code"], "bad_request");
         assert!(value.get("detail").is_none());
+    }
+
+    /// Echoes the request's `X-Weniq-Web-Search` value in the response `model`.
+    struct WebSearchHeaderEcho;
+
+    #[async_trait::async_trait]
+    impl ResponsesProvider for WebSearchHeaderEcho {
+        async fn respond(
+            &self,
+            req: &NormalizedResponsesRequest,
+        ) -> Result<ResponsesResponse, AppError> {
+            Ok(responses_fixture(req.web_search.as_str()))
+        }
+
+        async fn respond_stream(
+            &self,
+            _req: &NormalizedResponsesRequest,
+        ) -> Result<ResponsesStream, AppError> {
+            Err(AppError::Internal("not streamed in this test".to_string()))
+        }
+    }
+
+    #[test]
+    fn parse_web_search_header_reads_on_off_and_absent() {
+        let header = |value: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                WEB_SEARCH_HEADER,
+                axum::http::HeaderValue::from_str(value).unwrap(),
+            );
+            parse_web_search_header(&headers)
+        };
+        assert_eq!(
+            parse_web_search_header(&HeaderMap::new()).unwrap(),
+            WebSearchHeader::Absent
+        );
+        assert_eq!(header("on").unwrap(), WebSearchHeader::On);
+        assert_eq!(header(" ON ").unwrap(), WebSearchHeader::On);
+        assert_eq!(header("off").unwrap(), WebSearchHeader::Off);
+        assert_eq!(header("Off").unwrap(), WebSearchHeader::Off);
+        for bad in ["", "yes", "true", "1", "on,off", "o n"] {
+            let err = header(bad).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("invalid X-Weniq-Web-Search header: expected on or off"),
+                "{bad:?}: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn web_search_header_on_off_absent_invalid() {
+        let app = || {
+            let state = AppState::new(
+                Arc::new(MockChat),
+                Arc::new(WebSearchHeaderEcho),
+                Arc::new(MockEmbeddings),
+                Arc::new(RwLock::new(catalog())),
+                caps(),
+                Arc::new(KEY.to_string()),
+                Arc::new(settings()),
+                Arc::new(crate::bedrock::cache_support::CacheSupportRegistry::new()),
+            );
+            build_router(state, PREFIX)
+        };
+        let body = r#"{"model":"anthropic.claude-3-sonnet-v1:0","input":"hi"}"#;
+        let send_with = |value: Option<&'static str>| {
+            let router = app();
+            async move {
+                let mut builder = Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/responses")
+                    .header(AUTHORIZATION, auth())
+                    .header("content-type", "application/json");
+                if let Some(value) = value {
+                    builder = builder.header("X-Weniq-Web-Search", value);
+                }
+                let resp = router
+                    .oneshot(builder.body(Body::from(body)).unwrap())
+                    .await
+                    .unwrap();
+                let status = resp.status();
+                let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+                (status, serde_json::from_slice::<Value>(&bytes).unwrap())
+            }
+        };
+
+        for (value, expected) in [(None, "absent"), (Some("on"), "on"), (Some("OFF"), "off")] {
+            let (status, json) = send_with(value).await;
+            assert_eq!(status, StatusCode::OK, "{value:?}");
+            assert_eq!(json["model"], expected, "{value:?}");
+        }
+
+        let (status, json) = send_with(Some("maybe")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"]["code"], "bad_request");
+        assert_eq!(
+            json["error"]["message"],
+            "invalid X-Weniq-Web-Search header: expected on or off"
+        );
     }
 
     #[tokio::test]

@@ -38,6 +38,8 @@ pub mod responses_stream;
 
 pub mod responses_translate;
 
+pub mod responses_web_search;
+
 pub mod response;
 
 pub mod stream;

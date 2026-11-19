@@ -521,8 +521,14 @@ async fn malformed_gateway_reasoning_envelope_is_still_rejected() {
             "malformed reasoning.encrypted_content",
         ),
         (
-            gateway_envelope(br#"{"version":2,"blocks":[]}"#),
+            gateway_envelope(br#"{"version":3,"blocks":[]}"#),
             "unsupported reasoning.encrypted_content envelope version",
+        ),
+        // Version 2 is the web search carrier (plan C2): a v2 payload without
+        // the carrier fields is still a 400.
+        (
+            gateway_envelope(br#"{"version":2,"blocks":[]}"#),
+            "malformed web search carrier",
         ),
         (
             gateway_envelope(br#"{"version":1}"#),
@@ -1777,4 +1783,687 @@ fn text_format_text_or_absent_requests_nothing() {
         responses_output_format(&req, "global.anthropic.claude-sonnet-5-5", &c).unwrap(),
         None
     );
+}
+
+// ---------------------------------------------------------------------------
+// Gateway-executed web search (plan C2): envelopes, carriers, replay
+// ---------------------------------------------------------------------------
+
+const WS_MODEL: &str = "global.anthropic.claude-sonnet-5-5";
+
+fn signed(text: &str, signature: &str) -> Value {
+    json!({ "reasoningContent": { "reasoningText": { "text": text, "signature": signature } } })
+}
+
+fn decode_payload(envelope: &str) -> Value {
+    let encoded = envelope
+        .strip_prefix(REASONING_ENVELOPE_PREFIX)
+        .expect("gateway prefix");
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .expect("base64url");
+    serde_json::from_slice(&bytes).expect("json payload")
+}
+
+fn ws_call(id: &str, query: &str) -> Value {
+    json!({ "toolUse": { "toolUseId": id, "name": "web_search", "input": { "query": query } } })
+}
+
+fn ws_result(id: &str, payload: &str) -> Value {
+    json!({ "toolResult": { "toolUseId": id, "content": [{ "text": payload }] } })
+}
+
+fn reasoning_item(id: &str, envelope: &str) -> Value {
+    json!({ "type": "reasoning", "id": id, "summary": [], "encrypted_content": envelope })
+}
+
+async fn parse_with(req: &ResponsesRequest, opts: TranslateOptions) -> Result<Value, AppError> {
+    let c = caps();
+    let parsed = parse_responses_input(req, WS_MODEL, &resolver(false), opts).await?;
+    Ok(finish_messages(&parsed, WS_MODEL, &c))
+}
+
+const DECLARED: TranslateOptions = TranslateOptions {
+    tool_search: false,
+    web_search: true,
+};
+
+/// The envelope of an undeclared request is today's string: same payload
+/// bytes, same base64url, no `ws` key.
+#[test]
+fn unmarked_envelope_bytes_unchanged() {
+    let content = [
+        signed("Let me think.", "sig-1"),
+        json!({ "reasoningContent": { "redactedContent": "cmVkYWN0ZWQ=" } }),
+        json!({ "text": "not reasoning" }),
+        json!({ "reasoningContent": { "reasoningText": { "text": "unsigned" } } }),
+    ];
+    let envelope = encode_reasoning_envelope(&content).expect("envelope");
+    assert_eq!(
+        envelope,
+        "bedrock-reasoning-v1:eyJibG9ja3MiOlt7InJlYXNvbmluZ1RleHQiOnsic2lnbmF0dXJlIjoic2lnLTEiLCJ0\
+         ZXh0IjoiTGV0IG1lIHRoaW5rLiJ9fSx7InJlZGFjdGVkQ29udGVudCI6ImNtVmtZV04wWldRPSJ9XSwidmVyc2lv\
+         biI6MX0"
+    );
+    assert_eq!(
+        String::from_utf8(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(envelope.trim_start_matches(REASONING_ENVELOPE_PREFIX))
+                .unwrap()
+        )
+        .unwrap(),
+        r#"{"blocks":[{"reasoningText":{"signature":"sig-1","text":"Let me think."}},{"redactedContent":"cmVkYWN0ZWQ="}],"version":1}"#
+    );
+    assert_eq!(
+        encode_reasoning_envelope_with(&content, None),
+        Some(envelope)
+    );
+    assert_eq!(encode_reasoning_envelope(&[json!({ "text": "x" })]), None);
+}
+
+#[test]
+fn marked_envelope_round_trip() {
+    let content = [signed("Plan.", "sig-m")];
+    let envelope = encode_reasoning_envelope_with(&content, Some(WEB_SEARCH_MARK)).unwrap();
+    let payload = decode_payload(&envelope);
+    assert_eq!(
+        payload,
+        json!({ "blocks": [content[0]["reasoningContent"]], "version": 1, "ws": 1 })
+    );
+    assert_eq!(
+        decode_gateway_envelope(envelope.trim_start_matches(REASONING_ENVELOPE_PREFIX)).unwrap(),
+        GatewayEnvelope::Reasoning {
+            blocks: content.to_vec(),
+            marked: true
+        }
+    );
+    let plain = encode_reasoning_envelope(&content).unwrap();
+    assert_eq!(
+        decode_gateway_envelope(plain.trim_start_matches(REASONING_ENVELOPE_PREFIX)).unwrap(),
+        GatewayEnvelope::Reasoning {
+            blocks: content.to_vec(),
+            marked: false
+        }
+    );
+}
+
+#[test]
+fn unknown_marker_is_400() {
+    for ws in [
+        json!(2),
+        json!(0),
+        json!("1"),
+        json!(1.0),
+        json!(null),
+        json!(true),
+    ] {
+        let payload =
+            json!({ "blocks": [signed("t", "s")["reasoningContent"]], "version": 1, "ws": ws });
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).unwrap());
+        match decode_gateway_envelope(&encoded) {
+            Err(AppError::BadRequest(message)) => {
+                assert_eq!(message, "unsupported web search marker", "{ws}")
+            }
+            other => panic!("{ws}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn carrier_round_trip() {
+    let uses = [
+        ws_call("toolu_1", "aws news"),
+        ws_call("toolu_2", "bedrock"),
+    ];
+    let results = [
+        ws_result(
+            "toolu_1",
+            r#"{"query":"aws news","results":[],"source":"s","trust":"t","type":"web_search_results"}"#,
+        ),
+        ws_result(
+            "toolu_2",
+            r#"{"error_code":"too_many_requests","query":"bedrock","type":"web_search_error"}"#,
+        ),
+    ];
+    let carrier = encode_web_search_carrier(&uses, &results, 3);
+    assert!(is_gateway_reasoning_envelope(&carrier));
+    let payload = decode_payload(&carrier);
+    assert_eq!(
+        payload,
+        json!({ "tool_results": results, "tool_uses": uses, "used": 3, "version": 2, "ws": 1 })
+    );
+    // Keys are written in sorted order, so the bytes are deterministic.
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(carrier.trim_start_matches(REASONING_ENVELOPE_PREFIX))
+        .unwrap();
+    assert!(String::from_utf8(raw)
+        .unwrap()
+        .starts_with(r#"{"tool_results":[{"toolResult":{"content":[{"text":"#));
+    assert_eq!(encode_web_search_carrier(&uses, &results, 3), carrier);
+    assert_eq!(
+        decode_gateway_envelope(carrier.trim_start_matches(REASONING_ENVELOPE_PREFIX)).unwrap(),
+        GatewayEnvelope::WebSearchStep {
+            tool_uses: uses.to_vec(),
+            tool_results: results.to_vec(),
+            used: 3
+        }
+    );
+}
+
+#[test]
+fn malformed_carriers_are_400() {
+    let good_use = ws_call("toolu_1", "q");
+    let good_result = ws_result("toolu_1", "{\"type\":\"web_search_error\"}");
+    let base = json!({
+        "tool_results": [good_result], "tool_uses": [good_use], "used": 1, "version": 2, "ws": 1
+    });
+    let with = |pointer: &str, value: Value| {
+        let mut payload = base.clone();
+        *payload.pointer_mut(pointer).unwrap() = value;
+        payload
+    };
+    let without = |key: &str| {
+        let mut payload = base.clone();
+        payload.as_object_mut().unwrap().remove(key);
+        payload
+    };
+    let cases = [
+        ("ws missing", without("ws")),
+        ("ws not 1", with("/ws", json!(2))),
+        ("tool_uses missing", without("tool_uses")),
+        ("tool_uses empty", with("/tool_uses", json!([])).clone()),
+        ("tool_results missing", without("tool_results")),
+        (
+            "length mismatch",
+            with("/tool_results", json!([good_result, good_result])),
+        ),
+        (
+            "not a toolUse",
+            with("/tool_uses/0", json!({ "text": "x" })),
+        ),
+        (
+            "wrong name",
+            with("/tool_uses/0/toolUse/name", json!("lookup")),
+        ),
+        (
+            "input not an object",
+            with("/tool_uses/0/toolUse/input", json!("q")),
+        ),
+        (
+            "empty id",
+            with("/tool_uses/0/toolUse/toolUseId", json!("")),
+        ),
+        (
+            "id not a string",
+            with("/tool_uses/0/toolUse/toolUseId", json!(7)),
+        ),
+        (
+            "result id differs",
+            with("/tool_results/0/toolResult/toolUseId", json!("toolu_2")),
+        ),
+        (
+            "not a toolResult",
+            with("/tool_results/0", json!({ "text": "x" })),
+        ),
+        (
+            "two blocks",
+            with(
+                "/tool_results/0/toolResult/content",
+                json!([{ "text": "a" }, { "text": "b" }]),
+            ),
+        ),
+        (
+            "no blocks",
+            with("/tool_results/0/toolResult/content", json!([])),
+        ),
+        (
+            "empty text",
+            with("/tool_results/0/toolResult/content/0/text", json!("")),
+        ),
+        (
+            "not a text block",
+            with(
+                "/tool_results/0/toolResult/content/0",
+                json!({ "json": {} }),
+            ),
+        ),
+        ("used negative", with("/used", json!(-1))),
+        ("used not an integer", with("/used", json!("1"))),
+        (
+            "used too large",
+            with("/used", json!(u64::from(u32::MAX) + 1)),
+        ),
+        ("used missing", without("used")),
+    ];
+    // The base itself decodes.
+    let encode = |payload: &Value| {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(payload).unwrap())
+    };
+    assert!(decode_gateway_envelope(&encode(&base)).is_ok());
+    for (name, payload) in cases {
+        match decode_gateway_envelope(&encode(&payload)) {
+            Err(AppError::BadRequest(message)) => {
+                assert_eq!(message, "malformed web search carrier", "{name}")
+            }
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}
+
+/// A declared request drops replayed gateway reasoning without the mark and
+/// keeps marked reasoning; an undeclared request keeps both. Another
+/// provider's reasoning is skipped either way.
+#[tokio::test]
+async fn declared_drops_unmarked_reasoning_only() {
+    let unmarked = encode_reasoning_envelope(&[signed("old", "sig-old")]).unwrap();
+    let marked =
+        encode_reasoning_envelope_with(&[signed("new", "sig-new")], Some(WEB_SEARCH_MARK)).unwrap();
+    let req = req_from(json!({
+        "model": WS_MODEL,
+        "input": [
+            { "type": "message", "role": "user", "content": "q1" },
+            reasoning_item("rs_old", &unmarked),
+            { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "a1" }] },
+            { "type": "message", "role": "user", "content": "q2" },
+            reasoning_item("rs_new", &marked),
+            { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "a2" }] },
+            { "type": "reasoning", "id": "rs_gpt", "summary": [], "encrypted_content": "gAAAA==" },
+            { "type": "message", "role": "user", "content": "q3" }
+        ]
+    }));
+
+    let declared = parse_with(&req, DECLARED).await.unwrap();
+    assert_eq!(
+        declared,
+        json!([
+            { "role": "user", "content": [{ "text": "q1" }] },
+            { "role": "assistant", "content": [{ "text": "a1" }] },
+            { "role": "user", "content": [{ "text": "q2" }] },
+            { "role": "assistant", "content": [signed("new", "sig-new"), { "text": "a2" }] },
+            { "role": "user", "content": [{ "text": "q3" }] }
+        ])
+    );
+
+    let undeclared = parse_with(&req, TranslateOptions::default()).await.unwrap();
+    assert_eq!(
+        undeclared,
+        json!([
+            { "role": "user", "content": [{ "text": "q1" }] },
+            { "role": "assistant", "content": [signed("old", "sig-old"), { "text": "a1" }] },
+            { "role": "user", "content": [{ "text": "q2" }] },
+            { "role": "assistant", "content": [signed("new", "sig-new"), { "text": "a2" }] },
+            { "role": "user", "content": [{ "text": "q3" }] }
+        ])
+    );
+}
+
+/// A search step replays as one assistant message (`[reasoning, text,
+/// toolUse…]`) and one user message of results; the gateway's own
+/// `web_search_call` items add nothing.
+#[tokio::test]
+async fn search_step_replays_as_one_assistant_message() {
+    let reasoning =
+        encode_reasoning_envelope_with(&[signed("search first", "sig-0")], Some(WEB_SEARCH_MARK))
+            .unwrap();
+    let carrier = encode_web_search_carrier(
+        &[ws_call("toolu_a", "one"), ws_call("toolu_b", "two")],
+        &[
+            ws_result("toolu_a", "{\"r\":1}"),
+            ws_result("toolu_b", "{\"r\":2}"),
+        ],
+        2,
+    );
+    let req = req_from(json!({
+        "model": WS_MODEL,
+        "input": [
+            { "type": "message", "role": "user", "content": "q" },
+            reasoning_item("rs_S", &reasoning),
+            { "type": "message", "id": "msg_S", "role": "assistant",
+              "content": [{ "type": "output_text", "text": "Searching." }] },
+            { "type": "web_search_call", "id": "ws_bgw_toolu_a", "status": "completed",
+              "action": { "type": "search", "query": "one", "queries": ["one"] } },
+            { "type": "web_search_call", "id": "ws_bgw_toolu_b", "status": "failed",
+              "action": { "type": "search", "query": "two", "queries": ["two"] } },
+            reasoning_item("rs_S_ws0", &carrier),
+        ]
+    }));
+    let opts = DECLARED;
+    let parsed = parse_responses_input(&req, WS_MODEL, &resolver(false), opts)
+        .await
+        .unwrap();
+    assert_eq!(
+        parsed.carrier_ids,
+        ["toolu_a".to_string(), "toolu_b".to_string()]
+            .into_iter()
+            .collect::<HashSet<_>>()
+    );
+    assert_eq!(
+        finish_messages(&parsed, WS_MODEL, &caps()),
+        json!([
+            { "role": "user", "content": [{ "text": "q" }] },
+            { "role": "assistant", "content": [
+                signed("search first", "sig-0"),
+                { "text": "Searching." },
+                ws_call("toolu_a", "one"),
+                ws_call("toolu_b", "two")
+            ] },
+            { "role": "user", "content": [
+                ws_result("toolu_a", "{\"r\":1}"),
+                ws_result("toolu_b", "{\"r\":2}")
+            ] }
+        ])
+    );
+}
+
+/// A mixed step: the carrier's results come first in the input, the client's
+/// result after them, and the user message is put in the assistant message's
+/// call order (client call first).
+#[tokio::test]
+async fn mixed_step_tool_results_follow_tool_use_order() {
+    let reasoning =
+        encode_reasoning_envelope_with(&[signed("both", "sig-m")], Some(WEB_SEARCH_MARK)).unwrap();
+    let carrier = encode_web_search_carrier(
+        &[ws_call("toolu_ws", "news")],
+        &[ws_result("toolu_ws", "{\"r\":1}")],
+        1,
+    );
+    let req = req_from(json!({
+        "model": WS_MODEL,
+        "tools": [{ "type": "function", "name": "lookup_ticket", "parameters": { "type": "object" } }],
+        "input": [
+            { "type": "message", "role": "user", "content": "q" },
+            reasoning_item("rs_S", &reasoning),
+            { "type": "web_search_call", "id": "ws_bgw_toolu_ws", "status": "completed",
+              "action": { "type": "search", "query": "news", "queries": ["news"] } },
+            { "type": "function_call", "id": "fc_toolu_fn", "call_id": "toolu_fn",
+              "name": "lookup_ticket", "arguments": "{\"id\":\"T-1\"}" },
+            reasoning_item("rs_S_ws0", &carrier),
+            { "type": "function_call_output", "call_id": "toolu_fn", "output": "ticket T-1" }
+        ]
+    }));
+    let messages = parse_with(&req, DECLARED).await.unwrap();
+    assert_eq!(
+        messages,
+        json!([
+            { "role": "user", "content": [{ "text": "q" }] },
+            { "role": "assistant", "content": [
+                signed("both", "sig-m"),
+                { "toolUse": { "toolUseId": "toolu_fn", "name": "lookup_ticket", "input": { "id": "T-1" } } },
+                ws_call("toolu_ws", "news")
+            ] },
+            { "role": "user", "content": [
+                { "toolResult": { "toolUseId": "toolu_fn", "content": [{ "text": "ticket T-1" }] } },
+                ws_result("toolu_ws", "{\"r\":1}")
+            ] }
+        ])
+    );
+}
+
+/// Without carriers no user message is reordered, even when the client sent
+/// parallel results in a different order than the calls.
+#[tokio::test]
+async fn alignment_never_touches_histories_without_carriers() {
+    let input = json!([
+        { "type": "message", "role": "user", "content": "q" },
+        { "type": "function_call", "call_id": "c1", "name": "a", "arguments": "{}" },
+        { "type": "function_call", "call_id": "c2", "name": "b", "arguments": "{}" },
+        { "type": "function_call_output", "call_id": "c2", "output": "two" },
+        { "type": "function_call_output", "call_id": "c1", "output": "one" }
+    ]);
+    let req = req_from(json!({ "model": WS_MODEL, "input": input }));
+    for opts in [TranslateOptions::default(), DECLARED] {
+        let messages = parse_with(&req, opts).await.unwrap();
+        assert_eq!(messages[2]["content"][0]["toolResult"]["toolUseId"], "c2");
+        assert_eq!(messages[2]["content"][1]["toolResult"]["toolUseId"], "c1");
+    }
+    let mut messages = parse_with(&req, DECLARED).await.unwrap();
+    let before = messages.clone();
+    align_carrier_tool_results(&mut messages, &HashSet::new());
+    assert_eq!(messages, before);
+    align_carrier_tool_results(&mut messages, &["other".to_string()].into_iter().collect());
+    assert_eq!(messages, before);
+}
+
+fn tool_names(specs: &[Value]) -> Vec<&str> {
+    specs
+        .iter()
+        .map(|spec| spec["toolSpec"]["name"].as_str().unwrap())
+        .collect()
+}
+
+/// The synthetic tool is appended after every client tool (the tool-search
+/// tool included) and only when declared; `tools: None` declares it alone.
+#[test]
+fn synthetic_tool_last_and_only_when_declared() {
+    let req = req_from(json!({
+        "model": WS_MODEL,
+        "input": "hi",
+        "tools": [
+            { "type": "function", "name": "get_goal", "parameters": { "type": "object" } },
+            { "type": "web_search", "external_web_access": false },
+            { "type": "namespace", "name": "mcp__ze", "description": "d",
+              "tools": [{ "type": "function", "name": "alpha" }] },
+            { "type": "tool_search", "execution": "client", "description": "search tools",
+              "parameters": { "type": "object", "properties": {} } }
+        ]
+    }));
+    let (specs, registry) = build_responses_tools_with(&req, true, true).unwrap();
+    assert_eq!(
+        tool_names(&specs),
+        vec!["get_goal", "mcp__ze__alpha", "tool_search", "web_search"]
+    );
+    assert_eq!(
+        specs[3],
+        json!({ "toolSpec": {
+            "name": "web_search",
+            "description": WEB_SEARCH_TOOL_DESCRIPTION,
+            "inputSchema": { "json": web_search_tool_schema() }
+        } })
+    );
+    assert_eq!(
+        registry.resolve("web_search").unwrap().kind,
+        ResponsesToolKind::WebSearch
+    );
+
+    let (specs, _) = build_responses_tools_with(&req, false, true).unwrap();
+    assert_eq!(
+        tool_names(&specs),
+        vec!["get_goal", "mcp__ze__alpha", "web_search"]
+    );
+
+    let (specs, registry) = build_responses_tools_with(&req, true, false).unwrap();
+    assert_eq!(
+        tool_names(&specs),
+        vec!["get_goal", "mcp__ze__alpha", "tool_search"]
+    );
+    assert!(registry.resolve("web_search").is_none());
+
+    let no_tools = req_from(json!({ "model": WS_MODEL, "input": "hi" }));
+    let (specs, _) = build_responses_tools_with(&no_tools, false, true).unwrap();
+    assert_eq!(tool_names(&specs), vec!["web_search"]);
+    let (specs, registry) = build_responses_tools_with(&no_tools, false, false).unwrap();
+    assert!(specs.is_empty());
+    assert!(registry.resolve("web_search").is_none());
+}
+
+/// A client tool named `web_search` is a 400 only in a declared request;
+/// otherwise it is an ordinary client function.
+#[test]
+fn client_web_search_name_rejected_only_when_declared() {
+    let req = req_from(json!({
+        "model": WS_MODEL,
+        "input": "hi",
+        "tools": [{ "type": "function", "name": "web_search", "parameters": { "type": "object" } }]
+    }));
+    let err = build_responses_tools_with(&req, false, true).unwrap_err();
+    assert!(matches!(&err, AppError::BadRequest(_)));
+    assert_eq!(
+        err.to_string(),
+        "bad request: tool name 'web_search' is reserved for the gateway's web search on this \
+         request (X-Weniq-Web-Search)"
+    );
+    let (specs, registry) = build_responses_tools_with(&req, false, false).unwrap();
+    assert_eq!(tool_names(&specs), vec!["web_search"]);
+    assert_eq!(
+        registry.resolve("web_search").unwrap().kind,
+        ResponsesToolKind::Function
+    );
+}
+
+/// The split into parse + finish is the old translation: on every existing
+/// shape (text, tools, reasoning, prefill, images) both give the same value.
+#[tokio::test]
+async fn parse_then_finish_equals_existing_translation() {
+    let unmarked = encode_reasoning_envelope(&[signed("t", "s")]).unwrap();
+    let requests = [
+        json!({ "model": WS_MODEL, "input": "plain" }),
+        json!({ "model": WS_MODEL, "instructions": "be brief", "input": [
+            { "type": "message", "role": "developer", "content": "dev" },
+            { "type": "message", "role": "user", "content": [
+                { "type": "input_text", "text": "look" },
+                { "type": "input_image", "image_url": "https://example.com/a.jpg" }
+            ] },
+            reasoning_item("rs_1", &unmarked),
+            { "type": "function_call", "call_id": "c", "name": "f", "arguments": "{}" },
+            { "type": "function_call_output", "call_id": "c", "output": "ok" },
+            { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "done" }] }
+        ] }),
+    ];
+    let c = caps();
+    let r = resolver(true);
+    for raw in requests {
+        let req = req_from(raw);
+        for tool_search in [false, true] {
+            let old = to_responses_converse_input_with(&req, WS_MODEL, &r, &c, tool_search)
+                .await
+                .unwrap();
+            let opts = TranslateOptions {
+                tool_search,
+                web_search: false,
+            };
+            let parsed = parse_responses_input(&req, WS_MODEL, &r, opts)
+                .await
+                .unwrap();
+            assert_eq!(finish_messages(&parsed, WS_MODEL, &c), old.messages);
+            assert_eq!(Value::Array(parsed.system), old.system);
+        }
+    }
+}
+
+/// The history scan: marks, carrier payloads in order, and the answer's
+/// search count, which a new user message resets.
+#[test]
+fn carrier_used_round_trips_through_the_history_scan() {
+    let marked =
+        encode_reasoning_envelope_with(&[signed("m", "s")], Some(WEB_SEARCH_MARK)).unwrap();
+    let carrier_1 =
+        encode_web_search_carrier(&[ws_call("t1", "a")], &[ws_result("t1", "{\"p\":1}")], 2);
+    let carrier_2 = encode_web_search_carrier(
+        &[ws_call("t2", "b"), ws_call("t3", "c")],
+        &[ws_result("t2", "{\"p\":2}"), ws_result("t3", "{\"p\":3}")],
+        3,
+    );
+    let items = |tail: Vec<Value>| {
+        let mut input = vec![
+            json!({ "type": "message", "role": "user", "content": "q" }),
+            reasoning_item("rs_1", &carrier_1),
+            json!({ "type": "function_call_output", "call_id": "x", "output": "y" }),
+            reasoning_item("rs_2", &carrier_2),
+        ];
+        input.extend(tail);
+        req_from(json!({ "model": WS_MODEL, "input": input }))
+    };
+    let scan = scan_web_search_history(&items(vec![json!({
+        "type": "function_call_output", "call_id": "z", "output": "w"
+    })]))
+    .unwrap();
+    assert!(scan.marked);
+    assert_eq!(
+        scan.carrier_payloads,
+        vec!["{\"p\":1}", "{\"p\":2}", "{\"p\":3}"]
+    );
+    assert_eq!(scan.used_in_answer, 3);
+
+    let scan = scan_web_search_history(&items(vec![
+        json!({ "type": "message", "role": "user", "content": "next question" }),
+    ]))
+    .unwrap();
+    assert_eq!(scan.used_in_answer, 0);
+    assert!(scan.marked);
+
+    let only_marked = req_from(json!({ "model": WS_MODEL, "input": [
+        { "type": "message", "role": "user", "content": "q" },
+        reasoning_item("rs_1", &marked)
+    ] }));
+    let scan = scan_web_search_history(&only_marked).unwrap();
+    assert_eq!(
+        scan,
+        HistoryScan {
+            marked: true,
+            carrier_payloads: Vec::new(),
+            used_in_answer: 0
+        }
+    );
+
+    let unmarked_only = req_from(json!({ "model": WS_MODEL, "input": [
+        reasoning_item("rs_1", &encode_reasoning_envelope(&[signed("m", "s")]).unwrap()),
+        { "type": "reasoning", "summary": [], "encrypted_content": "gAAAA==" }
+    ] }));
+    assert_eq!(
+        scan_web_search_history(&unmarked_only).unwrap(),
+        HistoryScan::default()
+    );
+    assert_eq!(
+        scan_web_search_history(&req_from(json!({ "model": WS_MODEL, "input": "hi" }))).unwrap(),
+        HistoryScan::default()
+    );
+
+    let broken = req_from(json!({ "model": WS_MODEL, "input": [
+        reasoning_item("rs_1", "bedrock-reasoning-v1:!!")
+    ] }));
+    assert!(matches!(
+        scan_web_search_history(&broken),
+        Err(AppError::BadRequest(_))
+    ));
+}
+
+mod carrier_props {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn text() -> impl Strategy<Value = String> {
+        "[a-zA-Z0-9 _\\-\\u{4e00}-\\u{4e10}\"\\\\{}]{1,40}"
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// Any carrier the gateway writes decodes to the same blocks and count.
+        #[test]
+        fn carrier_codec_round_trips(
+            calls in prop::collection::vec(("[a-zA-Z0-9_]{1,24}", text(), text()), 1..4),
+            used in any::<u32>(),
+        ) {
+            let mut seen = HashSet::new();
+            let calls: Vec<_> = calls.into_iter().filter(|(id, _, _)| seen.insert(id.clone())).collect();
+            let uses: Vec<Value> = calls
+                .iter()
+                .map(|(id, query, _)| web_search_tool_use_block(id, &json!({ "query": query })))
+                .collect();
+            let results: Vec<Value> = calls
+                .iter()
+                .map(|(id, _, payload)| tool_result_block(id, payload))
+                .collect();
+            let carrier = encode_web_search_carrier(&uses, &results, used);
+            let decoded = decode_gateway_envelope(
+                carrier.strip_prefix(REASONING_ENVELOPE_PREFIX).unwrap(),
+            );
+            prop_assert_eq!(
+                decoded.unwrap(),
+                GatewayEnvelope::WebSearchStep { tool_uses: uses, tool_results: results, used }
+            );
+        }
+    }
 }

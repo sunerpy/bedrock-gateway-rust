@@ -998,6 +998,14 @@ fn settings(backend: &str) -> AppSettings {
     }
 }
 
+/// [`resolve_web_search_backend`] with the limits boot reads from `settings`.
+fn resolve(
+    settings: &AppSettings,
+    aws: &aws_config::SdkConfig,
+) -> Option<Arc<dyn WebSearchBackend>> {
+    resolve_web_search_backend(settings, aws, &WebSearchLimits::from_settings(settings))
+}
+
 fn sdk_config(with_credentials: bool) -> aws_config::SdkConfig {
     let builder = aws_config::SdkConfig::builder().region(aws_config::Region::new("us-west-2"));
     if with_credentials {
@@ -1013,7 +1021,7 @@ fn sdk_config(with_credentials: bool) -> aws_config::SdkConfig {
 fn resolve_off_by_default() {
     for backend in ["off", " OFF ", ""] {
         assert!(
-            resolve_web_search_backend(&settings(backend), &sdk_config(true)).is_none(),
+            resolve(&settings(backend), &sdk_config(true)).is_none(),
             "{backend:?}"
         );
     }
@@ -1022,7 +1030,7 @@ fn resolve_off_by_default() {
 #[test]
 fn unknown_backend_warns_and_stays_off() {
     let (logs, _guard) = capture_logs();
-    assert!(resolve_web_search_backend(&settings("bing"), &sdk_config(true)).is_none());
+    assert!(resolve(&settings("bing"), &sdk_config(true)).is_none());
     let rendered = logs.rendered();
     assert!(
         rendered.contains("WEB_SEARCH_BACKEND is neither off nor agentcore"),
@@ -1037,7 +1045,7 @@ fn agentcore_resolves_with_sigv4_credentials_only() {
 
     let mut in_eu = settings(" AgentCore ");
     in_eu.web_search_region = Some("eu-west-1".to_string());
-    assert!(resolve_web_search_backend(&in_eu, &sdk_config(true)).is_some());
+    assert!(resolve(&in_eu, &sdk_config(true)).is_some());
     let rendered = logs.rendered();
     assert!(
         rendered.contains("\"region\":\"eu-west-1\""),
@@ -1045,13 +1053,13 @@ fn agentcore_resolves_with_sigv4_credentials_only() {
     );
 
     // Without a credentials provider there is nothing to sign with.
-    assert!(resolve_web_search_backend(&settings("agentcore"), &sdk_config(false)).is_none());
+    assert!(resolve(&settings("agentcore"), &sdk_config(false)).is_none());
     assert!(logs.rendered().contains("needs SigV4 credentials"));
 
     // A Bedrock API key does not stop SigV4; it only earns a note.
     let mut with_key = settings("agentcore");
     with_key.bedrock_api_key = Some("bedrock-api-key".to_string());
-    assert!(resolve_web_search_backend(&with_key, &sdk_config(true)).is_some());
+    assert!(resolve(&with_key, &sdk_config(true)).is_some());
     let rendered = logs.rendered();
     assert!(rendered.contains("the Bedrock API key is not used for it"));
     assert!(!rendered.contains("bedrock-api-key"));
@@ -1059,7 +1067,7 @@ fn agentcore_resolves_with_sigv4_credentials_only() {
     // A region that cannot form the endpoint keeps web search off.
     let mut bad_region = settings("agentcore");
     bad_region.web_search_region = Some("us east 2".to_string());
-    assert!(resolve_web_search_backend(&bad_region, &sdk_config(true)).is_none());
+    assert!(resolve(&bad_region, &sdk_config(true)).is_none());
     assert!(logs.rendered().contains("could not be set up"));
 }
 

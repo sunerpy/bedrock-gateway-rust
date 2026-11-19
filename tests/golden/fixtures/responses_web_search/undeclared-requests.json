@@ -1,0 +1,829 @@
+[
+  {
+    "name": "converse-history",
+    "model": "global.anthropic.claude-sonnet-5-5",
+    "tool_search": false,
+    "request": {
+      "model": "global.anthropic.claude-sonnet-5-5",
+      "instructions": "<zuno base instructions, omitted>",
+      "tool_choice": "auto",
+      "parallel_tool_calls": true,
+      "reasoning": {
+        "effort": "medium"
+      },
+      "store": false,
+      "stream": true,
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "max_output_tokens": 32000,
+      "input": [
+        {
+          "type": "message",
+          "id": "msg_dev",
+          "role": "developer",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<permissions instructions> (omitted)"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "id": "msg_env",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<environment_context> (omitted)"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "id": "msg_q1",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run the alpha tool"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_h1",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "The user wants the alpha tool."
+            }
+          ],
+          "encrypted_content": "bedrock-reasoning-v1:eyJibG9ja3MiOlt7InJlYXNvbmluZ1RleHQiOnsic2lnbmF0dXJlIjoic2lnLWhpc3QtMSIsInRleHQiOiJUaGUgdXNlciB3YW50cyB0aGUgYWxwaGEgdG9vbC4ifX1dLCJ2ZXJzaW9uIjoxfQ"
+        },
+        {
+          "type": "message",
+          "id": "msg_h1",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "Running it now."
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "id": "fc_h1",
+          "call_id": "toolu_h1",
+          "name": "direct_alpha",
+          "namespace": "mcp__ze_tools",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "toolu_h1",
+          "output": "alpha ok"
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_h2",
+          "summary": [],
+          "encrypted_content": "bedrock-reasoning-v1:eyJibG9ja3MiOlt7InJlZGFjdGVkQ29udGVudCI6ImNtVmtZV04wWldRPSJ9LHsicmVhc29uaW5nVGV4dCI6eyJzaWduYXR1cmUiOiJzaWctaGlzdC0yIiwidGV4dCI6IiJ9fV0sInZlcnNpb24iOjF9"
+        },
+        {
+          "type": "message",
+          "id": "msg_h2",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "The alpha tool says ok."
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "id": "msg_q2",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "what is new at AWS?"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_gpt",
+          "summary": [],
+          "encrypted_content": "gAAAAABopaqueOpenAiCiphertext=="
+        },
+        {
+          "type": "web_search_call",
+          "id": "ws_gpt_1",
+          "status": "completed",
+          "action": {
+            "type": "search",
+            "query": "aws news",
+            "queries": [
+              "aws news"
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "id": "msg_gpt",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "AWS shipped [news](https://aws.amazon.com/new/)."
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "id": "msg_q3",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "and Bedrock?"
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "name": "get_goal",
+          "description": "Get the current goal for this thread.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        {
+          "type": "function",
+          "name": "lookup_ticket",
+          "description": "Look up a support ticket by id.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "type": "namespace",
+          "name": "mcp__ze_tools",
+          "description": "Tools in the mcp__ze_tools namespace.",
+          "tools": [
+            {
+              "type": "function",
+              "name": "direct_alpha",
+              "description": "Alpha direct tool.",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "type": "function",
+              "name": "direct_beta",
+              "description": "Beta direct tool.",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "n": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "web_search",
+          "external_web_access": false
+        }
+      ]
+    }
+  },
+  {
+    "name": "converse-first-turn",
+    "model": "global.anthropic.claude-opus-5-5",
+    "tool_search": false,
+    "request": {
+      "model": "global.anthropic.claude-sonnet-5-5",
+      "instructions": "<zuno base instructions, omitted>",
+      "tool_choice": "auto",
+      "parallel_tool_calls": true,
+      "reasoning": {
+        "effort": "medium"
+      },
+      "store": false,
+      "stream": true,
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "max_output_tokens": 32000,
+      "input": [
+        {
+          "type": "message",
+          "id": "msg_dev",
+          "role": "developer",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<permissions instructions> (omitted)"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "id": "msg_env",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<environment_context> (omitted)"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "id": "msg_q1",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run the alpha tool"
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "name": "get_goal",
+          "description": "Get the current goal for this thread.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        {
+          "type": "function",
+          "name": "lookup_ticket",
+          "description": "Look up a support ticket by id.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "type": "namespace",
+          "name": "mcp__ze_tools",
+          "description": "Tools in the mcp__ze_tools namespace.",
+          "tools": [
+            {
+              "type": "function",
+              "name": "direct_alpha",
+              "description": "Alpha direct tool.",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "type": "function",
+              "name": "direct_beta",
+              "description": "Beta direct tool.",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "n": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "web_search",
+          "external_web_access": false
+        }
+      ]
+    }
+  },
+  {
+    "name": "converse-text-no-tools",
+    "model": "global.anthropic.claude-sonnet-5-5",
+    "tool_search": false,
+    "request": {
+      "model": "global.anthropic.claude-sonnet-5-5",
+      "input": "What is new at AWS?",
+      "max_output_tokens": 1000
+    }
+  },
+  {
+    "name": "converse-hosted-only-gpt-history",
+    "model": "global.anthropic.claude-sonnet-5-5",
+    "tool_search": false,
+    "request": {
+      "model": "global.anthropic.claude-sonnet-5-5",
+      "instructions": "<zuno base instructions, omitted>",
+      "parallel_tool_calls": true,
+      "reasoning": {
+        "effort": "medium"
+      },
+      "store": false,
+      "stream": true,
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "max_output_tokens": 32000,
+      "input": [
+        {
+          "type": "message",
+          "id": "msg_q2",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "what is new at AWS?"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_gpt",
+          "summary": [],
+          "encrypted_content": "gAAAAABopaqueOpenAiCiphertext=="
+        },
+        {
+          "type": "web_search_call",
+          "id": "ws_gpt_1",
+          "status": "completed",
+          "action": {
+            "type": "search",
+            "query": "aws news",
+            "queries": [
+              "aws news"
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "id": "msg_gpt",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "AWS shipped [news](https://aws.amazon.com/new/)."
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "id": "msg_q3",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "and Bedrock?"
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "type": "web_search",
+          "external_web_access": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "converse-client-web-search-tool",
+    "model": "global.anthropic.claude-sonnet-5-5",
+    "tool_search": false,
+    "request": {
+      "model": "global.anthropic.claude-sonnet-5-5",
+      "instructions": "<zuno base instructions, omitted>",
+      "tool_choice": "required",
+      "parallel_tool_calls": true,
+      "store": false,
+      "stream": true,
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "max_output_tokens": 32000,
+      "input": [
+        {
+          "type": "message",
+          "id": "msg_dev",
+          "role": "developer",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<permissions instructions> (omitted)"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "id": "msg_env",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<environment_context> (omitted)"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "id": "msg_q1",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run the alpha tool"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_h1",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "The user wants the alpha tool."
+            }
+          ],
+          "encrypted_content": "bedrock-reasoning-v1:eyJibG9ja3MiOlt7InJlYXNvbmluZ1RleHQiOnsic2lnbmF0dXJlIjoic2lnLWhpc3QtMSIsInRleHQiOiJUaGUgdXNlciB3YW50cyB0aGUgYWxwaGEgdG9vbC4ifX1dLCJ2ZXJzaW9uIjoxfQ"
+        },
+        {
+          "type": "message",
+          "id": "msg_h1",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "Running it now."
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "id": "fc_h1",
+          "call_id": "toolu_h1",
+          "name": "direct_alpha",
+          "namespace": "mcp__ze_tools",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "toolu_h1",
+          "output": "alpha ok"
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_h2",
+          "summary": [],
+          "encrypted_content": "bedrock-reasoning-v1:eyJibG9ja3MiOlt7InJlZGFjdGVkQ29udGVudCI6ImNtVmtZV04wWldRPSJ9LHsicmVhc29uaW5nVGV4dCI6eyJzaWduYXR1cmUiOiJzaWctaGlzdC0yIiwidGV4dCI6IiJ9fV0sInZlcnNpb24iOjF9"
+        },
+        {
+          "type": "message",
+          "id": "msg_h2",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "The alpha tool says ok."
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "id": "msg_q2",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "what is new at AWS?"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_gpt",
+          "summary": [],
+          "encrypted_content": "gAAAAABopaqueOpenAiCiphertext=="
+        },
+        {
+          "type": "web_search_call",
+          "id": "ws_gpt_1",
+          "status": "completed",
+          "action": {
+            "type": "search",
+            "query": "aws news",
+            "queries": [
+              "aws news"
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "id": "msg_gpt",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "AWS shipped [news](https://aws.amazon.com/new/)."
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "id": "msg_q3",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "and Bedrock?"
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "name": "get_goal",
+          "description": "Get the current goal for this thread.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        {
+          "type": "function",
+          "name": "lookup_ticket",
+          "description": "Look up a support ticket by id.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "type": "namespace",
+          "name": "mcp__ze_tools",
+          "description": "Tools in the mcp__ze_tools namespace.",
+          "tools": [
+            {
+              "type": "function",
+              "name": "direct_alpha",
+              "description": "Alpha direct tool.",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "type": "function",
+              "name": "direct_beta",
+              "description": "Beta direct tool.",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "n": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "web_search",
+          "external_web_access": false
+        },
+        {
+          "type": "function",
+          "name": "web_search",
+          "description": "A client tool that happens to be called web_search.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "converse-nova-incapable",
+    "model": "us.amazon.nova-pro-v1:0",
+    "tool_search": false,
+    "request": {
+      "model": "global.anthropic.claude-sonnet-5-5",
+      "instructions": "<zuno base instructions, omitted>",
+      "tool_choice": "auto",
+      "parallel_tool_calls": true,
+      "reasoning": {
+        "effort": "medium"
+      },
+      "store": false,
+      "stream": true,
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "max_output_tokens": 32000,
+      "input": [
+        {
+          "type": "message",
+          "id": "msg_dev",
+          "role": "developer",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<permissions instructions> (omitted)"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "id": "msg_env",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<environment_context> (omitted)"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "id": "msg_q1",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run the alpha tool"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_h1",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "The user wants the alpha tool."
+            }
+          ],
+          "encrypted_content": "bedrock-reasoning-v1:eyJibG9ja3MiOlt7InJlYXNvbmluZ1RleHQiOnsic2lnbmF0dXJlIjoic2lnLWhpc3QtMSIsInRleHQiOiJUaGUgdXNlciB3YW50cyB0aGUgYWxwaGEgdG9vbC4ifX1dLCJ2ZXJzaW9uIjoxfQ"
+        },
+        {
+          "type": "message",
+          "id": "msg_h1",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "Running it now."
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "id": "fc_h1",
+          "call_id": "toolu_h1",
+          "name": "direct_alpha",
+          "namespace": "mcp__ze_tools",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "toolu_h1",
+          "output": "alpha ok"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "name": "get_goal",
+          "description": "Get the current goal for this thread.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        {
+          "type": "function",
+          "name": "lookup_ticket",
+          "description": "Look up a support ticket by id.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "type": "namespace",
+          "name": "mcp__ze_tools",
+          "description": "Tools in the mcp__ze_tools namespace.",
+          "tools": [
+            {
+              "type": "function",
+              "name": "direct_alpha",
+              "description": "Alpha direct tool.",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "type": "function",
+              "name": "direct_beta",
+              "description": "Beta direct tool.",
+              "strict": false,
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "n": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "web_search",
+          "external_web_access": false
+        }
+      ]
+    }
+  }
+]

@@ -1,0 +1,141 @@
+{
+  "model": "global.anthropic.claude-sonnet-5-5",
+  "instructions": "<zuno base instructions, omitted>",
+  "input": [
+    {
+      "type": "message",
+      "id": "msg_01dev",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<permissions instructions> (omitted)"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_01env",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<environment_context>\n  <current_date>2026-11-19</current_date>\n</environment_context>"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_01q",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "What did AWS announce this week? Cite sources."
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_goal",
+      "description": "Get the current goal for this thread.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "lookup_ticket",
+      "description": "Look up a support ticket by id.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "namespace",
+      "name": "mcp__ze_tools",
+      "description": "Tools in the mcp__ze_tools namespace.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "direct_alpha",
+          "description": "Alpha direct tool.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "type": "function",
+          "name": "direct_beta",
+          "description": "Beta direct tool.",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "n": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "web_search",
+      "external_web_access": false
+    },
+    {
+      "type": "tool_search",
+      "execution": "client",
+      "description": "# Tool discovery\n\nSearches over deferred tool metadata.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "store": false,
+  "stream": true,
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "prompt_cache_key": "<thread-id>",
+  "text": {
+    "verbosity": "low"
+  },
+  "max_output_tokens": 32000
+}

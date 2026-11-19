@@ -1,0 +1,15 @@
+{
+  "results": [
+    {
+      "title": "What's New with AWS",
+      "url": "https://aws.amazon.com/new/",
+      "text": "Amazon Bedrock AgentCore Web Search is now generally available in six Regions.",
+      "publishedAt": "2026-11-17T00:00:00Z"
+    },
+    {
+      "title": "AWS News Blog",
+      "url": "https://aws.amazon.com/blogs/aws/",
+      "text": "Weekly roundup: the launches of the week, from Bedrock to S3."
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{"messageStart":{"role":"assistant"}}
+{"contentBlockDelta":{"contentBlockIndex":0,"text":"Partial answer"}}
+{"contentBlockStart":{"contentBlockIndex":1,"toolUse":{"toolUseId":"toolu_t1","name":"lookup_ticket"}}}
+{"contentBlockDelta":{"contentBlockIndex":1,"toolUseInput":"{\"id\":"}}
+{"messageStop":{"stopReason":"max_tokens"}}
+{"metadata":{"usage":{"inputTokens":10,"outputTokens":5,"totalTokens":15}}}
