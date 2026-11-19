@@ -700,10 +700,12 @@ dependencies = [
  "async-stream",
  "async-trait",
  "aws-config",
+ "aws-credential-types",
  "aws-sdk-bedrock",
  "aws-sdk-bedrockruntime",
  "aws-sdk-secretsmanager",
  "aws-sdk-ssm",
+ "aws-sigv4",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "axum",
@@ -732,6 +734,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
  "wiremock",
 ]
 

@@ -33,6 +33,11 @@ aws-sdk-secretsmanager = "1"
 aws-sdk-ssm = "1"
 aws-smithy-types = "1"
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-auth"] }
+# SigV4 signing and credentials for the AgentCore Web Search client
+# (bedrock/agentcore_search.rs). Both are already in the lock through
+# aws-config; the AgentCore SDK crate would pull a newer smithy runtime.
+aws-sigv4 = "1.4"
+aws-credential-types = "1.2"
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -44,6 +49,7 @@ toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+url = "2"
 bytes = "1"
 base64 = "0.22"
 hmac = "=0.13.0"

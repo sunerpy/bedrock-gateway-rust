@@ -711,6 +711,25 @@ fn claude_5_5_entries_win_params_over_their_5_parents() {
 }
 
 #[test]
+fn web_search_reaches_the_5_5_models_and_not_their_5_parents() {
+    // The union over matching entries must not carry the 5.5-only flag to
+    // Sonnet 5 / Opus 5, whose ids are substrings of the 5.5 ids.
+    let c = caps();
+    for model in [FULL_SONNET_5_5, FULL_OPUS_5_5, "claude-sonnet-5-5"] {
+        assert!(c.has(model, Capability::WebSearch), "{model}");
+    }
+    for model in [
+        FULL_OPUS_5,
+        "global.anthropic.claude-sonnet-5",
+        "us.anthropic.claude-haiku-5-5",
+        FULL_FABLE_5_1,
+        FULL_NOVA,
+    ] {
+        assert!(!c.has(model, Capability::WebSearch), "{model}");
+    }
+}
+
+#[test]
 fn haiku_5_5_resolves_adaptive_thinking_and_the_512_token_floor() {
     // Live 2026-10-10 on `global.anthropic.claude-haiku-5-5`: temperature and
     // top_p are "deprecated for this model", assistant prefill is refused,

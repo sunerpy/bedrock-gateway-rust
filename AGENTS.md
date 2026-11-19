@@ -111,7 +111,7 @@ Startup degrades rather than fails: a mantle-backed model with no `bedrock_api_k
 
 ## Tests
 
-Unit tests are sidecar files, not inline modules: `foo.rs` ends with `#[cfg(test)] #[path = "foo_tests.rs"] mod tests;` and the tests live in `foo_tests.rs`. There are 34 such files. Follow the pattern; do not add an inline `mod tests`.
+Unit tests are sidecar files, not inline modules: `foo.rs` ends with `#[cfg(test)] #[path = "foo_tests.rs"] mod tests;` and the tests live in `foo_tests.rs`. There are 36 such files. Follow the pattern; do not add an inline `mod tests`.
 
 Golden record/replay lives in `tests/golden/`, fixtures under `fixtures/<group>/<case>/` (`translation`, `response`, `streaming`, `responses_*`, `embeddings`). Helpers in `harness.rs`: `assert_semantic_eq`, `assert_semantic_eq_with`, `assert_stream_eq`. Assertions are semantic, not byte-equal, so field ordering can drift. Add a fixture alongside any new translation path. Runs offline in CI with no AWS credentials.
 

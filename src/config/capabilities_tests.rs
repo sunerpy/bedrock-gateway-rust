@@ -113,6 +113,33 @@ fn test_sonnet_4_5_capabilities() {
 }
 
 #[test]
+fn web_search_capability_parses() {
+    let cfg = ModelCapabilityConfig::from_toml_str(
+        "[[model]]\nmatch = \"x.y\"\ncapabilities = [\"web_search\"]\n",
+    )
+    .expect("config with web_search must parse");
+    let entry = cfg.entry_for_match("x.y").unwrap();
+    assert!(entry.has_capability(Capability::WebSearch));
+    assert!(!entry.has_capability(Capability::ToolSearch));
+}
+
+#[test]
+fn web_search_flag_is_on_the_claude_5_5_entries_only() {
+    // Flags are a union over every matching entry, and `claude-sonnet-5` is a
+    // substring of `claude-sonnet-5-5`: a flag on a 5 entry would reach 5 and
+    // 5.5 alike. Carrying it on the 5.5 entries keeps it off Sonnet/Opus 5.
+    let cfg = load_project_config();
+    let mut flagged: Vec<&str> = cfg
+        .models
+        .iter()
+        .filter(|e| e.has_capability(Capability::WebSearch))
+        .map(|e| e.match_pattern.as_str())
+        .collect();
+    flagged.sort_unstable();
+    assert_eq!(flagged, vec!["claude-opus-5-5", "claude-sonnet-5-5"]);
+}
+
+#[test]
 fn cache_ttl_1h_capability_parses() {
     let cfg = ModelCapabilityConfig::from_toml_str(
         "[[model]]\nmatch = \"x.y\"\ncapabilities = [\"cache_ttl_1h\"]\n",
@@ -532,6 +559,7 @@ fn claude_5_5_entries_are_declared_before_their_5_parents() {
             Capability::DropSamplingParams,
             Capability::CacheTtl1h,
             Capability::ToolSearch,
+            Capability::WebSearch,
         ]
         .into_iter()
         .collect();

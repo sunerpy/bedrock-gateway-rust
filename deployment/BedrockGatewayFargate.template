@@ -36,6 +36,7 @@ Metadata:
           - DefaultModelId
           - DefaultEmbeddingModelId
           - EnablePromptCaching
+          - WebSearchBackend
           - LogLevel
           - DesiredCount
 
@@ -92,6 +93,21 @@ Parameters:
       - "false"
     Description: >-
       Auto-inject prompt cache points for Claude and Nova models. On by default.
+  WebSearchBackend:
+    Type: String
+    Default: "off"
+    AllowedValues:
+      - "off"
+      - agentcore
+    Description: >-
+      "off" (default) or "agentcore": let the gateway run web searches for
+      Claude on /responses with Amazon Bedrock AgentCore Web Search, for
+      requests that send X-Weniq-Web-Search: on. "agentcore" sets
+      WEB_SEARCH_BACKEND and grants the task role
+      bedrock-agentcore:InvokeWebSearch; AgentCore calls are signed with the
+      task role, never with the Bedrock API key. The default
+      WEB_SEARCH_MAX_TPS of 5 suits up to 2 tasks (the quota is 10 TPS per
+      account and Region).
   LogLevel:
     Type: String
     Default: info
@@ -144,6 +160,7 @@ Conditions:
   HasDefaultModelId: !Not [!Equals [!Ref DefaultModelId, ""]]
   HasDefaultEmbeddingModelId: !Not [!Equals [!Ref DefaultEmbeddingModelId, ""]]
   HasBedrockApiKey: !Not [!Equals [!Ref BedrockApiKeySecretArn, ""]]
+  HasWebSearch: !Equals [!Ref WebSearchBackend, agentcore]
   CreateNet: !Equals [!Ref CreateNetwork, "true"]
   UseExistingNet: !Not [!Condition CreateNet]
 
@@ -257,6 +274,14 @@ Resources:
   # ----------------------------------------------------------------
   TaskRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            # bedrock-agentcore:InvokeWebSearch (AgentCore Web Search, 2026-11)
+            # is newer than cfn-lint's bundled IAM action list, which flags it
+            # W3037. The action name is AWS's (service authorization reference).
+            - W3037
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -292,6 +317,16 @@ Resources:
                 Resource:
                   - !Ref ApiKeySecretArn
                   - !If [HasBedrockApiKey, !Ref BedrockApiKeySecretArn, !Ref AWS::NoValue]
+              # Web search (WebSearchBackend=agentcore). The tool is owned by
+              # AWS: the docs name the account segment `aws`, the service
+              # authorization reference `${Account}`; `*` matches both.
+              - !If
+                - HasWebSearch
+                - Sid: AgentCoreWebSearch
+                  Effect: Allow
+                  Action: bedrock-agentcore:InvokeWebSearch
+                  Resource: !Sub "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:*:tool/web-search.v1"
+                - !Ref AWS::NoValue
 
   # ----------------------------------------------------------------
   # Security Groups
@@ -407,6 +442,11 @@ Resources:
               - HasDefaultEmbeddingModelId
               - Name: DEFAULT_EMBEDDING_MODEL
                 Value: !Ref DefaultEmbeddingModelId
+              - !Ref AWS::NoValue
+            - !If
+              - HasWebSearch
+              - Name: WEB_SEARCH_BACKEND
+                Value: agentcore
               - !Ref AWS::NoValue
           LogConfiguration:
             LogDriver: awslogs

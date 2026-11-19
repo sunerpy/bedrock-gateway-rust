@@ -32,6 +32,32 @@ fn clear_capsule_vars() {
     }
 }
 
+const WEB_SEARCH_VARS: [&str; 7] = [
+    "WEB_SEARCH_BACKEND",
+    "WEB_SEARCH_REGION",
+    "WEB_SEARCH_MAX_CALLS",
+    "WEB_SEARCH_TIMEOUT_SECS",
+    "WEB_SEARCH_MAX_RESULTS",
+    "WEB_SEARCH_RESULT_CHARS",
+    "WEB_SEARCH_MAX_TPS",
+];
+
+fn clear_web_search_vars() {
+    for name in WEB_SEARCH_VARS {
+        std::env::remove_var(name);
+    }
+}
+
+fn assert_web_search_defaults(settings: &AppSettings) {
+    assert_eq!(settings.web_search_backend, "off");
+    assert_eq!(settings.web_search_region, None);
+    assert_eq!(settings.web_search_max_calls, 5);
+    assert_eq!(settings.web_search_timeout_secs, 12);
+    assert_eq!(settings.web_search_max_results, 5);
+    assert_eq!(settings.web_search_result_chars, 1500);
+    assert_eq!(settings.web_search_max_tps, 5);
+}
+
 fn minimal_builder() -> ConfigBuilder {
     Config::builder()
         .set_default("api_route_prefix", "/api/v1")
@@ -825,4 +851,68 @@ fn model_catalog_refresh_secs_defaults_and_env_override() {
     assert_eq!(settings.model_catalog_refresh_secs, 3600);
 
     std::env::remove_var("MODEL_CATALOG_REFRESH_SECS");
+}
+
+#[test]
+fn web_search_settings_default_to_off() {
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+    clear_web_search_vars();
+
+    // `load()` sets the defaults explicitly; config/app.toml keeps the keys
+    // commented out, so the image default stays off.
+    let settings = AppSettings::load().expect("settings load");
+    assert_web_search_defaults(&settings);
+
+    // A source that predates the fields still deserializes (serde defaults).
+    let settings: AppSettings = minimal_builder()
+        .build()
+        .unwrap()
+        .try_deserialize()
+        .unwrap();
+    assert_web_search_defaults(&settings);
+}
+
+#[test]
+fn bare_web_search_env_vars_override_defaults() {
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+    clear_web_search_vars();
+
+    std::env::set_var("WEB_SEARCH_BACKEND", "agentcore");
+    std::env::set_var("WEB_SEARCH_REGION", "us-east-2");
+    std::env::set_var("WEB_SEARCH_MAX_CALLS", "3");
+    std::env::set_var("WEB_SEARCH_TIMEOUT_SECS", "20");
+    std::env::set_var("WEB_SEARCH_MAX_RESULTS", "8");
+    std::env::set_var("WEB_SEARCH_RESULT_CHARS", "900");
+    std::env::set_var("WEB_SEARCH_MAX_TPS", "2");
+
+    let settings = AppSettings::load().expect("settings load");
+
+    assert_eq!(settings.web_search_backend, "agentcore");
+    assert_eq!(settings.web_search_region, Some("us-east-2".to_string()));
+    assert_eq!(settings.web_search_max_calls, 3);
+    assert_eq!(settings.web_search_timeout_secs, 20);
+    assert_eq!(settings.web_search_max_results, 8);
+    assert_eq!(settings.web_search_result_chars, 900);
+    assert_eq!(settings.web_search_max_tps, 2);
+
+    clear_web_search_vars();
+}
+
+#[test]
+fn web_search_env_vars_non_numeric_or_empty_fall_back_to_defaults() {
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+    clear_web_search_vars();
+
+    std::env::set_var("WEB_SEARCH_BACKEND", "");
+    std::env::set_var("WEB_SEARCH_REGION", "  ");
+    std::env::set_var("WEB_SEARCH_MAX_CALLS", "many");
+    std::env::set_var("WEB_SEARCH_TIMEOUT_SECS", "12s");
+    std::env::set_var("WEB_SEARCH_MAX_RESULTS", "");
+    std::env::set_var("WEB_SEARCH_RESULT_CHARS", "lots");
+    std::env::set_var("WEB_SEARCH_MAX_TPS", "fast");
+
+    let settings = AppSettings::load().expect("settings load");
+    assert_web_search_defaults(&settings);
+
+    clear_web_search_vars();
 }

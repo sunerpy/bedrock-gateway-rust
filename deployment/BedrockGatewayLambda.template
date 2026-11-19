@@ -31,6 +31,7 @@ Metadata:
           - DefaultModelId
           - DefaultEmbeddingModelId
           - EnablePromptCaching
+          - WebSearchBackend
           - LogLevel
 
 Parameters:
@@ -75,6 +76,22 @@ Parameters:
     Description: >-
       Auto-inject prompt cache points for Claude and Nova models. On by default.
 
+  WebSearchBackend:
+    Type: String
+    Default: "off"
+    AllowedValues:
+      - "off"
+      - agentcore
+    Description: >-
+      "off" (default) or "agentcore": let the gateway run web searches for
+      Claude on /responses with Amazon Bedrock AgentCore Web Search, for
+      requests that send X-Weniq-Web-Search: on. "agentcore" sets
+      WEB_SEARCH_BACKEND and grants the execution role
+      bedrock-agentcore:InvokeWebSearch; AgentCore calls are signed with that
+      role, never with the Bedrock API key. The gateway's rate limit
+      (WEB_SEARCH_MAX_TPS) is per execution environment, so concurrent
+      environments share the 10 TPS per account and Region quota.
+
   DisableMantle:
     Type: String
     Default: "true"
@@ -115,6 +132,7 @@ Conditions:
   HasDefaultModelId: !Not [!Equals [!Ref DefaultModelId, ""]]
   HasDefaultEmbeddingModelId: !Not [!Equals [!Ref DefaultEmbeddingModelId, ""]]
   HasBedrockApiKey: !Not [!Equals [!Ref BedrockApiKey, ""]]
+  HasWebSearch: !Equals [!Ref WebSearchBackend, agentcore]
 
 Resources:
   # ---------------------------------------------------------------------------
@@ -136,6 +154,14 @@ Resources:
   # Least-privilege inline policy: Bedrock invoke/list + the single API-key secret
   BedrockGatewayFunctionPolicy:
     Type: AWS::IAM::Policy
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            # bedrock-agentcore:InvokeWebSearch (AgentCore Web Search, 2026-11)
+            # is newer than cfn-lint's bundled IAM action list, which flags it
+            # W3037. The action name is AWS's (service authorization reference).
+            - W3037
     Properties:
       PolicyName: BedrockGatewayFunctionPolicy
       Roles:
@@ -166,6 +192,16 @@ Resources:
             Action:
               - secretsmanager:GetSecretValue
             Resource: !Ref ApiKeySecretArn
+          # Web search (WebSearchBackend=agentcore). The tool is owned by AWS:
+          # the docs name the account segment `aws`, the service authorization
+          # reference `${Account}`; `*` matches both.
+          - !If
+            - HasWebSearch
+            - Sid: AgentCoreWebSearch
+              Effect: Allow
+              Action: bedrock-agentcore:InvokeWebSearch
+              Resource: !Sub "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:*:tool/web-search.v1"
+            - !Ref "AWS::NoValue"
 
   # ---------------------------------------------------------------------------
   # Lambda function (container image + LWA). Streaming enabled via env + URL.
@@ -200,6 +236,9 @@ Resources:
           AWS_BEARER_TOKEN_BEDROCK: !If [HasBedrockApiKey, !Ref BedrockApiKey, !Ref "AWS::NoValue"]
           DEFAULT_MODEL: !If [HasDefaultModelId, !Ref DefaultModelId, !Ref "AWS::NoValue"]
           DEFAULT_EMBEDDING_MODEL: !If [HasDefaultEmbeddingModelId, !Ref DefaultEmbeddingModelId, !Ref "AWS::NoValue"]
+          # Gateway-run web search for Claude; the region is the function's
+          # (AWS_REGION, injected by Lambda).
+          WEB_SEARCH_BACKEND: !If [HasWebSearch, agentcore, !Ref "AWS::NoValue"]
           # NOTE: AWS_REGION is a reserved Lambda runtime variable and is
           # injected automatically by Lambda (set to the function's region).
           # The gateway and AWS SDK credential chain read it from the

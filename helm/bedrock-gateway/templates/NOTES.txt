@@ -34,3 +34,6 @@ bedrock-gateway has been deployed.
 {{- else }}
    - Set serviceAccount.annotations."eks.amazonaws.com/role-arn" for IRSA, or provide env.AWS_BEARER_TOKEN_BEDROCK.
 {{- end }}
+{{- if eq (lower (trim (toString (default "" .Values.env.WEB_SEARCH_BACKEND)))) "agentcore" }}
+   - Web search is on (env.WEB_SEARCH_BACKEND=agentcore). AgentCore calls are signed with SigV4 from the pod's IAM role (IRSA), never with env.AWS_BEARER_TOKEN_BEDROCK; that role needs bedrock-agentcore:InvokeWebSearch on arn:aws:bedrock-agentcore:<region>:*:tool/web-search.v1.
+{{- end }}

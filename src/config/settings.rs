@@ -21,6 +21,30 @@ const fn default_model_catalog_refresh_secs() -> u64 {
     3600
 }
 
+fn default_web_search_backend() -> String {
+    "off".to_string()
+}
+
+const fn default_web_search_max_calls() -> u32 {
+    5
+}
+
+const fn default_web_search_timeout_secs() -> u64 {
+    12
+}
+
+const fn default_web_search_max_results() -> u32 {
+    5
+}
+
+const fn default_web_search_result_chars() -> u32 {
+    1500
+}
+
+const fn default_web_search_max_tps() -> u32 {
+    5
+}
+
 /// Application settings with layered configuration loading:
 /// defaults → optional file (config/app.toml) → environment variable overrides
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +129,47 @@ pub struct AppSettings {
     /// `DISABLE_TOOL_SEARCH`.
     #[serde(default)]
     pub disable_tool_search: bool,
+
+    /// Backend for the web searches the gateway runs for Claude on
+    /// `/responses` (requests with `X-Weniq-Web-Search: on`, models with the
+    /// `web_search` capability): `off` (default) or `agentcore` (Amazon
+    /// Bedrock AgentCore Web Search, signed with the SigV4 credential chain,
+    /// never the Bedrock API key). Any other value logs a WARN at boot and
+    /// keeps web search off. Env: `WEB_SEARCH_BACKEND`.
+    #[serde(default = "default_web_search_backend")]
+    pub web_search_backend: String,
+
+    /// Region of the AgentCore Web Search endpoint. `None` uses `aws_region`;
+    /// Bedrock routing is unaffected. Env: `WEB_SEARCH_REGION`.
+    #[serde(default)]
+    pub web_search_region: Option<String>,
+
+    /// Most searches the gateway runs for one response (at least 1). Env:
+    /// `WEB_SEARCH_MAX_CALLS`. Default: 5.
+    #[serde(default = "default_web_search_max_calls")]
+    pub web_search_max_calls: u32,
+
+    /// Time budget of one search in seconds, including its single retry
+    /// (clamped to 1-60). Env: `WEB_SEARCH_TIMEOUT_SECS`. Default: 12.
+    #[serde(default = "default_web_search_timeout_secs")]
+    pub web_search_timeout_secs: u64,
+
+    /// Results asked for per search (AgentCore `maxResults`, clamped to
+    /// 1-25). Env: `WEB_SEARCH_MAX_RESULTS`. Default: 5.
+    #[serde(default = "default_web_search_max_results")]
+    pub web_search_max_results: u32,
+
+    /// Characters of page text kept per search result (clamped to
+    /// 100-20000). Env: `WEB_SEARCH_RESULT_CHARS`. Default: 1500.
+    #[serde(default = "default_web_search_result_chars")]
+    pub web_search_result_chars: u32,
+
+    /// Searches per second this process may send to AgentCore (at least 1).
+    /// The AgentCore quota is 10 TPS per account and Region, shared by every
+    /// instance, so set it to floor(10 / maximum instance count). Env:
+    /// `WEB_SEARCH_MAX_TPS`. Default: 5.
+    #[serde(default = "default_web_search_max_tps")]
+    pub web_search_max_tps: u32,
 
     /// Server bind address (default: "0.0.0.0")
     pub bind_addr: String,
@@ -209,6 +274,12 @@ impl AppSettings {
             .set_default("chat_reasoning_capsule_enabled", false)?
             .set_default("disable_mantle", false)?
             .set_default("disable_tool_search", false)?
+            .set_default("web_search_backend", "off")?
+            .set_default("web_search_max_calls", 5u32)?
+            .set_default("web_search_timeout_secs", 12u64)?
+            .set_default("web_search_max_results", 5u32)?
+            .set_default("web_search_result_chars", 1500u32)?
+            .set_default("web_search_max_tps", 5u32)?
             .set_default("bind_addr", "0.0.0.0")?
             .set_default("port", 8080)?
             .set_default("log_level", "info")?
@@ -263,7 +334,10 @@ impl AppSettings {
 /// `MANTLE_BASE_URL_TEMPLATE`, `MANTLE_CHAT_BASE_URL_TEMPLATE`,
 /// `ALLOWED_MODELS`, `PROMPT_CACHE_TTL`, `CHAT_REASONING_CAPSULE_ENABLED`,
 /// `CHAT_REASONING_CAPSULE_ACTIVE_KID`, `CHAT_REASONING_CAPSULE_KEYS`,
-/// `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_CAPTURE_CONTENT`.
+/// `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_CAPTURE_CONTENT`, and the web-search
+/// group `WEB_SEARCH_BACKEND`, `WEB_SEARCH_REGION`, `WEB_SEARCH_MAX_CALLS`,
+/// `WEB_SEARCH_TIMEOUT_SECS`, `WEB_SEARCH_MAX_RESULTS`,
+/// `WEB_SEARCH_RESULT_CHARS`, `WEB_SEARCH_MAX_TPS`.
 fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder> {
     // String-valued overrides.
     for (env_name, field) in [
@@ -289,6 +363,8 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
         ),
         ("CHAT_REASONING_CAPSULE_KEYS", "chat_reasoning_capsule_keys"),
         ("OTEL_EXPORTER_OTLP_ENDPOINT", "otel_exporter_otlp_endpoint"),
+        ("WEB_SEARCH_BACKEND", "web_search_backend"),
+        ("WEB_SEARCH_REGION", "web_search_region"),
     ] {
         if let Some(value) = non_empty_env(env_name) {
             builder = builder.set_override(field, value)?;
@@ -343,6 +419,11 @@ fn apply_bare_env_overrides(mut builder: ConfigBuilder) -> Result<ConfigBuilder>
         ("MODEL_CATALOG_REFRESH_SECS", "model_catalog_refresh_secs"),
         ("AWS_MAX_RETRY_ATTEMPTS", "aws_max_retry_attempts"),
         ("MAX_BODY_SIZE_MB", "max_body_size_mb"),
+        ("WEB_SEARCH_MAX_CALLS", "web_search_max_calls"),
+        ("WEB_SEARCH_TIMEOUT_SECS", "web_search_timeout_secs"),
+        ("WEB_SEARCH_MAX_RESULTS", "web_search_max_results"),
+        ("WEB_SEARCH_RESULT_CHARS", "web_search_result_chars"),
+        ("WEB_SEARCH_MAX_TPS", "web_search_max_tps"),
     ] {
         if let Some(value) = non_empty_env(env_name) {
             if let Ok(parsed) = value.parse::<i64>() {
