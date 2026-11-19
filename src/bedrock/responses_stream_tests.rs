@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::bedrock::capabilities::ConfigModelCapabilities;
-use crate::bedrock::responses_translate::to_responses_converse_input;
+use crate::bedrock::responses_translate::{encode_reasoning_envelope, to_responses_converse_input};
 use crate::bedrock::translate::ImageResolver;
 use crate::config::ModelCapabilityConfig;
 use crate::openai::responses_schema::ResponsesInput;
@@ -1412,7 +1412,7 @@ fn tool_search_state() -> ResponsesStreamState {
     value["model"] = json!("global.anthropic.claude-sonnet-5-5");
     let req: ResponsesRequest = serde_json::from_value(value).unwrap();
     let (_, mut registry) =
-        crate::bedrock::responses_translate::build_responses_tools_with(&req, true).unwrap();
+        crate::bedrock::responses_translate::build_responses_tools_with(&req, true, false).unwrap();
     registry
         .add_searched(&crate::bedrock::responses_translate::collect_searched_tools(&req).unwrap());
     ResponsesStreamState::new_with_tools(
@@ -1633,4 +1633,496 @@ fn messages_stream_error_event_is_an_error() {
     let failed = serde_json::to_value(st.fail(&err).remove(0)).unwrap();
     assert_eq!(failed["type"], "response.failed");
     assert_eq!(failed["response"]["error"]["code"], "server_is_overloaded");
+}
+
+// ---------------------------------------------------------------------------
+// Step mode for the web search loop (plan C2)
+// ---------------------------------------------------------------------------
+
+/// One ConverseStream event from the compact JSONL fixture shape of
+/// `tests/golden/fixtures/` (`messageStart`, `contentBlockStart.toolUse`,
+/// `contentBlockDelta.{text,reasoningText,reasoningSignature,toolUseInput}`,
+/// `contentBlockStop`, `messageStop`, `metadata.usage`).
+pub(crate) fn fixture_event(line: &Value) -> ConverseStreamOutput {
+    let index = |v: &Value| {
+        v.get("contentBlockIndex")
+            .and_then(Value::as_i64)
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or(0)
+    };
+    if line.get("messageStart").is_some() {
+        return ev_message_start();
+    }
+    if let Some(start) = line.get("contentBlockStart") {
+        let tool_use = &start["toolUse"];
+        return ev_tool_start(
+            index(start),
+            tool_use["toolUseId"].as_str().unwrap(),
+            tool_use["name"].as_str().unwrap(),
+        );
+    }
+    if let Some(delta) = line.get("contentBlockDelta") {
+        if let Some(text) = delta.get("text").and_then(Value::as_str) {
+            return ev_text(text, index(delta));
+        }
+        if let Some(text) = delta.get("reasoningText").and_then(Value::as_str) {
+            return ev_reasoning_text(text, index(delta));
+        }
+        if let Some(signature) = delta.get("reasoningSignature").and_then(Value::as_str) {
+            return ev_reasoning_signature(signature, index(delta));
+        }
+        if let Some(input) = delta.get("toolUseInput").and_then(Value::as_str) {
+            return ev_tool_input(index(delta), input);
+        }
+        panic!("unknown contentBlockDelta shape: {delta}");
+    }
+    if let Some(stop) = line.get("contentBlockStop") {
+        return ConverseStreamOutput::ContentBlockStop(
+            ContentBlockStopEvent::builder()
+                .content_block_index(index(stop))
+                .build()
+                .unwrap(),
+        );
+    }
+    if let Some(stop) = line.get("messageStop") {
+        return ConverseStreamOutput::MessageStop(
+            MessageStopEvent::builder()
+                .stop_reason(StopReason::from(stop["stopReason"].as_str().unwrap()))
+                .build()
+                .unwrap(),
+        );
+    }
+    if let Some(metadata) = line.get("metadata") {
+        let usage = &metadata["usage"];
+        let count = |key: &str| {
+            usage
+                .get(key)
+                .and_then(Value::as_i64)
+                .and_then(|v| i32::try_from(v).ok())
+        };
+        let usage = TokenUsage::builder()
+            .input_tokens(count("inputTokens").unwrap_or(0))
+            .output_tokens(count("outputTokens").unwrap_or(0))
+            .total_tokens(count("totalTokens").unwrap_or(0))
+            .set_cache_read_input_tokens(count("cacheReadInputTokens"))
+            .set_cache_write_input_tokens(count("cacheWriteInputTokens"))
+            .build()
+            .unwrap();
+        return ConverseStreamOutput::Metadata(
+            ConverseStreamMetadataEvent::builder().usage(usage).build(),
+        );
+    }
+    panic!("unrecognized bedrock event line: {line}");
+}
+
+fn fixture_events(jsonl: &str) -> Vec<ConverseStreamOutput> {
+    jsonl
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| fixture_event(&serde_json::from_str(line).unwrap()))
+        .collect()
+}
+
+/// `created_at` is the wall clock; everything else must be byte-stable.
+fn zero_created_at(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            if map.contains_key("created_at") {
+                map.insert("created_at".to_string(), json!(0));
+            }
+            map.values_mut().for_each(zero_created_at);
+        }
+        Value::Array(items) => items.iter_mut().for_each(zero_created_at),
+        _ => {}
+    }
+}
+
+fn run_events(mut state: ResponsesStreamState, events: &[ConverseStreamOutput]) -> Value {
+    let mut out = Vec::new();
+    for event in events {
+        for ev in state.map_event(event) {
+            out.push(serde_json::to_value(&ev).unwrap());
+        }
+    }
+    for ev in state.finish() {
+        out.push(serde_json::to_value(&ev).unwrap());
+    }
+    let mut out = Value::Array(out);
+    zero_created_at(&mut out);
+    out
+}
+
+/// A stream without web search is the stream it was before the loop existed:
+/// the events recorded from the previous code (fixture
+/// `responses_web_search/undeclared-expected.json`) are reproduced exactly,
+/// through `new_with_tools` and through `new_step` with the default options.
+#[test]
+fn default_step_options_match_new_with_tools() {
+    use crate::bedrock::responses_translate::build_responses_tools_with;
+    let cases: Vec<Value> = serde_json::from_str(include_str!(
+        "../../tests/golden/fixtures/responses_web_search/undeclared-requests.json"
+    ))
+    .unwrap();
+    let expected: Value = serde_json::from_str(include_str!(
+        "../../tests/golden/fixtures/responses_web_search/undeclared-expected.json"
+    ))
+    .unwrap();
+    let streams = [
+        (
+            "stream-1",
+            include_str!(
+                "../../tests/golden/fixtures/responses_web_search/undeclared-stream-1.jsonl"
+            ),
+        ),
+        (
+            "stream-2",
+            include_str!(
+                "../../tests/golden/fixtures/responses_web_search/undeclared-stream-2.jsonl"
+            ),
+        ),
+    ];
+    let mut checked = 0;
+    for (key, recorded) in expected["stream_events"].as_object().unwrap() {
+        let (case_name, stream_name) = key.split_once('/').unwrap();
+        let case = cases.iter().find(|c| c["name"] == case_name).unwrap();
+        let req: ResponsesRequest = serde_json::from_value(case["request"].clone()).unwrap();
+        let (_, registry) = build_responses_tools_with(&req, false, false).unwrap();
+        let jsonl = streams.iter().find(|(n, _)| *n == stream_name).unwrap().1;
+        let events = fixture_events(jsonl);
+        let model = case["model"].as_str().unwrap().to_string();
+        let old = ResponsesStreamState::new_with_tools(
+            model.clone(),
+            "resp_base".to_string(),
+            req.clone(),
+            Arc::from("req-base"),
+            Instant::now(),
+            registry.clone(),
+        );
+        assert_eq!(&run_events(old, &events), recorded, "{key}: new_with_tools");
+        let stepped = ResponsesStreamState::new_step(
+            model,
+            "resp_base".to_string(),
+            req,
+            Arc::from("req-base"),
+            Instant::now(),
+            registry,
+            StepOptions::default(),
+        );
+        assert_eq!(&run_events(stepped, &events), recorded, "{key}: new_step");
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+}
+
+fn web_search_registry() -> ResponsesToolRegistry {
+    use crate::bedrock::responses_translate::build_responses_tools_with;
+    let req: ResponsesRequest = serde_json::from_value(json!({
+        "model": "m",
+        "input": "hi",
+        "tools": [
+            { "type": "function", "name": "lookup_ticket", "parameters": { "type": "object" } },
+            { "type": "custom", "name": "notes" }
+        ]
+    }))
+    .unwrap();
+    build_responses_tools_with(&req, false, true).unwrap().1
+}
+
+fn step_state(options: StepOptions) -> ResponsesStreamState {
+    ResponsesStreamState::new_step(
+        MODEL.to_string(),
+        "resp_loop".to_string(),
+        request(),
+        Arc::from("req-test"),
+        Instant::now(),
+        web_search_registry(),
+        options,
+    )
+}
+
+fn step_options() -> StepOptions {
+    StepOptions {
+        ids: Some(StepItemIds::for_step("resp_loop", 2)),
+        mark_envelopes: true,
+        defer_tool_events: true,
+        step_mode: true,
+        seq: 40,
+        next_output_index: 5,
+        started: true,
+        citations: None,
+    }
+}
+
+const STEP_EVENTS: &str = r#"
+{"messageStart":{"role":"assistant"}}
+{"contentBlockDelta":{"contentBlockIndex":0,"reasoningText":"Need data."}}
+{"contentBlockDelta":{"contentBlockIndex":0,"reasoningSignature":"sig-step"}}
+{"contentBlockStop":{"contentBlockIndex":0}}
+{"contentBlockDelta":{"contentBlockIndex":1,"text":"Checking."}}
+{"contentBlockStop":{"contentBlockIndex":1}}
+{"contentBlockStart":{"contentBlockIndex":2,"toolUse":{"toolUseId":"toolu_ws","name":"web_search"}}}
+{"contentBlockDelta":{"contentBlockIndex":2,"toolUseInput":"{\"query\":"}}
+{"contentBlockDelta":{"contentBlockIndex":2,"toolUseInput":"\"aws\"}"}}
+{"contentBlockStop":{"contentBlockIndex":2}}
+{"contentBlockStart":{"contentBlockIndex":3,"toolUse":{"toolUseId":"toolu_fn","name":"lookup_ticket"}}}
+{"contentBlockDelta":{"contentBlockIndex":3,"toolUseInput":"{\"id\":\"T-1\"}"}}
+{"contentBlockStop":{"contentBlockIndex":3}}
+{"messageStop":{"stopReason":"tool_use"}}
+{"metadata":{"usage":{"inputTokens":11,"outputTokens":7,"totalTokens":18}}}
+"#;
+
+fn map_all(
+    state: &mut ResponsesStreamState,
+    events: &[ConverseStreamOutput],
+) -> Vec<ResponseStreamEvent> {
+    events
+        .iter()
+        .flat_map(|event| state.map_event(event))
+        .collect()
+}
+
+#[test]
+fn step_mode_metadata_ends_step_without_completed() {
+    let mut state = step_state(step_options());
+    let events = map_all(&mut state, &fixture_events(STEP_EVENTS));
+    assert!(state.step_complete());
+    let types: Vec<&str> = events.iter().map(ResponseStreamEvent::event_type).collect();
+    assert!(!types.contains(&"response.completed"));
+    assert!(
+        !types.contains(&"response.created"),
+        "started steps do not restart"
+    );
+    assert!(!types.contains(&"response.in_progress"));
+    let first_seq = serde_json::to_value(&events[0]).unwrap()["sequence_number"].clone();
+    assert_eq!(first_seq, 40);
+
+    let end = state.take_step();
+    assert!(end.events.is_empty(), "messageStop closed every item");
+    assert_eq!(end.stop_reason.as_deref(), Some("tool_use"));
+    assert_eq!(end.usage.as_ref().unwrap()["outputTokens"], 7);
+    assert!(end.tools_valid);
+    assert_eq!(
+        end.tools
+            .iter()
+            .map(|t| (t.call_id.as_str(), t.name.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("toolu_ws", "web_search"), ("toolu_fn", "lookup_ticket")]
+    );
+    assert_eq!(end.tools[0].input(), json!({ "query": "aws" }));
+    assert_eq!(end.seq, 40 + events.len() as u64);
+    assert_eq!(
+        end.next_output_index, 7,
+        "reasoning and message took 5 and 6"
+    );
+    assert!(end.reasoning_tokens > 0);
+    // A later event is inert once the step was taken.
+    assert!(state.map_event(&ev_text("late", 9)).is_empty());
+}
+
+#[test]
+fn defer_tool_events_emits_no_tool_events_while_streaming() {
+    let mut state = step_state(step_options());
+    let events = map_all(&mut state, &fixture_events(STEP_EVENTS));
+    for ev in &events {
+        let json = serde_json::to_value(ev).unwrap();
+        assert_ne!(json["type"], "response.function_call_arguments.delta");
+        if json["type"] == "response.output_item.added" {
+            assert!(
+                matches!(json["item"]["type"].as_str(), Some("reasoning" | "message")),
+                "{json}"
+            );
+        }
+    }
+    let end = state.take_step();
+    let mut accum = end.tools[1].clone();
+    accum.output_index = 9;
+    let mut seq = 100;
+    let registry = web_search_registry();
+    let tool = tool_events(&registry, &accum, true, &mut seq);
+    let tool: Vec<Value> = tool
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap())
+        .collect();
+    assert_eq!(seq, 103);
+    assert_eq!(tool[0]["type"], "response.output_item.added");
+    assert_eq!(tool[0]["output_index"], 9);
+    assert_eq!(tool[0]["item"]["arguments"], "{\"id\":\"T-1\"}");
+    assert!(tool[0]["item"].get("status").is_none());
+    assert_eq!(tool[1]["type"], "response.function_call_arguments.done");
+    assert_eq!(tool[1]["name"], "lookup_ticket");
+    assert_eq!(tool[2]["type"], "response.output_item.done");
+    assert_eq!(tool[2]["item"]["status"], "completed");
+    assert_eq!(tool[2]["item"]["id"], "fc_toolu_fn");
+}
+
+/// Without deferral the tool events are today's: added at block start with a
+/// reserved index (shell-like and search tools excepted).
+#[test]
+fn web_search_call_is_never_announced_at_block_start() {
+    let mut state = ResponsesStreamState::new_with_tools(
+        MODEL.to_string(),
+        RID.to_string(),
+        request(),
+        Arc::from("req-test"),
+        Instant::now(),
+        web_search_registry(),
+    );
+    let events = map_all(&mut state, &fixture_events(STEP_EVENTS));
+    let added: Vec<Value> = events
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap())
+        .filter(|e| e["type"] == "response.output_item.added")
+        .collect();
+    assert_eq!(
+        added
+            .iter()
+            .map(|e| e["item"]["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["reasoning", "message", "function_call"]
+    );
+}
+
+#[test]
+fn step_ids_override_item_ids() {
+    let mut state = step_state(step_options());
+    let events = map_all(&mut state, &fixture_events(STEP_EVENTS));
+    let ids: Vec<String> = events
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap())
+        .filter_map(|e| {
+            e.get("item_id")
+                .or_else(|| e.pointer("/item/id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    assert!(!ids.is_empty());
+    assert!(
+        ids.iter().all(|id| id == "rs_loop_2" || id == "msg_loop_2"),
+        "{ids:?}"
+    );
+    let _ = state.take_step();
+}
+
+#[test]
+fn marked_envelopes_in_step_mode() {
+    let mut state = step_state(step_options());
+    let events = map_all(&mut state, &fixture_events(STEP_EVENTS));
+    let _ = state.take_step();
+    let reasoning = events
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap())
+        .find(|e| e["type"] == "response.output_item.done" && e["item"]["type"] == "reasoning")
+        .unwrap();
+    let encrypted = reasoning["item"]["encrypted_content"].as_str().unwrap();
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encrypted.trim_start_matches("bedrock-reasoning-v1:"))
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&payload).unwrap(),
+        json!({
+            "blocks": [{ "reasoningText": { "text": "Need data.", "signature": "sig-step" } }],
+            "version": 1,
+            "ws": 1
+        })
+    );
+
+    let mut plain = step_state(StepOptions {
+        mark_envelopes: false,
+        ..step_options()
+    });
+    let events = map_all(&mut plain, &fixture_events(STEP_EVENTS));
+    let _ = plain.take_step();
+    let reasoning = events
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap())
+        .find(|e| e["type"] == "response.output_item.done" && e["item"]["type"] == "reasoning")
+        .unwrap();
+    assert_eq!(
+        reasoning["item"]["encrypted_content"].as_str(),
+        crate::bedrock::responses_translate::encode_reasoning_envelope(&[json!({
+            "reasoningContent": { "reasoningText": { "text": "Need data.", "signature": "sig-step" } }
+        })])
+        .as_deref()
+    );
+}
+
+#[test]
+fn message_close_emits_annotations_when_citations_given() {
+    let mut sources = CitationSources::default();
+    sources.insert("https://AWS.amazon.com/new/#top", Some("What's New"));
+    let mut state = step_state(StepOptions {
+        citations: Some(Arc::new(sources)),
+        ..step_options()
+    });
+    let lines = r#"
+{"messageStart":{"role":"assistant"}}
+{"contentBlockDelta":{"contentBlockIndex":0,"text":"See [AWS news](https://aws.am"}}
+{"contentBlockDelta":{"contentBlockIndex":0,"text":"azon.com/new/) and [other](https://example.com/x)."}}
+{"contentBlockStop":{"contentBlockIndex":0}}
+{"messageStop":{"stopReason":"end_turn"}}
+{"metadata":{"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}}
+"#;
+    let events: Vec<Value> = map_all(&mut state, &fixture_events(lines))
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap())
+        .collect();
+    let _ = state.take_step();
+    let types: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
+    let added = types
+        .iter()
+        .position(|t| *t == "response.output_text.annotation.added")
+        .expect("annotation event");
+    let last_delta = types
+        .iter()
+        .rposition(|t| *t == "response.output_text.delta")
+        .unwrap();
+    let text_done = types
+        .iter()
+        .position(|t| *t == "response.output_text.done")
+        .unwrap();
+    assert!(last_delta < added && added < text_done, "{types:?}");
+    assert_eq!(
+        types
+            .iter()
+            .filter(|t| **t == "response.output_text.annotation.added")
+            .count(),
+        1
+    );
+    let annotation = json!({
+        "type": "url_citation",
+        "url": "https://aws.amazon.com/new/",
+        "title": "What's New",
+        "start_index": 4,
+        "end_index": 43
+    });
+    let event = &events[added];
+    assert_eq!(event["item_id"], "msg_loop_2");
+    assert_eq!(event["content_index"], 0);
+    assert_eq!(event["annotation_index"], 0);
+    assert_eq!(event["annotation"], annotation);
+    let part_done = events
+        .iter()
+        .find(|e| e["type"] == "response.content_part.done")
+        .unwrap();
+    assert_eq!(part_done["part"]["annotations"], json!([annotation]));
+    let item_done = events
+        .iter()
+        .find(|e| e["type"] == "response.output_item.done" && e["item"]["type"] == "message")
+        .unwrap();
+    assert_eq!(
+        item_done["item"]["content"][0]["annotations"],
+        json!([annotation])
+    );
+
+    // Without citations (the default) the message has none and no event.
+    let mut plain = step_state(step_options());
+    let events: Vec<Value> = map_all(&mut plain, &fixture_events(lines))
+        .iter()
+        .map(|e| serde_json::to_value(e).unwrap())
+        .collect();
+    let _ = plain.take_step();
+    assert!(events
+        .iter()
+        .all(|e| e["type"] != "response.output_text.annotation.added"));
 }

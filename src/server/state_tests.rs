@@ -198,6 +198,13 @@ fn settings() -> AppSettings {
         chat_reasoning_capsule_keys: None,
         disable_mantle: false,
         disable_tool_search: false,
+        web_search_backend: "off".to_string(),
+        web_search_region: None,
+        web_search_max_calls: 5,
+        web_search_timeout_secs: 12,
+        web_search_max_results: 5,
+        web_search_result_chars: 1500,
+        web_search_max_tps: 5,
         api_key: Some("k".to_string()),
         api_key_secret_arn: None,
         api_key_param_name: None,
@@ -358,6 +365,7 @@ fn normalized_responses(model: &str) -> NormalizedResponsesRequest {
         request_id: Arc::from("req-test"),
         received_at: std::time::Instant::now(),
         raw_body: bytes::Bytes::new(),
+        web_search: crate::domain::WebSearchHeader::Absent,
     }
 }
 

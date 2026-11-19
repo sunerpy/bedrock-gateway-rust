@@ -1,5 +1,7 @@
 //! Amazon Bedrock integration
 
+pub mod agentcore_search;
+
 pub mod anthropic_messages;
 
 pub mod cache;
@@ -36,6 +38,8 @@ pub mod responses_stream;
 
 pub mod responses_translate;
 
+pub mod responses_web_search;
+
 pub mod response;
 
 pub mod stream;
@@ -45,3 +49,5 @@ pub mod tokens;
 pub mod tools;
 
 pub mod translate;
+
+pub mod web_search;

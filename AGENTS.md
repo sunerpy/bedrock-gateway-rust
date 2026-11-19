@@ -56,6 +56,8 @@ Two composite dispatchers pick a backend per request, so a model can be mantle o
 
 Inside `BedrockResponsesProvider`, a request with client-executed tool search (`tool_search` tool or `tool_search_call` / `tool_search_output` items) on a model with the `tool_search` capability skips Converse and goes to InvokeModel. `bedrock/anthropic_messages.rs` converts the same Converse-shaped assembly into a Messages body and maps Messages output back into Converse shapes for the existing mappers and stream state machine, so a new Converse block kind needs a Messages mapping there too. The searched tools are recomputed from history on every request and must stay byte-identical once referenced (prompt cache and preserved-thinking prefix checks). `DISABLE_TOOL_SEARCH=true` turns the lane off.
 
+`BedrockResponsesProvider` also runs web search for Claude itself (`bedrock/responses_web_search.rs`, plan C2). A request *declares* it when its `X-Weniq-Web-Search` header is `on`, `WEB_SEARCH_BACKEND=agentcore` built a backend and the model has the `web_search` capability (unless the request continues a tool loop whose gateway thinking has no mark: search then starts with the next user message), or when its history already carries the gateway's web search marks; every other request takes the single-call path unchanged. A declared request gets the frozen synthetic `web_search` tool after the client tools and loops on Converse or the tool-search lane: each search step's `toolUse`/`toolResult` blocks travel in a version-2 reasoning envelope (the carrier), every reasoning envelope it emits carries `"ws": 1`, and the loop builds each continuation from its own output items through the replay translation, so the client's next request rebuilds the same prefix. The tool's name, description and schema are frozen (`web_search.rs`); changing them breaks every conversation that declared them. Declaration never depends on the backend switch or the capability, only execution does.
+
 ## Hard rules
 
 **Zero hardcoding.** All model knowledge lives in `config/*.toml`; `.rs` holds only the matching algorithm. Protocol constants (`data: `, `[DONE]`, `chat.completion`, `chatcmpl-`, `finish_reason` values) are fine. Model IDs, name-derived capability flags, context-window magic numbers, and any `if model.contains("...")` are not. If you reach for one, add a capability flag to `config/models.toml` and read it via `ModelCapabilities::has(Capability::...)`.
@@ -78,7 +80,7 @@ Touching one means verifying the other two are unchanged.
 
 **Raw-lane contract.** Raw lanes return `Result<Option<...>, AppError>`: `Ok(Some(stream))` selects passthrough, `Ok(None)` means unsupported, `Err(e)` preserves the first pre-stream failure and must not trigger a second typed request. The one asymmetry: the raw **chat** lane appends `data: [DONE]\n\n` at the tail (mantle omits it, OpenAI chat clients expect it); the raw **responses** lane does not, and terminates on `response.completed`.
 
-**Responses surface is stateless.** `store` and `previous_response_id` are accepted and ignored. Unknown tool types deserialize into `ResponsesTool`'s `#[serde(other)] Unknown` and hosted server tools with no Bedrock equivalent are silently dropped, never 400 — codex bundles them unconditionally, and a 400 would kill the whole session including the caller's real function tools.
+**Responses surface is stateless.** `store` and `previous_response_id` are accepted and ignored. Unknown tool types deserialize into `ResponsesTool`'s `#[serde(other)] Unknown` and hosted server tools with no Bedrock equivalent are silently dropped, never 400 — codex bundles them unconditionally, and a 400 would kill the whole session including the caller's real function tools. The one exception is web search on a request that declares it (`X-Weniq-Web-Search`, see above): the body's hosted `web_search` is still dropped, and the gateway declares and runs its own synthetic tool. A request header, not a body field, because mantle forwards the body verbatim and the "no invented top-level fields" rule is about the body.
 
 **Cache placement.** Auto-injection is default-ON (`enable_prompt_caching`). Order is tools → system → messages, sharing a budget of `max_cache_checkpoints` total points. A model supports caching iff its `config/models.toml` entry has `cache_min_tokens` — config gate, no name inspection. Cache hits need byte-stable prefixes: changing any segment before a `cachePoint` invalidates every later point in that request.
 
@@ -111,15 +113,17 @@ Startup degrades rather than fails: a mantle-backed model with no `bedrock_api_k
 
 ## Tests
 
-Unit tests are sidecar files, not inline modules: `foo.rs` ends with `#[cfg(test)] #[path = "foo_tests.rs"] mod tests;` and the tests live in `foo_tests.rs`. There are 34 such files. Follow the pattern; do not add an inline `mod tests`.
+Unit tests are sidecar files, not inline modules: `foo.rs` ends with `#[cfg(test)] #[path = "foo_tests.rs"] mod tests;` and the tests live in `foo_tests.rs`. There are 37 such files. Follow the pattern; do not add an inline `mod tests`.
 
 Golden record/replay lives in `tests/golden/`, fixtures under `fixtures/<group>/<case>/` (`translation`, `response`, `streaming`, `responses_*`, `embeddings`). Helpers in `harness.rs`: `assert_semantic_eq`, `assert_semantic_eq_with`, `assert_stream_eq`. Assertions are semantic, not byte-equal, so field ordering can drift. Add a fixture alongside any new translation path. Runs offline in CI with no AWS credentials.
 
-Live integration tests are `#[ignore]`d and env-gated (`src/bedrock/cache_tests.rs`, `src/bedrock/models_tests.rs`):
+Live integration tests are `#[ignore]`d and env-gated (`src/bedrock/cache_tests.rs`, `src/bedrock/models_tests.rs`, and for web search `src/bedrock/agentcore_search_tests.rs` and `src/bedrock/responses_web_search_tests.rs`):
 
 ```bash
 BEDROCK_INTEGRATION=1 AWS_PROFILE=<your-profile> cargo test -- --ignored   # needs real Bedrock access in us-east-2
 ```
+
+The web search tests pin us-east-2 for Bedrock and AgentCore in code, but `AppSettings::load()` and the SDK read a bare `AWS_REGION`, so unset it (and stray key variables) when running them: `env -u AWS_REGION -u AWS_DEFAULT_REGION -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_BEARER_TOKEN_BEDROCK -u BEDROCK_API_KEY BEDROCK_INTEGRATION=1 AWS_PROFILE=<profile> cargo test --lib web_search -- --ignored`. The Bedrock clients send a bearer token from `AWS_BEARER_TOKEN_BEDROCK` instead of signing with the profile; a token meant for another endpoint makes every Bedrock call fail with `Authorization header requires 'Credential' parameter`, so unset it unless it is a Bedrock API key of the profile's account. AgentCore takes SigV4 only, so the profile needs IAM credentials either way.
 
 Coverage is tracked but never blocking: `make coverage`, `make coverage-html`, `make coverage-lcov`. Target 95%; see `docs/coverage.md`.
 
@@ -128,7 +132,7 @@ Transient Bedrock 503/500 in CI: retry. Before re-running a task that may alread
 ## Conventions
 
 - **Commits:** Conventional Commits with an English, imperative subject and no scope — `feat: add Nova embedding support`, `fix: map streaming finish_reason`.
-- **Two unrelated auth directions.** Client → gateway is `API_KEY` / `API_KEY_SECRET_ARN` / `API_KEY_PARAM_NAME`, resolved SSM → Secrets Manager → env, enforced in `server/auth.rs` (`AppSettings::api_key`). Gateway → Bedrock is `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY` with SigV4 fallback, injected in `bedrock::client::build_aws_config` (`AppSettings::bedrock_api_key`). Never conflate them.
+- **Three unrelated auth directions.** Client → gateway is `API_KEY` / `API_KEY_SECRET_ARN` / `API_KEY_PARAM_NAME`, resolved SSM → Secrets Manager → env, enforced in `server/auth.rs` (`AppSettings::api_key`). Gateway → Bedrock is `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY` with SigV4 fallback, injected in `bedrock::client::build_aws_config` (`AppSettings::bedrock_api_key`). Gateway → AgentCore Web Search (`WEB_SEARCH_BACKEND=agentcore`) is always SigV4 from the default credential chain (task role, execution role, IRSA, profile), signed in `bedrock::agentcore_search`; the Bedrock API key never reaches it. Never conflate them.
 - **Env vars:** both `APP_`-prefixed and bare Python-parity names are accepted; bare names win. Allow-list is `apply_bare_env_overrides` in `src/config/settings.rs`.
 - **Lambda:** never set `AWS_REGION` in the Lambda environment — reserved variable, cfn-lint `E3663`. The runtime injects it.
 - **Docs layout:** root holds only `README.md` and `AGENTS.md`. Community files (CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, PR template) live in `.github/`; README_CN stays in `docs/readme/`; deployment guides go under `docs/deploy/`. Do not add `.md` files to the root.

@@ -79,6 +79,32 @@ env:
   # AWS_BEARER_TOKEN_BEDROCK: gateway->Bedrock bearer token. Leave unset when
   # using IRSA (SigV4 via the pod's role).
   AWS_BEARER_TOKEN_BEDROCK: null
+  # --- Web search for Claude on /responses (settings.rs) ---
+  # WEB_SEARCH_BACKEND: "agentcore" lets the gateway run web searches with
+  # Amazon Bedrock AgentCore Web Search for requests that send
+  # X-Weniq-Web-Search: on, on models with the web_search capability. Unset ⇒
+  # off. AgentCore calls are signed with SigV4 from the pod's IRSA role, never
+  # with AWS_BEARER_TOKEN_BEDROCK; the chart creates no IAM, so grant that role
+  # bedrock-agentcore:InvokeWebSearch on
+  # arn:aws:bedrock-agentcore:<region>:aws:tool/web-search.v1 yourself (the
+  # account segment is the literal "aws": AWS owns the tool).
+  WEB_SEARCH_BACKEND: null
+  # WEB_SEARCH_REGION: AgentCore Region. Unset ⇒ AWS_REGION. AgentCore Web
+  # Search exists only in us-east-1, us-east-2, us-west-2, ap-southeast-2,
+  # ap-northeast-1 and eu-west-1.
+  WEB_SEARCH_REGION: null
+  # Unset ⇒ binary defaults: 5 searches per answer (one user turn, counted
+  # across its continuation requests; at most 20), a 12 s budget per search
+  # including one retry, 5 results per search, 1500 characters of page text
+  # per result.
+  WEB_SEARCH_MAX_CALLS: null
+  WEB_SEARCH_TIMEOUT_SECS: null
+  WEB_SEARCH_MAX_RESULTS: null
+  WEB_SEARCH_RESULT_CHARS: null
+  # WEB_SEARCH_MAX_TPS: searches per second per pod (default 5). The AgentCore
+  # quota is 10 TPS per account and Region, shared by every pod, so use
+  # floor(10 / maximum replicas), e.g. 2 with the HPA's maxReplicas of 5.
+  WEB_SEARCH_MAX_TPS: null
 
 # --- API_KEY (client -> gateway) delivery -----------------------------------
 # Two mutually-exclusive modes. API_KEY is NEVER placed in the ConfigMap or a

@@ -52,6 +52,7 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tower_http::LatencyUnit;
 use tracing::Level;
 
+use crate::bedrock::agentcore_search::resolve_web_search_backend;
 use crate::bedrock::cache_support::CacheSupportRegistry;
 use crate::bedrock::capabilities::ConfigModelCapabilities;
 use crate::bedrock::capsule::resolve_capsule_runtime;
@@ -65,6 +66,7 @@ use crate::bedrock::provider::BedrockChatProvider;
 use crate::bedrock::responses_chat_provider::ResponsesChatProvider;
 use crate::bedrock::responses_provider::BedrockResponsesProvider;
 use crate::bedrock::translate::ReqwestImageResolver;
+use crate::bedrock::web_search::WebSearchLimits;
 use crate::config::capabilities::ModelAlias;
 use crate::config::{AppSettings, EmbeddingRegistry, ModelCapabilityConfig, RegionRoutingConfig};
 use crate::domain::{ChatProvider, EmbeddingProvider, ModelCapabilities, ResponsesProvider};
@@ -92,6 +94,11 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
     let capsule = Arc::new(resolve_capsule_runtime(&settings)?);
     let aws_config = build_aws_config(&settings).await;
     let clients = BedrockClients::new(&aws_config);
+    // Read and clamp the WEB_SEARCH_* limits once: the backend and the search
+    // loop share them. The backend is `None` (web search off) unless
+    // WEB_SEARCH_BACKEND names a usable one; boot never fails on it.
+    let web_search_limits = WebSearchLimits::from_settings(&settings);
+    let web_search = resolve_web_search_backend(&settings, &aws_config, &web_search_limits);
 
     let api_key = auth::resolve_api_key(&settings, &aws_config)
         .await
@@ -185,6 +192,8 @@ async fn build_app_state(settings: Arc<AppSettings>) -> Result<AppState> {
         image_resolver,
         settings.clone(),
         cache_support.clone(),
+        web_search,
+        web_search_limits,
     ));
 
     let mantle_client = MantleClient::new(
@@ -490,6 +499,13 @@ mod tests {
             bedrock_api_key: Some("test-bedrock-bearer".to_string()),
             disable_mantle: false,
             disable_tool_search: false,
+            web_search_backend: "off".to_string(),
+            web_search_region: None,
+            web_search_max_calls: 5,
+            web_search_timeout_secs: 12,
+            web_search_max_results: 5,
+            web_search_result_chars: 1500,
+            web_search_max_tps: 5,
             bind_addr: "127.0.0.1".to_string(),
             port: 0,
             log_level: "info".to_string(),

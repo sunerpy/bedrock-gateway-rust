@@ -1,0 +1,32 @@
+{
+  "id": "msg_bdrk_01",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-5-5",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "The user asks for this week's AWS news; search first.",
+      "signature": "c3luLXNpZy0w"
+    },
+    {
+      "type": "text",
+      "text": "Let me look that up."
+    },
+    {
+      "type": "tool_use",
+      "id": "tooluse_ws_1",
+      "name": "web_search",
+      "input": {
+        "query": "AWS announcements November 2026"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 2100,
+    "output_tokens": 95,
+    "cache_creation_input_tokens": 1800
+  }
+}

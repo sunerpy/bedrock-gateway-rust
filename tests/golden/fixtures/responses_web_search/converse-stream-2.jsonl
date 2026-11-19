@@ -1,0 +1,10 @@
+{"messageStart":{"role":"assistant"}}
+{"contentBlockDelta":{"contentBlockIndex":0,"reasoningText":"Two results; the first"}}
+{"contentBlockDelta":{"contentBlockIndex":0,"reasoningText":" answers the question."}}
+{"contentBlockDelta":{"contentBlockIndex":0,"reasoningSignature":"c3luLXNpZy0x"}}
+{"contentBlockStop":{"contentBlockIndex":0}}
+{"contentBlockDelta":{"contentBlockIndex":1,"text":"AWS made AgentCore Web Search generally available ([What's New with AWS](https://aws.amazon.com/new"}}
+{"contentBlockDelta":{"contentBlockIndex":1,"text":"/)). See also [the developer guide](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/)."}}
+{"contentBlockStop":{"contentBlockIndex":1}}
+{"messageStop":{"stopReason":"end_turn"}}
+{"metadata":{"usage":{"inputTokens":2600,"outputTokens":140,"totalTokens":4540,"cacheReadInputTokens":1800,"cacheWriteInputTokens":0}}}

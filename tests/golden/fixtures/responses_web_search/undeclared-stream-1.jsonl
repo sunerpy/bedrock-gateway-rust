@@ -1,0 +1,17 @@
+{"messageStart":{"role":"assistant"}}
+{"contentBlockDelta":{"contentBlockIndex":0,"reasoningText":"Let me "}}
+{"contentBlockDelta":{"contentBlockIndex":0,"reasoningText":"think."}}
+{"contentBlockDelta":{"contentBlockIndex":0,"reasoningSignature":"sig-stream-1"}}
+{"contentBlockStop":{"contentBlockIndex":0}}
+{"contentBlockDelta":{"contentBlockIndex":1,"text":"I will call "}}
+{"contentBlockDelta":{"contentBlockIndex":1,"text":"the tools."}}
+{"contentBlockStop":{"contentBlockIndex":1}}
+{"contentBlockStart":{"contentBlockIndex":2,"toolUse":{"toolUseId":"toolu_s2","name":"mcp__ze_tools__direct_beta"}}}
+{"contentBlockDelta":{"contentBlockIndex":2,"toolUseInput":"{\"n\":"}}
+{"contentBlockDelta":{"contentBlockIndex":2,"toolUseInput":"2}"}}
+{"contentBlockStop":{"contentBlockIndex":2}}
+{"contentBlockStart":{"contentBlockIndex":3,"toolUse":{"toolUseId":"toolu_s3","name":"web_search"}}}
+{"contentBlockDelta":{"contentBlockIndex":3,"toolUseInput":"{\"query\":\"aws\"}"}}
+{"contentBlockStop":{"contentBlockIndex":3}}
+{"messageStop":{"stopReason":"tool_use"}}
+{"metadata":{"usage":{"inputTokens":120,"outputTokens":40,"totalTokens":190,"cacheReadInputTokens":20,"cacheWriteInputTokens":10}}}

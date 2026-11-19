@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 static ENV_GUARD: Mutex<()> = Mutex::new(());
 
@@ -30,6 +30,45 @@ fn clear_capsule_vars() {
     for name in CAPSULE_VARS {
         std::env::remove_var(name);
     }
+}
+
+const WEB_SEARCH_VARS: [&str; 7] = [
+    "WEB_SEARCH_BACKEND",
+    "WEB_SEARCH_REGION",
+    "WEB_SEARCH_MAX_CALLS",
+    "WEB_SEARCH_TIMEOUT_SECS",
+    "WEB_SEARCH_MAX_RESULTS",
+    "WEB_SEARCH_RESULT_CHARS",
+    "WEB_SEARCH_MAX_TPS",
+];
+
+fn clear_web_search_vars() {
+    for name in WEB_SEARCH_VARS {
+        std::env::remove_var(name);
+    }
+}
+
+/// The numeric members of [`WEB_SEARCH_VARS`], in override order.
+const WEB_SEARCH_NUMERIC_VARS: [&str; 5] = [
+    "WEB_SEARCH_MAX_CALLS",
+    "WEB_SEARCH_TIMEOUT_SECS",
+    "WEB_SEARCH_MAX_RESULTS",
+    "WEB_SEARCH_RESULT_CHARS",
+    "WEB_SEARCH_MAX_TPS",
+];
+
+fn ignored_names(ignored: &[IgnoredEnvVar]) -> Vec<&'static str> {
+    ignored.iter().map(|var| var.name).collect()
+}
+
+fn assert_web_search_defaults(settings: &AppSettings) {
+    assert_eq!(settings.web_search_backend, "off");
+    assert_eq!(settings.web_search_region, None);
+    assert_eq!(settings.web_search_max_calls, 5);
+    assert_eq!(settings.web_search_timeout_secs, 12);
+    assert_eq!(settings.web_search_max_results, 5);
+    assert_eq!(settings.web_search_result_chars, 1500);
+    assert_eq!(settings.web_search_max_tps, 5);
 }
 
 fn minimal_builder() -> ConfigBuilder {
@@ -825,4 +864,215 @@ fn model_catalog_refresh_secs_defaults_and_env_override() {
     assert_eq!(settings.model_catalog_refresh_secs, 3600);
 
     std::env::remove_var("MODEL_CATALOG_REFRESH_SECS");
+}
+
+#[test]
+fn web_search_settings_default_to_off() {
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+    clear_web_search_vars();
+
+    // `load()` sets the defaults explicitly; config/app.toml keeps the keys
+    // commented out, so the image default stays off.
+    let settings = AppSettings::load().expect("settings load");
+    assert_web_search_defaults(&settings);
+
+    // A source that predates the fields still deserializes (serde defaults).
+    let settings: AppSettings = minimal_builder()
+        .build()
+        .unwrap()
+        .try_deserialize()
+        .unwrap();
+    assert_web_search_defaults(&settings);
+}
+
+#[test]
+fn bare_web_search_env_vars_override_defaults() {
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+    clear_web_search_vars();
+
+    std::env::set_var("WEB_SEARCH_BACKEND", "agentcore");
+    std::env::set_var("WEB_SEARCH_REGION", "us-east-2");
+    std::env::set_var("WEB_SEARCH_MAX_CALLS", "3");
+    std::env::set_var("WEB_SEARCH_TIMEOUT_SECS", "20");
+    std::env::set_var("WEB_SEARCH_MAX_RESULTS", "8");
+    std::env::set_var("WEB_SEARCH_RESULT_CHARS", "900");
+    std::env::set_var("WEB_SEARCH_MAX_TPS", "2");
+
+    let settings = AppSettings::load().expect("settings load");
+
+    assert_eq!(settings.web_search_backend, "agentcore");
+    assert_eq!(settings.web_search_region, Some("us-east-2".to_string()));
+    assert_eq!(settings.web_search_max_calls, 3);
+    assert_eq!(settings.web_search_timeout_secs, 20);
+    assert_eq!(settings.web_search_max_results, 8);
+    assert_eq!(settings.web_search_result_chars, 900);
+    assert_eq!(settings.web_search_max_tps, 2);
+
+    clear_web_search_vars();
+}
+
+#[test]
+fn web_search_env_vars_non_numeric_or_empty_fall_back_to_defaults() {
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+    clear_web_search_vars();
+
+    std::env::set_var("WEB_SEARCH_BACKEND", "");
+    std::env::set_var("WEB_SEARCH_REGION", "  ");
+    std::env::set_var("WEB_SEARCH_MAX_CALLS", "many");
+    std::env::set_var("WEB_SEARCH_TIMEOUT_SECS", "12s");
+    std::env::set_var("WEB_SEARCH_MAX_RESULTS", "");
+    std::env::set_var("WEB_SEARCH_RESULT_CHARS", "lots");
+    std::env::set_var("WEB_SEARCH_MAX_TPS", "fast");
+
+    let settings = AppSettings::load().expect("settings load");
+    assert_web_search_defaults(&settings);
+    // The non-numeric values are reported for the WARN; an empty one counts
+    // as unset.
+    let (settings, ignored) = AppSettings::load_with_ignored_env().expect("settings load");
+    assert_web_search_defaults(&settings);
+    assert_eq!(
+        ignored_names(&ignored),
+        [
+            "WEB_SEARCH_MAX_CALLS",
+            "WEB_SEARCH_TIMEOUT_SECS",
+            "WEB_SEARCH_RESULT_CHARS",
+            "WEB_SEARCH_MAX_TPS",
+        ]
+    );
+
+    // Negative values do not fit the unsigned fields. They used to reach
+    // try_deserialize and fail the whole load, so the gateway did not start.
+    for (name, value) in WEB_SEARCH_NUMERIC_VARS
+        .into_iter()
+        .zip(["-1", "-12", "-5", "-1500", "-2"])
+    {
+        std::env::set_var(name, value);
+    }
+    let settings = AppSettings::load().expect("negative values do not fail the load");
+    assert_web_search_defaults(&settings);
+    let (_, ignored) = AppSettings::load_with_ignored_env().expect("settings load");
+    assert_eq!(ignored_names(&ignored), WEB_SEARCH_NUMERIC_VARS);
+    assert_eq!(ignored[0].value, "-1");
+
+    // One past the largest value each field holds.
+    for (name, value) in WEB_SEARCH_NUMERIC_VARS.into_iter().zip([
+        "4294967296",
+        "18446744073709551616",
+        "4294967296",
+        "99999999999",
+        "4294967296",
+    ]) {
+        std::env::set_var(name, value);
+    }
+    let settings = AppSettings::load().expect("too large values do not fail the load");
+    assert_web_search_defaults(&settings);
+    let (_, ignored) = AppSettings::load_with_ignored_env().expect("settings load");
+    assert_eq!(ignored_names(&ignored), WEB_SEARCH_NUMERIC_VARS);
+    let u32_max = u64::from(u32::MAX);
+    assert_eq!(
+        ignored.iter().map(|var| var.max).collect::<Vec<_>>(),
+        [u32_max, u64::MAX, u32_max, u32_max, u32_max]
+    );
+
+    clear_web_search_vars();
+}
+
+#[test]
+fn web_search_env_vars_take_the_full_width_of_their_field() {
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+    clear_web_search_vars();
+
+    // Each field's largest value loads; WebSearchLimits clamps it to the
+    // range the search loop allows.
+    std::env::set_var("WEB_SEARCH_MAX_CALLS", "4294967295");
+    std::env::set_var("WEB_SEARCH_TIMEOUT_SECS", "18446744073709551615");
+    std::env::set_var("WEB_SEARCH_MAX_RESULTS", "+25");
+    std::env::set_var("WEB_SEARCH_RESULT_CHARS", "0");
+    std::env::set_var("WEB_SEARCH_MAX_TPS", " 4294967295 ");
+
+    let (settings, ignored) = AppSettings::load_with_ignored_env().expect("settings load");
+    assert!(ignored.is_empty(), "{ignored:?}");
+    assert_eq!(settings.web_search_max_calls, u32::MAX);
+    assert_eq!(settings.web_search_timeout_secs, u64::MAX);
+    assert_eq!(settings.web_search_max_results, 25);
+    assert_eq!(settings.web_search_result_chars, 0);
+    assert_eq!(settings.web_search_max_tps, u32::MAX);
+
+    clear_web_search_vars();
+}
+
+#[test]
+fn ignored_web_search_env_var_keeps_the_file_value() {
+    let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+    clear_web_search_vars();
+    std::env::set_var("WEB_SEARCH_MAX_CALLS", "-1");
+    std::env::set_var("WEB_SEARCH_MAX_TPS", "3");
+
+    let file = File::from_str(
+        "web_search_max_calls = 7\nweb_search_max_tps = 1",
+        config::FileFormat::Toml,
+    );
+    let mut ignored = Vec::new();
+    let settings: AppSettings =
+        apply_bare_env_overrides(minimal_builder().add_source(file), &mut ignored)
+            .unwrap()
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+
+    assert_eq!(settings.web_search_max_calls, 7, "the file's value stays");
+    assert_eq!(
+        settings.web_search_max_tps, 3,
+        "a valid env value still wins"
+    );
+    assert_eq!(ignored_names(&ignored), ["WEB_SEARCH_MAX_CALLS"]);
+
+    clear_web_search_vars();
+}
+
+/// What a log subscriber writes, kept for assertions.
+#[derive(Clone, Default)]
+struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogBuffer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn ignored_env_var_warns_with_its_name_value_and_range() {
+    let logs = LogBuffer::default();
+    let writer = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .flatten_event(true)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        IgnoredEnvVar {
+            name: "WEB_SEARCH_MAX_TPS",
+            value: "-2".to_string(),
+            max: u64::from(u32::MAX),
+        }
+        .warn();
+    });
+
+    let rendered = String::from_utf8(logs.0.lock().unwrap().clone()).expect("UTF-8 logs");
+    assert!(rendered.contains("\"level\":\"WARN\""), "{rendered}");
+    assert!(
+        rendered.contains("\"variable\":\"WEB_SEARCH_MAX_TPS\""),
+        "{rendered}"
+    );
+    assert!(rendered.contains("\"value\":\"-2\""), "{rendered}");
+    assert!(rendered.contains("\"max\":4294967295"), "{rendered}");
 }

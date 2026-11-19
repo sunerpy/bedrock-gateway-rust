@@ -1,0 +1,135 @@
+[
+  {
+    "encrypted_content": {
+      "blocks": [
+        {
+          "reasoningText": {
+            "signature": "c3luLXNpZy0w",
+            "text": "The user asks for this week's AWS news; search first."
+          }
+        }
+      ],
+      "version": 1,
+      "ws": 1
+    },
+    "id": "rs_S",
+    "summary": [
+      {
+        "text": "The user asks for this week's AWS news; search first.",
+        "type": "summary_text"
+      }
+    ],
+    "type": "reasoning"
+  },
+  {
+    "content": [
+      {
+        "annotations": [],
+        "text": "Let me look that up.",
+        "type": "output_text"
+      }
+    ],
+    "id": "msg_S",
+    "role": "assistant",
+    "status": "completed",
+    "type": "message"
+  },
+  {
+    "action": {
+      "queries": [
+        "AWS announcements November 2026"
+      ],
+      "query": "AWS announcements November 2026",
+      "sources": [
+        {
+          "type": "url",
+          "url": "https://aws.amazon.com/new/"
+        },
+        {
+          "type": "url",
+          "url": "https://aws.amazon.com/blogs/aws/"
+        }
+      ],
+      "type": "search"
+    },
+    "id": "ws_bgw_tooluse_ws_1",
+    "status": "completed",
+    "type": "web_search_call"
+  },
+  {
+    "encrypted_content": {
+      "tool_results": [
+        {
+          "toolResult": {
+            "content": [
+              {
+                "text": "{\"query\":\"AWS announcements November 2026\",\"results\":[{\"published_at\":\"2026-11-17T00:00:00Z\",\"rank\":1,\"text\":\"Amazon Bedrock AgentCore Web Search is now generally available in six Regions.\",\"text_truncated\":false,\"title\":\"What's New with AWS\",\"url\":\"https://aws.amazon.com/new/\"},{\"rank\":2,\"text\":\"Weekly roundup: the launches of the week, from Bedrock to S3.\",\"text_truncated\":false,\"title\":\"AWS News Blog\",\"url\":\"https://aws.amazon.com/blogs/aws/\"}],\"source\":\"Amazon Bedrock AgentCore Web Search\",\"trust\":\"untrusted third-party web content\",\"type\":\"web_search_results\"}"
+              }
+            ],
+            "toolUseId": "tooluse_ws_1"
+          }
+        }
+      ],
+      "tool_uses": [
+        {
+          "toolUse": {
+            "input": {
+              "query": "AWS announcements November 2026"
+            },
+            "name": "web_search",
+            "toolUseId": "tooluse_ws_1"
+          }
+        }
+      ],
+      "used": 1,
+      "version": 2,
+      "ws": 1
+    },
+    "id": "rs_S_ws0",
+    "summary": [],
+    "type": "reasoning"
+  },
+  {
+    "encrypted_content": {
+      "blocks": [
+        {
+          "reasoningText": {
+            "signature": "c3luLXNpZy0x",
+            "text": "Two results; the first answers the question."
+          }
+        }
+      ],
+      "version": 1,
+      "ws": 1
+    },
+    "id": "rs_S_1",
+    "summary": [
+      {
+        "text": "Two results; the first answers the question.",
+        "type": "summary_text"
+      }
+    ],
+    "type": "reasoning"
+  },
+  {
+    "content": [
+      {
+        "annotations": [
+          {
+            "end_index": 101,
+            "start_index": 51,
+            "title": "What's New with AWS",
+            "type": "url_citation",
+            "url": "https://aws.amazon.com/new/"
+          }
+        ],
+        "text": "AWS made AgentCore Web Search generally available ([What's New with AWS](https://aws.amazon.com/new/)). See also [the developer guide](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/).",
+        "type": "output_text"
+      }
+    ],
+    "id": "msg_S_1",
+    "role": "assistant",
+    "status": "completed",
+    "type": "message"
+  }
+]

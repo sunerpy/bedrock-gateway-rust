@@ -85,6 +85,13 @@ fn settings_in_region(region: &str) -> Arc<AppSettings> {
         bedrock_api_key: None,
         disable_mantle: false,
         disable_tool_search: false,
+        web_search_backend: "off".to_string(),
+        web_search_region: None,
+        web_search_max_calls: 5,
+        web_search_timeout_secs: 12,
+        web_search_max_results: 5,
+        web_search_result_chars: 1500,
+        web_search_max_tps: 5,
         bind_addr: "127.0.0.1".to_string(),
         port: 0,
         log_level: "info".to_string(),
@@ -142,6 +149,7 @@ fn normalized(raw: &str) -> NormalizedResponsesRequest {
         request_id: Arc::from("req-test"),
         received_at: Instant::now(),
         raw_body: Bytes::copy_from_slice(raw.as_bytes()),
+        web_search: crate::domain::WebSearchHeader::Absent,
     }
 }
 
@@ -459,6 +467,60 @@ fn rewrite_without_gateway_reasoning_is_byte_stable() {
         .rewrite_model("gpt-5.5", &Bytes::copy_from_slice(raw))
         .expect("rewrite");
     assert_eq!(out, model_patch_only(raw, "openai.gpt-5.5"));
+}
+
+/// A search the gateway ran for a Claude turn: its `web_search_call` item
+/// (`ws_bgw_` id) and its carrier (a reasoning item with the gateway prefix)
+/// are dropped; GPT's own search item and everything else stay.
+#[test]
+fn drops_gateway_web_search_calls_keeps_gpt_ones() {
+    let carrier = crate::bedrock::responses_translate::encode_web_search_carrier(
+        &[serde_json::json!({ "toolUse": {
+            "toolUseId": "toolu_ws1", "name": "web_search", "input": { "query": "aws" } } })],
+        &[crate::bedrock::web_search::tool_result_block(
+            "toolu_ws1",
+            r#"{"error_code":"unavailable","type":"web_search_error"}"#,
+        )],
+        1,
+    );
+    let body = serde_json::json!({
+        "model": "gpt-5.5",
+        "input": [
+            { "type": "message", "role": "user", "content": "news?" },
+            claude_reasoning("rs_claude_1"),
+            { "type": "web_search_call", "id": "ws_bgw_toolu_ws1", "status": "completed",
+              "action": { "type": "search", "query": "aws", "queries": ["aws"] } },
+            { "type": "reasoning", "id": "rs_claude_ws0", "summary": [],
+              "encrypted_content": carrier },
+            { "type": "message", "role": "assistant",
+              "content": [{ "type": "output_text", "text": "AWS shipped things." }] },
+            { "type": "web_search_call", "id": "ws_gpt_1", "status": "completed",
+              "action": { "type": "search", "query": "more" } },
+            { "type": "web_search_call", "status": "completed",
+              "action": { "type": "search", "query": "no id" } },
+            { "type": "message", "role": "user", "content": "and now?" }
+        ],
+        "stream": true
+    });
+    let raw = Bytes::from(serde_json::to_vec(&body).expect("serialize"));
+    let provider = provider_for("http://mantle.invalid", "us-east-2", None);
+
+    let out = provider.rewrite_model("gpt-5.5", &raw).expect("rewrite");
+    let out: Value = serde_json::from_slice(&out).expect("output parses");
+
+    let ids: Vec<Option<&str>> = out["input"]
+        .as_array()
+        .expect("input")
+        .iter()
+        .map(|item| item["id"].as_str())
+        .collect();
+    assert_eq!(ids, vec![None, None, Some("ws_gpt_1"), None, None]);
+    assert_eq!(out["input"][1]["type"], "message");
+    assert_eq!(out["input"][3]["action"]["query"], "no id");
+
+    let mut map = body.as_object().expect("object").clone();
+    assert_eq!(drop_gateway_web_search_calls(&mut map), 1);
+    assert_eq!(drop_gateway_web_search_calls(&mut map), 0);
 }
 
 #[test]

@@ -1,0 +1,41 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "reasoningContent": {
+            "reasoningText": {
+              "text": "Two searches at once.",
+              "signature": "c3luLXNpZy1w"
+            }
+          }
+        },
+        {
+          "toolUse": {
+            "toolUseId": "tooluse_ws_a",
+            "name": "web_search",
+            "input": {
+              "query": "AgentCore Web Search launch"
+            }
+          }
+        },
+        {
+          "toolUse": {
+            "toolUseId": "tooluse_ws_b",
+            "name": "web_search",
+            "input": {
+              "query": "Bedrock news this week"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "stopReason": "tool_use",
+  "usage": {
+    "inputTokens": 2100,
+    "outputTokens": 80,
+    "totalTokens": 2180
+  }
+}

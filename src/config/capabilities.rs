@@ -71,6 +71,14 @@ pub enum Capability {
     /// `defer_loading`, results as `tool_reference` blocks), because Converse
     /// has no field for either. Requests without tool search stay on Converse.
     ToolSearch,
+    /// The gateway may run web search for this model on the Responses
+    /// surface: on a request with `X-Weniq-Web-Search: on`, and with a
+    /// configured `WEB_SEARCH_BACKEND`, it declares a `web_search` tool,
+    /// executes the model's calls with the backend (Amazon Bedrock AgentCore
+    /// Web Search) and continues the answer. The flag only gates running a
+    /// search: a conversation that already declared the tool keeps declaring
+    /// it, so its replayed thinking stays valid.
+    WebSearch,
 }
 
 /// The strategy used to express reasoning/extended-thinking to Bedrock.

@@ -183,6 +183,7 @@ fn normalized(model: &str) -> NormalizedResponsesRequest {
         request_id: Arc::from("req-test"),
         received_at: Instant::now(),
         raw_body: Bytes::new(),
+        web_search: crate::domain::WebSearchHeader::Absent,
     }
 }
 
@@ -202,6 +203,13 @@ fn settings_with(bedrock_api_key: Option<String>, region: &str) -> AppSettings {
         chat_reasoning_capsule_keys: None,
         disable_mantle: false,
         disable_tool_search: false,
+        web_search_backend: "off".to_string(),
+        web_search_region: None,
+        web_search_max_calls: 5,
+        web_search_timeout_secs: 12,
+        web_search_max_results: 5,
+        web_search_result_chars: 1500,
+        web_search_max_tps: 5,
         api_key: Some("k".to_string()),
         api_key_secret_arn: None,
         api_key_param_name: None,

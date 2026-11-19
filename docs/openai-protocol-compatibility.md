@@ -42,7 +42,11 @@ The compatibility contract is:
    use the same OpenAI wire type.
 4. Silently omit server-hosted and unknown tools that Converse cannot execute;
    Codex may bundle them with real client tools, so rejecting the entire request
-   would interrupt an otherwise valid agent turn.
+   would interrupt an otherwise valid agent turn. The one hosted tool the
+   gateway runs itself is web search for Claude, and only on a request that
+   declares it through the `X-Weniq-Web-Search` header or its own history (see
+   "Responses web search (gateway-executed)" below); the body's hosted
+   `web_search` tool is still omitted.
 5. Preserve namespace and tool names without inventing a client-visible name.
 
 OpenAI reference:
@@ -177,7 +181,10 @@ The contract is:
   empty placeholder makes the current AI SDK reject the stream chunk.
 - Output items are only marked `completed` after Bedrock closes their content
   block.
-- `max_tokens` and content filtering end with `response.incomplete`.
+- `max_tokens` and content filtering end with `response.incomplete`, except
+  that an answer that already ran a gateway-executed web search ends either
+  stop with `response.completed` and a gateway message (see "Responses web
+  search (gateway-executed)").
 - Provider errors end with `response.failed`.
 - The stream has no Chat-style `[DONE]` sentinel.
 
@@ -221,13 +228,117 @@ name, more than 10,000 loaded tools, a loaded tool that collides with a
 declared tool, or loaded tools with no non-deferred tool. This lane never
 strips prompt caching and retries: its cache points are gateway-generated.
 
+### Responses web search (gateway-executed)
+
+The gateway can run web search for Claude on `/responses` itself, with Amazon
+Bedrock AgentCore Web Search (`WEB_SEARCH_BACKEND=agentcore`). OpenAI's hosted
+`web_search` tool in the body plays no part: a request opts in with the request
+header `X-Weniq-Web-Search: on` (`off` opts out; any other value is a 400). A
+header, not a body field, because the mantle lane forwards the body verbatim.
+Mantle-backed models ignore the header.
+
+**Declaration and execution.** A request *declares* the synthetic tool when the
+header is `on`, a backend is configured and the model has the `web_search`
+capability (`config/models.toml`: Claude Sonnet 5.5 and Opus 5.5), or when its
+history carries the gateway's web search marks. It *executes* searches only in
+the first case. A marked history keeps the tool declared with the header `off`
+or absent (calls answer `disabled_for_this_message`) and with the backend off or
+on a model without the capability (calls answer `unavailable`): Claude 5.5 binds
+every thinking block to the `tools` it was signed under, so the tool list must
+not change once a conversation declared the tool. The first declaration drops
+the replayed thinking that has no mark, which was signed without the tool;
+removing thinking from the start of a history is allowed. A request without
+marks in the middle of a tool loop (its input ends with tool outputs) whose
+current answer holds gateway thinking does not declare the tool even when it
+could run it: the first declaration would drop that thinking, the thinking of
+the loop's last assistant message included. Search then starts with the next
+user message. Every other request takes the single-call path unchanged.
+
+**The synthetic tool.** `web_search` with a frozen description and the schema
+`{"query": string}`, appended after every client tool (the tool-search lane's
+`tool_search` included) and before the tools cache point. A client tool that
+translates to the same name is a 400 on a declared request only.
+
+**The loop.** A step whose stop reason is `tool_use` and whose calls are all
+`web_search` is executed by the gateway: each call, in block order, runs one
+AgentCore search (or gets an error result without a search), and the gateway
+calls Bedrock again. A step that also calls client tools runs its searches and
+hands the client calls back (`completed`). Any other step is the answer. Each
+continuation is built from the step's own output items through the replay
+translation, so the client's next request rebuilds the same prefix; only the
+remaining `max_output_tokens` and `tool_choice` (`required` becomes `auto` after
+the first search step) change between steps. An input that ends with an
+assistant item on a model that does not accept prefill gets the continuation
+user turn before the first step, and every later step keeps it (the first
+step's thinking is bound to it). A later replay does not rebuild that turn
+(neither does one without web search), so that thinking can still fail
+Bedrock's check on the client's next request. Usage is summed over the steps
+through the one token formula.
+
+**Output items.** Per search step: the step's reasoning item (its envelope
+carries `"ws": 1`), its message item, one `web_search_call` per executed search
+(`id` `ws_bgw_<toolUseId>`, `action: {type: "search", query, queries, sources}`,
+`status` `completed` or `failed`; a call that was refused has no item), the
+client calls of a mixed step, and last a *carrier*: a reasoning item with an
+empty `summary` whose envelope (payload version 2) holds the step's `toolUse`
+and `toolResult` blocks and the answer's search count. Replaying the carrier
+restores the hidden blocks; replayed `web_search_call` items are skipped like
+mantle's. In a mixed step the user message's results are put in the assistant
+message's call order. Item ids are unique within a response: step `k` uses
+`rs_S_k` / `msg_S_k`, carriers `rs_S_wsk`. Markdown links in the answer that
+point at a search result get `url_citation` annotations (character indexes,
+half-open); in a stream they arrive as `response.output_text.annotation.added`
+before `response.output_text.done`.
+
+**Stream events.** Items are strictly serial (zuno tracks one active item).
+Search items are emitted after the step's Bedrock stream ends:
+`output_item.added` (with the query), `response.web_search_call.in_progress`,
+`response.web_search_call.searching`, `response.web_search_call.completed`
+(not for a failed search), `output_item.done`; then the carrier's
+`output_item.added` / `output_item.done`. Client calls of a declared request are
+emitted after their step, not streamed. `response.created`,
+`response.in_progress` and the terminal event appear once per response, and
+`sequence_number` counts across all steps.
+
+**Limits and terminal states.** At most `WEB_SEARCH_MAX_CALLS` (default 5)
+real searches per answer, counted across the client's continuation requests
+through the carriers and reset by a new user message; a gateway
+`web_search_call` replayed after the newest carrier (its step's carrier never
+reached the client) counts too. Further calls answer `max_uses_exceeded`. At
+most `max_calls + 2` Bedrock calls per response. Once the answer has run a real
+search, the response never ends `incomplete` (zuno retries `incomplete`,
+`content_filter` included) and never ends `completed` without an answer: the
+step limit, less than 1,024 output tokens left before a continuation, a
+`max_tokens` or content-filter stop, or a final step with neither an answer
+nor a client call end `completed` with a gateway-written message
+(`msg_S_stop`) that says why; a call cut off by such a stop is not handed back.
+Without a real search the single-call terminal states apply, except that the
+step limit also ends with the gateway message, which then says that web search
+is off for the message, unavailable, or never ran.
+
+**Errors.** AgentCore failures never become HTTP errors: they are error payloads
+in the call's `toolResult` (`too_many_requests`, `unavailable`,
+`invalid_tool_input`) and a `failed` item. The first Bedrock call of a stream
+fails as an HTTP error, as on the single-call path; a later step's failure is
+`response.failed`, with `invalid_prompt` when Bedrock rejects a thinking block
+bound to another prefix (retrying cannot help) and the shared mapping
+otherwise. Non-stream requests return any step's error as the HTTP error.
+
+**Rollback.** A gateway that predates web search answers 400 to a history with
+a carrier and stops declaring the tool. Do not roll back past this feature;
+turn `WEB_SEARCH_BACKEND` off instead, which keeps searched conversations
+working.
+
 ## Request and response coverage
 
 The Converse backend intentionally does not implement OpenAI-hosted execution
 for web search, file search, code interpreter, image generation, computer use,
 or MCP. These are not client-side function calls and cannot be emulated merely
 by changing the wire shape. They are omitted from `toolConfig` without hiding
-supported client-executed tools that appear in the same request.
+supported client-executed tools that appear in the same request. Web search is
+the one exception, and only through the gateway's own tool on a request that
+declares it (see "Responses web search (gateway-executed)"); a hosted
+`web_search` tool in the body is still omitted.
 
 A hosted tool run can still reach these paths as history. When a conversation
 that used hosted tools on a bedrock-mantle (GPT) model continues on a model
@@ -236,7 +347,10 @@ served by Converse or InvokeModel, codex-based clients such as zuno replay its
 item carries the action and query but not the results, and the image is not
 output of the Bedrock model, so the gateway skips both: they add no Bedrock
 block, and the messages around them keep their order, same-role merging, and
-reasoning boundaries. Input item types that the gateway neither translates nor
+reasoning boundaries. The gateway's own `web_search_call` items are skipped
+the same way; their blocks come back from the carrier. Going the other way, the
+mantle lane drops the gateway's `web_search_call` items (`ws_bgw_` ids) along
+with its reasoning envelopes and carriers before forwarding. Input item types that the gateway neither translates nor
 skips, including the call items of the other hosted tools, are still rejected
 with HTTP 400.
 
@@ -268,6 +382,7 @@ Tests must cover both non-streaming and streaming variants where applicable:
 | Responses state | `store`, `previous_response_id`, and unresolved item references remain non-fatal and stateless |
 | Responses replayed hosted calls | `web_search_call` and `image_generation_call` input items add nothing on the Converse and tool-search lanes; the turns around them keep their order, merging, and reasoning boundaries |
 | Responses tool search | the zuno golden requests map to the expected Messages bodies; `tool_search_call` done-only stream; loaded-tool `function_call` with namespace; refusal and max-token stops leave the call incomplete |
+| Responses web search | requests that do not declare it keep the single-call bytes; the declaration rules (header, backend, capability, sticky marks, first declaration); the frozen tool's position and the reserved name; search-only, parallel and mixed steps on both lanes, streamed and not; the loop's continuation equals the replay's rebuild (tools, system, message prefix); carrier and marker codecs; refused, failed and invalid calls; the per-answer count across continuations; the step limit, the output budget, `max_tokens`, a content-filter stop and an empty answer after a search end `completed` with the gateway message; the step limit without a search names the gate; a tool loop with unmarked thinking does not declare the tool; the continuation turn of an input that ends on an assistant item stays in every step; gateway searches without a carrier count toward the answer; stream event order and unique ids; `invalid_prompt` for a later binding error; mantle drops the gateway's items |
 | Mantle | byte-exact passthrough and mid-stream truncation behavior |
 | AI SDK fixtures | current `@ai-sdk/openai-compatible` Chat and `@ai-sdk/openai` Responses shapes |
 

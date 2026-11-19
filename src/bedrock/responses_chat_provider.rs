@@ -21,7 +21,7 @@ use crate::bedrock::capsule::{
 };
 use crate::domain::{
     gen_request_id, ChatProvider, ChatStream, NormalizedChatRequest, NormalizedResponsesRequest,
-    ResponsesProvider,
+    ResponsesProvider, WebSearchHeader,
 };
 use crate::error::AppError;
 use crate::openai::responses_schema::{
@@ -69,6 +69,8 @@ impl ResponsesChatProvider {
             request_id: Arc::clone(&req.request_id),
             received_at: req.received_at,
             raw_body,
+            // Chat clients have no web search header; the adapter never sends one.
+            web_search: WebSearchHeader::Absent,
         })
     }
 }

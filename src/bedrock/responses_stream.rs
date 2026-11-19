@@ -59,6 +59,7 @@ use aws_sdk_bedrockruntime::types::{
     ContentBlockDelta, ContentBlockStart, ConverseStreamOutput, ReasoningContentBlockDelta,
     ResponseStream,
 };
+use futures::stream::BoxStream;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -67,11 +68,13 @@ use std::time::{Duration, Instant};
 
 use crate::bedrock::anthropic_messages::MessagesStreamAdapter;
 use crate::bedrock::responses_response::{
-    from_converse_output_to_responses_with_tools, tool_output_item,
+    from_converse_output_to_responses_with_tools, tool_output_item, StepItemIds,
 };
 use crate::bedrock::responses_translate::{
-    encode_reasoning_envelope, ResponsesToolKind, ResponsesToolRegistry,
+    encode_reasoning_envelope_with, ResponsesToolKind, ResponsesToolRegistry, WEB_SEARCH_MARK,
 };
+use crate::bedrock::tokens::estimate_reasoning_tokens;
+use crate::bedrock::web_search::{url_citations, CitationSources};
 use crate::domain::ResponsesStream;
 use crate::error::{from_bedrock_sdk_error, AppError};
 use crate::openai::responses_schema::{
@@ -85,9 +88,9 @@ const REASONING_SUMMARY_INDEX: u32 = 0;
 /// Per-request runtime controls and observability context for the async stream
 /// driver. Grouping these keeps the wire-state constructor independent.
 pub(crate) struct ResponsesStreamRuntime {
-    request_id: Arc<str>,
-    start: Instant,
-    idle_timeout: Duration,
+    pub(crate) request_id: Arc<str>,
+    pub(crate) start: Instant,
+    pub(crate) idle_timeout: Duration,
 }
 
 impl ResponsesStreamRuntime {
@@ -107,22 +110,82 @@ impl ResponsesStreamRuntime {
 /// when the item was added — so the matching `response.output_item.done` carries
 /// a complete `call_id` + JSON-parseable `arguments`.
 #[derive(Debug, Clone, Default)]
-struct ToolAccum {
+pub(crate) struct ToolAccum {
     /// The Bedrock `toolUseId` (becomes the Responses `call_id`).
-    call_id: String,
+    pub(crate) call_id: String,
     /// The function name.
-    name: String,
+    pub(crate) name: String,
     /// Concatenated JSON input fragments.
-    arguments: String,
-    /// The `output_index` assigned to this item's `output_item.added`.
-    output_index: u32,
+    pub(crate) arguments: String,
+    /// The `output_index` assigned to this item's `output_item.added`. With
+    /// [`StepOptions::defer_tool_events`] the caller assigns it when it emits
+    /// the item.
+    pub(crate) output_index: u32,
     /// Whether Bedrock emitted the matching `contentBlockStop`. This alone does
     /// NOT make the call executable: `messageStop` still has to confirm that
     /// the response was not truncated or content-filtered.
-    closed: bool,
+    pub(crate) closed: bool,
     /// Whether the matching Responses `output_item.done` was emitted after a
     /// successful `messageStop`, JSON validation, and clean upstream EOF.
     done_emitted: bool,
+}
+
+impl ToolAccum {
+    /// The call's input: the streamed JSON parsed, `{}` when nothing was
+    /// streamed or it does not parse.
+    pub(crate) fn input(&self) -> Value {
+        parsed_tool_input(self)
+    }
+}
+
+/// How one [`ResponsesStreamState`] serves a step of the web search loop
+/// (`bedrock::responses_web_search`). [`Default`] is the single-call stream:
+/// every response without web search uses it and behaves as before.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StepOptions {
+    /// Reasoning and message item ids; `None` derives them from the response
+    /// id (`rs_S`, `msg_S`).
+    pub ids: Option<StepItemIds>,
+    /// Write the web search mark into the reasoning envelope.
+    pub mark_envelopes: bool,
+    /// Emit no event for a tool call while Bedrock streams it (no
+    /// `output_item.added`, no argument deltas) and reserve no
+    /// `output_index`: the loop emits the calls after the step, in its own
+    /// order.
+    pub defer_tool_events: bool,
+    /// `metadata` ends the step instead of the response: no
+    /// `response.completed`; the caller reads the step with
+    /// [`ResponsesStreamState::take_step`].
+    pub step_mode: bool,
+    /// The response's next `sequence_number`.
+    pub seq: u64,
+    /// The response's next `output_index`.
+    pub next_output_index: u32,
+    /// `response.created` and `response.in_progress` were already emitted.
+    pub started: bool,
+    /// Sources a message may cite: when set, closing the message emits
+    /// `response.output_text.annotation.added` for each markdown link that
+    /// points at one, and the done events carry the annotations.
+    pub citations: Option<Arc<CitationSources>>,
+}
+
+/// What a step left once Bedrock's stream ended ([`ResponsesStreamState::take_step`]).
+#[derive(Debug)]
+pub(crate) struct StepEnd {
+    /// Events that close the items still open (normally none: `messageStop`
+    /// closes them).
+    pub events: Vec<ResponseStreamEvent>,
+    pub stop_reason: Option<String>,
+    /// The Converse-shaped `usage` of the step, when `metadata` carried one.
+    pub usage: Option<Value>,
+    /// The step's tool calls in arrival order.
+    pub tools: Vec<ToolAccum>,
+    /// Every call was closed by Bedrock and its arguments are JSON.
+    pub tools_valid: bool,
+    pub reasoning_tokens: u32,
+    /// The response's next `sequence_number` and `output_index`.
+    pub seq: u64,
+    pub next_output_index: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -206,19 +269,36 @@ pub struct ResponsesStreamState {
     /// the emitted event-type shape (e.g. whether any `output_text.delta` were
     /// produced) without ever logging payload content. Ordered by first emit.
     event_type_counts: Vec<(String, u64)>,
+
+    // --- web search loop step (StepOptions; defaults keep today's stream) ---
+    /// Reasoning / message item ids of this step, when not derived.
+    item_ids: Option<StepItemIds>,
+    /// Web search mark written into the reasoning envelope.
+    mark: Option<u64>,
+    defer_tool_events: bool,
+    step_mode: bool,
+    /// `metadata` arrived in step mode: the step is over.
+    step_done: bool,
+    citations: Option<Arc<CitationSources>>,
 }
 
 impl ResponsesStreamState {
     /// The stable `item_id` for the reasoning item (mirrors the non-stream
-    /// mapper's `rs_` derivation).
+    /// mapper's `rs_` derivation, or the step's own id).
     fn reasoning_item_id(&self) -> String {
-        format!("rs_{}", self.response_id.trim_start_matches("resp_"))
+        match &self.item_ids {
+            Some(ids) => ids.reasoning.clone(),
+            None => format!("rs_{}", self.response_id.trim_start_matches("resp_")),
+        }
     }
 
     /// The stable `item_id` for the message item (mirrors the non-stream
-    /// mapper's `msg_` derivation).
+    /// mapper's `msg_` derivation, or the step's own id).
     fn message_item_id(&self) -> String {
-        format!("msg_{}", self.response_id.trim_start_matches("resp_"))
+        match &self.item_ids {
+            Some(ids) => ids.message.clone(),
+            None => format!("msg_{}", self.response_id.trim_start_matches("resp_")),
+        }
     }
 
     /// Create a fresh state machine for one stream.
@@ -248,14 +328,36 @@ impl ResponsesStreamState {
         start: Instant,
         tool_registry: ResponsesToolRegistry,
     ) -> Self {
+        Self::new_step(
+            model,
+            response_id,
+            request,
+            request_id,
+            start,
+            tool_registry,
+            StepOptions::default(),
+        )
+    }
+
+    /// A state machine for one step of the web search loop (or, with
+    /// [`StepOptions::default`], for a whole single-call response).
+    pub(crate) fn new_step(
+        model: String,
+        response_id: String,
+        request: ResponsesRequest,
+        request_id: Arc<str>,
+        start: Instant,
+        tool_registry: ResponsesToolRegistry,
+        options: StepOptions,
+    ) -> Self {
         Self {
             model,
             response_id,
             request,
             tool_registry,
-            seq: 0,
-            next_output_index: 0,
-            started: false,
+            seq: options.seq,
+            next_output_index: options.next_output_index,
+            started: options.started,
             reasoning_open: false,
             reasoning_output_index: 0,
             reasoning_text: String::new(),
@@ -271,7 +373,53 @@ impl ResponsesStreamState {
             request_id,
             start,
             event_type_counts: Vec::new(),
+            item_ids: options.ids,
+            mark: options.mark_envelopes.then_some(WEB_SEARCH_MARK),
+            defer_tool_events: options.defer_tool_events,
+            step_mode: options.step_mode,
+            step_done: false,
+            citations: options.citations,
         }
+    }
+
+    /// In step mode: `metadata` arrived and the step is over; read it with
+    /// [`Self::take_step`].
+    pub(crate) fn step_complete(&self) -> bool {
+        self.step_done
+    }
+
+    /// End the step: close the items still open and hand back what the loop
+    /// needs. The state is spent afterwards (it will not warn on drop).
+    pub(crate) fn take_step(&mut self) -> StepEnd {
+        let mut events = Vec::new();
+        self.ensure_started(&mut events);
+        self.close_message_item(&mut events);
+        self.close_reasoning_item(&mut events);
+        self.tally(&events);
+        self.finalized = true;
+        let tools_valid = self.tools.iter().all(|(_, accum)| {
+            accum.closed && serde_json::from_str::<Value>(&normalized_arguments(accum)).is_ok()
+        });
+        StepEnd {
+            events,
+            stop_reason: self.stop_reason.clone(),
+            usage: self.usage.clone(),
+            tools: self.tools.iter().map(|(_, accum)| accum.clone()).collect(),
+            tools_valid,
+            reasoning_tokens: estimate_reasoning_tokens(&self.reasoning_text),
+            seq: self.seq,
+            next_output_index: self.next_output_index,
+        }
+    }
+
+    /// The last Bedrock event kind seen (metadata only), for logs.
+    pub(crate) fn last_bedrock_event(&self) -> &'static str {
+        self.last_bedrock_event
+    }
+
+    /// `(tool blocks, argument bytes)` seen so far, for logs.
+    pub(crate) fn tool_progress_counts(&self) -> (usize, usize) {
+        self.tool_progress()
     }
 
     /// Tally each emitted event by its content-free wire type tag, preserving
@@ -376,8 +524,15 @@ impl ResponsesStreamState {
                     self.close_message_item(&mut out);
                     self.close_reasoning_item(&mut out);
 
-                    let output_index = self.next_output_index;
-                    self.next_output_index += 1;
+                    // A deferred call gets its output_index when the loop
+                    // emits it, in the loop's order.
+                    let output_index = if self.defer_tool_events {
+                        0
+                    } else {
+                        let output_index = self.next_output_index;
+                        self.next_output_index += 1;
+                        output_index
+                    };
                     let accum = ToolAccum {
                         call_id: tu.tool_use_id().to_string(),
                         name: tu.name().to_string(),
@@ -388,9 +543,11 @@ impl ResponsesStreamState {
                     };
                     // Shell / apply-patch items are announced only once they are
                     // executable. A tool_search_call is never announced: zuno is
-                    // only known to accept it as `output_item.done`.
-                    let delay_added =
-                        self.tool_registry
+                    // only known to accept it as `output_item.done`. The web
+                    // search loop reports its own calls as web_search_call items.
+                    let delay_added = self.defer_tool_events
+                        || self
+                            .tool_registry
                             .resolve(&accum.name)
                             .is_some_and(|binding| {
                                 matches!(
@@ -399,6 +556,7 @@ impl ResponsesStreamState {
                                         | ResponsesToolKind::Shell
                                         | ResponsesToolKind::ApplyPatch
                                         | ResponsesToolKind::ToolSearch
+                                        | ResponsesToolKind::WebSearch
                                 )
                             });
                     if !delay_added {
@@ -465,7 +623,12 @@ impl ResponsesStreamState {
 
         self.tally(&out);
         if matches!(event, ConverseStreamOutput::Metadata(_)) {
-            out.extend(self.finish());
+            if self.step_mode {
+                // The step is over; the web search loop decides what follows.
+                self.step_done = true;
+            } else {
+                out.extend(self.finish());
+            }
         }
         out
     }
@@ -554,10 +717,11 @@ impl ResponsesStreamState {
                 {
                     accum.arguments.push_str(tool_delta.input());
                     let accum = accum.clone();
-                    if self
-                        .tool_registry
-                        .resolve(&accum.name)
-                        .is_none_or(|binding| binding.kind == ResponsesToolKind::Function)
+                    if !self.defer_tool_events
+                        && self
+                            .tool_registry
+                            .resolve(&accum.name)
+                            .is_none_or(|binding| binding.kind == ResponsesToolKind::Function)
                     {
                         let seq = self.next_seq();
                         out.push(ResponseStreamEvent::FunctionCallArgumentsDelta {
@@ -651,7 +815,7 @@ impl ResponsesStreamState {
     }
 
     fn reasoning_encrypted_content(&self) -> Option<String> {
-        encode_reasoning_envelope(&self.reasoning_blocks())
+        encode_reasoning_envelope_with(&self.reasoning_blocks(), self.mark)
     }
 
     /// Close the reasoning item if open. Text-bearing done events are emitted
@@ -742,6 +906,27 @@ impl ResponsesStreamState {
             return;
         }
         self.message_open = false;
+        // Citations are computed once the text is final: a link may span
+        // several deltas. Each is announced before `output_text.done`.
+        let annotations = self
+            .citations
+            .as_deref()
+            .map(|sources| url_citations(&self.message_text, sources))
+            .unwrap_or_default();
+        for (annotation_index, annotation) in annotations.iter().enumerate() {
+            let seq = self.next_seq();
+            let mut fields = std::collections::HashMap::new();
+            fields.insert("item_id".to_string(), json!(self.message_item_id()));
+            fields.insert("output_index".to_string(), json!(self.message_output_index));
+            fields.insert("content_index".to_string(), json!(0));
+            fields.insert("annotation_index".to_string(), json!(annotation_index));
+            fields.insert("annotation".to_string(), annotation.clone());
+            fields.insert("sequence_number".to_string(), json!(seq));
+            out.push(ResponseStreamEvent::Other {
+                event_type: "response.output_text.annotation.added".to_string(),
+                fields,
+            });
+        }
         let seq = self.next_seq();
         out.push(ResponseStreamEvent::OutputTextDone {
             item_id: self.message_item_id(),
@@ -752,7 +937,7 @@ impl ResponsesStreamState {
         });
         let part = OutputContentPart::OutputText {
             text: self.message_text.clone(),
-            annotations: Vec::new(),
+            annotations,
             logprobs: None,
         };
         let seq = self.next_seq();
@@ -834,7 +1019,9 @@ impl ResponsesStreamState {
     fn finalize_tool_block(&mut self, pos: usize, out: &mut Vec<ResponseStreamEvent>) {
         self.tools[pos].1.done_emitted = true;
         let accum = self.tools[pos].1.clone();
-        if self
+        // Shell and apply-patch items were held back at block start; they are
+        // announced now that they are executable.
+        let announce = self
             .tool_registry
             .resolve(&accum.name)
             .is_some_and(|binding| {
@@ -844,56 +1031,9 @@ impl ResponsesStreamState {
                         | ResponsesToolKind::Shell
                         | ResponsesToolKind::ApplyPatch
                 )
-            })
-        {
-            let seq = self.next_seq();
-            out.push(ResponseStreamEvent::OutputItemAdded {
-                item: tool_item(&self.tool_registry, &accum, Some("in_progress")),
-                output_index: accum.output_index,
-                sequence_number: seq,
             });
-        }
-        match self.tool_registry.resolve(&accum.name).map(|b| &b.kind) {
-            None | Some(ResponsesToolKind::Function) => {
-                let seq = self.next_seq();
-                out.push(ResponseStreamEvent::FunctionCallArgumentsDone {
-                    item_id: format!("fc_{}", accum.call_id),
-                    output_index: accum.output_index,
-                    arguments: normalized_arguments(&accum),
-                    name: self
-                        .tool_registry
-                        .resolve(&accum.name)
-                        .map_or_else(|| accum.name.clone(), |b| b.client_name.clone()),
-                    sequence_number: seq,
-                });
-            }
-            Some(ResponsesToolKind::Custom) => {
-                let seq = self.next_seq();
-                let input = parsed_tool_input(&accum)
-                    .get("input")
-                    .cloned()
-                    .unwrap_or_else(|| json!(normalized_arguments(&accum)));
-                let mut fields = std::collections::HashMap::new();
-                fields.insert("input".to_string(), input);
-                fields.insert(
-                    "item_id".to_string(),
-                    json!(format!("ct_{}", accum.call_id)),
-                );
-                fields.insert("output_index".to_string(), json!(accum.output_index));
-                fields.insert("sequence_number".to_string(), json!(seq));
-                out.push(ResponseStreamEvent::Other {
-                    event_type: "response.custom_tool_call_input.done".to_string(),
-                    fields,
-                });
-            }
-            _ => {}
-        }
-        let seq = self.next_seq();
-        out.push(ResponseStreamEvent::OutputItemDone {
-            item: tool_item(&self.tool_registry, &accum, Some("completed")),
-            output_index: accum.output_index,
-            sequence_number: seq,
-        });
+        let events = tool_events(&self.tool_registry, &accum, announce, &mut self.seq);
+        out.extend(events);
     }
 
     /// Finalize the stream after the receiver is exhausted: close any items
@@ -994,6 +1134,17 @@ impl ResponsesStreamState {
     /// mapper so the streaming `response.failed` path and the pre-stream HTTP
     /// path agree on the codex-actionable code. Idempotent after finalization.
     pub fn fail(&mut self, err: &AppError) -> Vec<ResponseStreamEvent> {
+        let (code, _) = crate::error::responses_error(err);
+        self.fail_with_code(err, code)
+    }
+
+    /// [`Self::fail`] with the `error.code` chosen by the caller (the web
+    /// search loop classifies the errors of its later steps itself).
+    pub(crate) fn fail_with_code(
+        &mut self,
+        err: &AppError,
+        code: &str,
+    ) -> Vec<ResponseStreamEvent> {
         let mut out = Vec::new();
         if self.finalized {
             return out;
@@ -1001,7 +1152,7 @@ impl ResponsesStreamState {
         self.finalized = true;
         let mut response = self.in_progress_response();
         response.status = "failed".to_string();
-        let (code, message) = crate::error::responses_error(err);
+        let (_, message) = crate::error::responses_error(err);
         response.error = Some(json!({
             "code": code,
             "message": message,
@@ -1089,7 +1240,81 @@ fn parsed_tool_input(accum: &ToolAccum) -> Value {
     serde_json::from_str(&normalized_arguments(accum)).unwrap_or_else(|_| json!({}))
 }
 
-fn tool_item(
+/// The completion events of one finished tool call, at `accum.output_index`:
+/// `output_item.added` when `announce` (an item not announced while it
+/// streamed), the kind's completion event (`function_call_arguments.done`, or
+/// `response.custom_tool_call_input.done`), then `output_item.done`. `seq`
+/// is the response's sequence counter.
+pub(crate) fn tool_events(
+    registry: &ResponsesToolRegistry,
+    accum: &ToolAccum,
+    announce: bool,
+    seq: &mut u64,
+) -> Vec<ResponseStreamEvent> {
+    let mut next_seq = || {
+        let s = *seq;
+        *seq += 1;
+        s
+    };
+    let kind = registry.resolve(&accum.name).map(|binding| &binding.kind);
+    let mut out = Vec::new();
+    if announce {
+        let status = matches!(
+            kind,
+            Some(
+                ResponsesToolKind::LocalShell
+                    | ResponsesToolKind::Shell
+                    | ResponsesToolKind::ApplyPatch
+            )
+        )
+        .then_some("in_progress");
+        out.push(ResponseStreamEvent::OutputItemAdded {
+            item: tool_item(registry, accum, status),
+            output_index: accum.output_index,
+            sequence_number: next_seq(),
+        });
+    }
+    match kind {
+        None | Some(ResponsesToolKind::Function) => {
+            out.push(ResponseStreamEvent::FunctionCallArgumentsDone {
+                item_id: format!("fc_{}", accum.call_id),
+                output_index: accum.output_index,
+                arguments: normalized_arguments(accum),
+                name: registry
+                    .resolve(&accum.name)
+                    .map_or_else(|| accum.name.clone(), |b| b.client_name.clone()),
+                sequence_number: next_seq(),
+            });
+        }
+        Some(ResponsesToolKind::Custom) => {
+            let input = parsed_tool_input(accum)
+                .get("input")
+                .cloned()
+                .unwrap_or_else(|| json!(normalized_arguments(accum)));
+            let mut fields = std::collections::HashMap::new();
+            fields.insert("input".to_string(), input);
+            fields.insert(
+                "item_id".to_string(),
+                json!(format!("ct_{}", accum.call_id)),
+            );
+            fields.insert("output_index".to_string(), json!(accum.output_index));
+            fields.insert("sequence_number".to_string(), json!(next_seq()));
+            out.push(ResponseStreamEvent::Other {
+                event_type: "response.custom_tool_call_input.done".to_string(),
+                fields,
+            });
+        }
+        _ => {}
+    }
+    out.push(ResponseStreamEvent::OutputItemDone {
+        item: tool_item(registry, accum, Some("completed")),
+        output_index: accum.output_index,
+        sequence_number: next_seq(),
+    });
+    out
+}
+
+pub(crate) fn tool_item(
     registry: &ResponsesToolRegistry,
     accum: &ToolAccum,
     status: Option<&str>,
@@ -1349,6 +1574,66 @@ pub(crate) fn invoke_stream_to_openai_responses(
                     for ev in state.fail(&app_err) {
                         yield Ok(ev);
                     }
+                    break;
+                }
+            }
+        }
+    };
+    s.boxed()
+}
+
+/// The Bedrock events of one streamed step, as ConverseStream events. A
+/// failure of the upstream stream arrives as one `Err` and ends it.
+pub(crate) type StepEvents = BoxStream<'static, Result<ConverseStreamOutput, AppError>>;
+
+/// A `ConverseStream` output as [`StepEvents`]. A receiver error maps through
+/// [`from_bedrock_sdk_error`], as in [`converse_stream_to_openai_responses`].
+pub(crate) fn converse_events(output: ConverseStreamOutputOp) -> StepEvents {
+    let mut receiver = output.stream;
+    let s = stream! {
+        loop {
+            match receiver.recv().await {
+                Ok(Some(event)) => yield Ok(event),
+                Ok(None) => break,
+                Err(err) => {
+                    yield Err(from_bedrock_sdk_error(&err.into_service_error()));
+                    break;
+                }
+            }
+        }
+    };
+    s.boxed()
+}
+
+/// An `InvokeModelWithResponseStream` output (the tool-search lane) as
+/// [`StepEvents`]: each Messages event goes through [`MessagesStreamAdapter`],
+/// as in [`invoke_stream_to_openai_responses`]; a Messages `error` event or a
+/// receiver error ends the stream with one `Err`.
+pub(crate) fn invoke_events(output: InvokeModelWithResponseStreamOutput) -> StepEvents {
+    let mut receiver = output.body;
+    let s = stream! {
+        let mut adapter = MessagesStreamAdapter::new();
+        'events: loop {
+            match receiver.recv().await {
+                Ok(Some(ResponseStream::Chunk(part))) => {
+                    let bytes = part.bytes().map(|b| b.as_ref()).unwrap_or_default();
+                    match adapter.map_chunk(bytes) {
+                        Ok(events) => {
+                            for event in events {
+                                yield Ok(event);
+                            }
+                        }
+                        Err(app_err) => {
+                            yield Err(app_err);
+                            break 'events;
+                        }
+                    }
+                }
+                // #[non_exhaustive]: future event kinds are inert.
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(err) => {
+                    yield Err(from_bedrock_sdk_error(&err.into_service_error()));
                     break;
                 }
             }

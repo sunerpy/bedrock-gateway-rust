@@ -79,6 +79,16 @@
 #                               (Sonnet/Haiku/Opus 4.5 and later, Fable/Mythos 5
 #                               and 5.1). DISABLE_TOOL_SEARCH=true turns the
 #                               InvokeModel lane off for every model.
+#   web_search                – the gateway may run web search for this model on
+#                               /responses: on a request with the header
+#                               X-Weniq-Web-Search: on, and with
+#                               WEB_SEARCH_BACKEND=agentcore, it declares a
+#                               web_search tool, runs the model's searches with
+#                               Amazon Bedrock AgentCore Web Search and continues
+#                               the answer. The flag only gates running a search;
+#                               a conversation that already declared the tool
+#                               keeps declaring it, so its replayed thinking
+#                               stays valid. Set on Claude Sonnet 5.5 and Opus 5.5.
 #
 # reasoning_path — selects the shape of the reasoning config the gateway emits:
 #   adaptive_thinking – additionalModelRequestFields.thinking=
@@ -294,6 +304,7 @@ capabilities = [
   "drop_sampling_params",
   "cache_ttl_1h",
   "tool_search",
+  "web_search",
 ]
 [model.params]
 cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-opus-5-5`: 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
@@ -326,6 +337,7 @@ capabilities = [
   "drop_sampling_params",
   "cache_ttl_1h",
   "tool_search",
+  "web_search",
 ]
 [model.params]
 cache_min_tokens = 512 # AWS prompt-caching table row `anthropic.claude-sonnet-5-5`: 512 min tokens/checkpoint, 4 checkpoints, 5m + 1h TTL
