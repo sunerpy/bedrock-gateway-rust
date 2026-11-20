@@ -35,7 +35,8 @@ An error comes back in OpenAI's shape:
 | ------ | --------------------- | ----------------------------------------------------------------------------------------------------- |
 | 400    | `bad_request`         | The request is malformed, names an unknown model, asks a model for a feature it lacks, names a model outside the gateway's region, or Bedrock rejects it as invalid |
 | 400    | `unsupported`         | The request uses a field the gateway does not serve, such as `suffix` on Completions                  |
-| 401    | `unauthorized`        | The key is missing or wrong, or Bedrock denied the gateway's AWS identity access to the model         |
+| 401    | `unauthorized`        | The key is missing or wrong                                                                           |
+| 403    | `permission_denied`   | Bedrock denied the gateway's own AWS identity, for example for a model the account cannot use or a missing IAM permission; the message gives Bedrock's reason with ARNs, account IDs and keys replaced |
 | 405    |                       | The route exists, but not for this method                                                             |
 | 413    |                       | The body is larger than `MAX_BODY_SIZE_MB`                                                            |
 | 429    | `rate_limit_exceeded` | Bedrock throttled the request after the gateway's retries                                             |
@@ -44,8 +45,10 @@ An error comes back in OpenAI's shape:
 
 An error after a stream has started arrives in the stream: as an error event on Chat Completions, and as a
 `response.failed` event on Responses, whose `error.code` is one that Codex CLI acts on: `rate_limit_exceeded`,
-`server_is_overloaded`, `context_length_exceeded` or `server_error`. An error from Bedrock's OpenAI-compatible
-endpoint, which serves GPT-5.x and gpt-oss, keeps the status and the error object that endpoint sent.
+`server_is_overloaded`, `context_length_exceeded` or `server_error`, or `permission_denied` when Bedrock denied the
+gateway's identity. An error from Bedrock's OpenAI-compatible endpoint, which serves GPT-5.x and gpt-oss, keeps the
+status and the error object that endpoint sent, except a 401 or 403: there the endpoint refused the gateway's own
+Bedrock API key, and the gateway answers 403 `permission_denied` with the endpoint's message.
 
 ## Chat Completions
 

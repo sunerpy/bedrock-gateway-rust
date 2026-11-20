@@ -2,9 +2,9 @@
 
 ## 请求
 
-### 请求返回 401 但密钥是正确的
+### 请求返回 403 `permission_denied`
 
-Bedrock 拒绝网关自身的 AWS 身份访问模型时，网关同样返回 401，错误信息与密钥错误时相同。请检查网关运行时使用的角色或用户是否具备该模型及其区域所需的[权限](../operate/index.md#所需的-aws-权限)，并在 Bedrock 控制台中确认该模型已为你的账号启用。两种情况下，日志都把这个失败记录为 `unauthorized`。
+Bedrock 拒绝了网关自身的 AWS 身份，原因不在客户端发送的密钥；密钥缺失或错误时返回的是 401 `unauthorized`。错误信息给出 Bedrock 的原因，其中的 ARN、账号 ID 和密钥已被替换：`is not available for this account` 表示该模型没有向你的 AWS 账号开放，`is not authorized to perform` 表示网关运行时使用的角色或用户缺少该模型或其区域所需的[权限](../operate/index.md#所需的-aws-权限)。日志把这个失败记录为 `upstream access denied`，不包含原因。
 
 ### 模型不在模型列表中
 

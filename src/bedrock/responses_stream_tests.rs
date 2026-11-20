@@ -1057,6 +1057,29 @@ fn fail_validation_carries_context_length_exceeded() {
     assert_eq!(failed_error_code(&mut st, &err), "context_length_exceeded");
 }
 
+/// An `AccessDeniedException` (Bedrock denying the gateway's identity) fails
+/// the stream with `permission_denied` and Bedrock's reason, ARNs replaced,
+/// not with the client-key message.
+#[test]
+fn fail_access_denied_carries_permission_denied_and_reason() {
+    let mut st = state();
+    st.map_event(&ev_message_start());
+    let err = from_bedrock_sdk_error(&meta(
+        "AccessDeniedException",
+        "User: arn:aws:sts::123456789012:assumed-role/r/s is not authorized",
+    ));
+    let events = st.fail(&err);
+    let ResponseStreamEvent::Failed { response, .. } = &events[0] else {
+        panic!("expected response.failed, got {:?}", events[0]);
+    };
+    let error = response.error.as_ref().expect("response.error present");
+    assert_eq!(error["code"], "permission_denied");
+    assert_eq!(
+        error["message"],
+        "Bedrock denied the gateway access: User: <arn> is not authorized"
+    );
+}
+
 /// A simulated 5xx / `ServiceUnavailableException` maps to
 /// `server_is_overloaded` inside the `response.failed` event (MUST DO
 /// scenario 2).

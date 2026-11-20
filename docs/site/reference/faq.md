@@ -2,12 +2,13 @@
 
 ## Requests
 
-### A request answers 401, but the key is right
+### A request answers 403 `permission_denied`
 
-The gateway also answers 401 when Bedrock denies its own AWS identity access to the model, and the message is the
-same as for a wrong key. Check that the role or user the gateway runs as has the
-[permissions](../operate/index.md#what-it-needs-from-aws) for the model and its region, and that the model is enabled
-for your account in the Bedrock console. The log records the failure as `unauthorized` in both cases.
+Bedrock denied the gateway's own AWS identity, so the key the client sent is not the cause; a missing or wrong key
+answers 401 `unauthorized`. The message gives Bedrock's reason, with ARNs, account IDs and keys replaced:
+`is not available for this account` means the model is not open to your AWS account, and `is not authorized to
+perform` means the role or user the gateway runs as lacks a [permission](../operate/index.md#what-it-needs-from-aws)
+for the model or its region. The log records the failure as `upstream access denied`, without the reason.
 
 ### A model is not in the model list
 

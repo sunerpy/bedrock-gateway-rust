@@ -30,14 +30,15 @@
 | ------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | 400    | `bad_request`         | 请求格式错误、指定了未知模型、要求模型提供它不具备的功能、指定了网关所在区域不提供的模型，或者 Bedrock 认为请求无效而拒绝 |
 | 400    | `unsupported`         | 请求使用了网关不支持的字段，例如 Completions 上的 `suffix`                                                                |
-| 401    | `unauthorized`        | 密钥缺失或错误，或者 Bedrock 拒绝网关的 AWS 身份访问该模型                                                                |
+| 401    | `unauthorized`        | 密钥缺失或错误                                                                                                            |
+| 403    | `permission_denied`   | Bedrock 拒绝了网关自身的 AWS 身份，例如账号无法使用该模型或缺少 IAM 权限；错误信息给出 Bedrock 的原因，其中的 ARN、账号 ID 和密钥已被替换 |
 | 405    |                       | 路由存在，但不支持这个方法                                                                                                |
 | 413    |                       | 请求体超过 `MAX_BODY_SIZE_MB`                                                                                             |
 | 429    | `rate_limit_exceeded` | 网关重试之后，请求仍被 Bedrock 限流                                                                                       |
 | 500    | `internal_error`      | 网关自身出错，例如无法下载图片 URL                                                                                        |
 | 502    | `upstream_error`      | Bedrock 报告模型或服务故障，例如模型尚未就绪                                                                              |
 
-流开始之后发生的错误会在流中返回：在 Chat Completions 上是一个错误事件；在 Responses 上是一个 `response.failed` 事件，它的 `error.code` 是 Codex CLI 能据此处理的值之一：`rate_limit_exceeded`、`server_is_overloaded`、`context_length_exceeded` 或 `server_error`。来自 Bedrock OpenAI 兼容端点（提供 GPT-5.x 和 gpt-oss）的错误，会保留该端点返回的状态码和错误对象。
+流开始之后发生的错误会在流中返回：在 Chat Completions 上是一个错误事件；在 Responses 上是一个 `response.failed` 事件，它的 `error.code` 是 Codex CLI 能据此处理的值之一：`rate_limit_exceeded`、`server_is_overloaded`、`context_length_exceeded` 或 `server_error`；Bedrock 拒绝网关身份时为 `permission_denied`。来自 Bedrock OpenAI 兼容端点（提供 GPT-5.x 和 gpt-oss）的错误，会保留该端点返回的状态码和错误对象，401 和 403 除外：这时是该端点拒绝了网关自己的 Bedrock API 密钥，网关返回 403 `permission_denied`，并带上该端点的错误信息。
 
 ## Chat Completions
 

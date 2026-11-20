@@ -66,13 +66,21 @@ enum Severity {
     Server,
     /// 4xx path: maps to `429 Too Many Requests`, logged at `warn!`.
     Client,
+    /// Bedrock denied the gateway's own identity: `403 Forbidden`, logged at
+    /// `warn!`, never the client-key 401.
+    UpstreamDenied,
 }
+
+/// The Bedrock reason [`Severity::UpstreamDenied`] carries, with an ARN.
+const UPSTREAM_DENIAL: &str =
+    "User: arn:aws:sts::123456789012:assumed-role/gateway/task is not authorized";
 
 impl Severity {
     fn error(self) -> AppError {
         match self {
             Severity::Server => AppError::UpstreamBedrock("upstream fault".to_string()),
             Severity::Client => AppError::Throttled("slow down".to_string()),
+            Severity::UpstreamDenied => AppError::upstream_access_denied(UPSTREAM_DENIAL),
         }
     }
 
@@ -80,6 +88,7 @@ impl Severity {
         match self {
             Severity::Server => StatusCode::BAD_GATEWAY,
             Severity::Client => StatusCode::TOO_MANY_REQUESTS,
+            Severity::UpstreamDenied => StatusCode::FORBIDDEN,
         }
     }
 }
@@ -854,6 +863,42 @@ async fn completions_error_severity_branches_map_to_status() {
         )
         .await;
         assert_eq!(status, sev.expected_status());
+    }
+}
+
+/// A request with a valid client key that Bedrock refuses for the gateway's
+/// own identity answers 403 `permission_denied` with Bedrock's reason (ARN
+/// replaced) on both surfaces, streaming or not, instead of the 401 that says
+/// the client's key is wrong.
+#[tokio::test]
+async fn upstream_access_denial_is_403_permission_denied_not_client_401() {
+    let chat =
+        r#"{"model":"anthropic.claude-3-sonnet-v1:0","messages":[{"role":"user","content":"hi"}]}"#;
+    let chat_stream = r#"{"model":"anthropic.claude-3-sonnet-v1:0","messages":[{"role":"user","content":"hi"}],"stream":true}"#;
+    let responses = r#"{"model":"anthropic.claude-3-sonnet-v1:0","input":"hi"}"#;
+    let responses_stream =
+        r#"{"model":"anthropic.claude-3-sonnet-v1:0","input":"hi","stream":true}"#;
+    for (uri, body) in [
+        ("/api/v1/chat/completions", chat),
+        ("/api/v1/chat/completions", chat_stream),
+        ("/api/v1/responses", responses),
+        ("/api/v1/responses", responses_stream),
+    ] {
+        let app = app_with(
+            Arc::new(ErrChat(Severity::UpstreamDenied)),
+            Arc::new(ErrResponses(Severity::UpstreamDenied)),
+            Arc::new(OkEmbeddings),
+        );
+        let (status, bytes, _ct) = send(app, "POST", uri, Some(&auth()), Some(body)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} {body}");
+        assert_error_envelope(&bytes, "permission_denied");
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            value["error"]["message"],
+            "Bedrock denied the gateway access: User: <arn> is not authorized",
+            "{uri} {body}"
+        );
+        assert_eq!(value["error"]["type"], "invalid_request_error");
     }
 }
 

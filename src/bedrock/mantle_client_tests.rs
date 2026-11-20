@@ -313,12 +313,13 @@ async fn nonstream_429_maps_to_throttled_without_body_leak() {
     );
 }
 
-/// Given a 401 from the upstream,
+/// Given a 401 from the upstream (mantle refused the gateway's bearer),
 /// When `responses_stream` is opened,
-/// Then it maps to `AppError::Unauthorized` (unit variant) before any bytes
-/// stream, and the Display does NOT contain the mocked body.
+/// Then it maps to `AppError::UpstreamAccessDenied` (403, never the client-key
+/// 401) before any bytes stream, and neither the Display nor the client
+/// envelope contains the unparseable mocked body.
 #[tokio::test]
-async fn stream_401_maps_to_unauthorized_without_body_leak() {
+async fn stream_401_maps_to_upstream_access_denied_without_body_leak() {
     let server = MockServer::start().await;
     let secret_body = "SECRET-401-BODY-marker";
     Mock::given(method("POST"))
@@ -334,10 +335,54 @@ async fn stream_401_maps_to_unauthorized_without_body_leak() {
         .err()
         .expect("401 should be a pre-stream error");
 
-    assert!(matches!(err, AppError::Unauthorized));
+    assert!(matches!(err, AppError::UpstreamAccessDenied(_)));
     assert!(
         !err.to_string().contains(secret_body),
         "error Display must not leak the upstream body"
+    );
+    let envelope = err.envelope();
+    assert_eq!(envelope.error.code.as_deref(), Some("permission_denied"));
+    assert_eq!(
+        envelope.error.message,
+        "Bedrock denied the gateway access: upstream status 401"
+    );
+}
+
+/// A mantle 403 with an OpenAI envelope answers 403 `permission_denied`
+/// carrying the upstream message with its ARN, account ID and key replaced;
+/// the error's Display stays free of it.
+#[tokio::test]
+async fn stream_403_envelope_maps_to_sanitized_upstream_access_denied() {
+    let server = MockServer::start().await;
+    let marker = "User: arn:aws:iam::123456789012:user/BedrockAPIKey-x1 is not authorized \
+                  to perform bedrock:CallWithBearerToken with key ABSKQmVkcm9ja0FQSUtleS1leGFtcGxl";
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "error": {
+                "code": "access_denied",
+                "message": marker,
+                "type": "permission_error"
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server.uri(), "test-bearer");
+    let err = client
+        .responses_stream("us-east-2", Bytes::from_static(b"{}"))
+        .await
+        .err()
+        .expect("403 should be a pre-stream error");
+
+    assert!(matches!(err, AppError::UpstreamAccessDenied(_)));
+    assert!(!err.to_string().contains("not authorized"));
+    let envelope = err.envelope();
+    assert_eq!(envelope.error.code.as_deref(), Some("permission_denied"));
+    assert_eq!(
+        envelope.error.message,
+        "Bedrock denied the gateway access: User: <arn> is not authorized to perform \
+         bedrock:CallWithBearerToken with key <redacted>"
     );
 }
 
@@ -553,8 +598,9 @@ async fn chat_401_and_429_map_without_body_leak() {
         .chat_nonstream("r", Bytes::from_static(b"{}"))
         .await
         .expect_err("401 is an error");
-    assert!(matches!(err, AppError::Unauthorized));
+    assert!(matches!(err, AppError::UpstreamAccessDenied(_)));
     assert!(!err.to_string().contains(secret));
+    assert!(!err.envelope().error.message.contains(secret));
 
     let server2 = MockServer::start().await;
     Mock::given(method("POST"))

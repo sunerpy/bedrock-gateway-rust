@@ -22,6 +22,11 @@
 //! Throttling→429, else 500) but adds an explicit upstream/gateway distinction
 //! (502) for Bedrock service faults so clients can tell apart "your request was
 //! bad" (4xx) from "the upstream model provider failed" (502).
+//!
+//! 401 means only that the client's key failed the gateway's own check. When
+//! Bedrock denies the gateway's AWS identity, the client gets 403
+//! `permission_denied` with Bedrock's reason, ARNs, account IDs and key-like
+//! tokens replaced.
 
 use axum::{
     http::StatusCode,
@@ -40,9 +45,21 @@ use crate::openai::schema::{ErrorBody, OpenAiError};
 /// response is centralized in the [`IntoResponse`] impl below.
 #[derive(Debug, Error)]
 pub enum AppError {
-    /// Missing or invalid API key → 401.
+    /// Missing or invalid client API key (the gateway's own check) → 401.
     #[error("unauthorized")]
     Unauthorized,
+
+    /// Bedrock denied the gateway's own AWS identity → 403.
+    ///
+    /// The client's key passed; Bedrock refused the gateway's credentials or
+    /// its account's access to the model (`AccessDeniedException` on the AWS
+    /// SDK path, 401/403 from the mantle endpoint). Carries the upstream
+    /// reason with ARNs, account IDs and key-like tokens already replaced;
+    /// build it with [`AppError::upstream_access_denied`]. `Display` leaves
+    /// the reason out, as [`AppError::UpstreamOpenAi`] leaves out its
+    /// envelope, so request-failure logs hold no upstream response text.
+    #[error("upstream access denied")]
+    UpstreamAccessDenied(String),
 
     /// Malformed / invalid request → 400.
     #[error("bad request: {0}")]
@@ -81,6 +98,13 @@ impl AppError {
     /// Used for level-aware logging: server errors → `error`, client errors → `warn`.
     pub fn is_server_error(&self) -> bool {
         self.status().is_server_error()
+    }
+
+    /// Build [`AppError::UpstreamAccessDenied`] from the reason the upstream
+    /// gave, replacing ARNs, account IDs and key-like tokens in it.
+    #[must_use]
+    pub fn upstream_access_denied(reason: &str) -> Self {
+        AppError::UpstreamAccessDenied(sanitize_upstream_reason(reason))
     }
 
     /// Build a structured error from a terminal OpenAI-compatible stream event.
@@ -145,6 +169,7 @@ impl AppError {
     fn status(&self) -> StatusCode {
         match self {
             AppError::Unauthorized => StatusCode::UNAUTHORIZED, // 401
+            AppError::UpstreamAccessDenied(_) => StatusCode::FORBIDDEN, // 403
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST, // 400
             AppError::Unsupported(_) => StatusCode::BAD_REQUEST, // 400
             AppError::Throttled(_) => StatusCode::TOO_MANY_REQUESTS, // 429
@@ -158,6 +183,7 @@ impl AppError {
     fn error_type(&self) -> &'static str {
         match self {
             AppError::Unauthorized => "invalid_request_error",
+            AppError::UpstreamAccessDenied(_) => "invalid_request_error",
             AppError::BadRequest(_) => "invalid_request_error",
             AppError::Unsupported(_) => "invalid_request_error",
             AppError::Throttled(_) => "rate_limit_error",
@@ -171,6 +197,7 @@ impl AppError {
     fn error_code(&self) -> &'static str {
         match self {
             AppError::Unauthorized => "unauthorized",
+            AppError::UpstreamAccessDenied(_) => "permission_denied",
             AppError::BadRequest(_) => "bad_request",
             AppError::Unsupported(_) => "unsupported",
             AppError::Throttled(_) => "rate_limit_exceeded",
@@ -186,6 +213,10 @@ impl AppError {
             AppError::Unauthorized => {
                 "Incorrect API key provided or missing Authorization header.".to_string()
             }
+            AppError::UpstreamAccessDenied(reason) if reason.is_empty() => {
+                UPSTREAM_ACCESS_DENIED.to_string()
+            }
+            AppError::UpstreamAccessDenied(reason) => format!("{UPSTREAM_ACCESS_DENIED}: {reason}"),
             AppError::UpstreamOpenAi { .. } => {
                 "upstream OpenAI-compatible request rejected".to_string()
             }
@@ -225,6 +256,205 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
+/// Start of the client-facing message of [`AppError::UpstreamAccessDenied`].
+const UPSTREAM_ACCESS_DENIED: &str = "Bedrock denied the gateway access";
+
+/// What [`sanitize_upstream_reason`] puts in place of an ARN.
+const ARN_PLACEHOLDER: &str = "<arn>";
+/// What [`sanitize_upstream_reason`] puts in place of an AWS account ID.
+const ACCOUNT_ID_PLACEHOLDER: &str = "<account-id>";
+/// What [`sanitize_upstream_reason`] puts in place of a key-like token.
+const SECRET_PLACEHOLDER: &str = "<redacted>";
+
+/// An AWS account ID is a run of exactly this many digits.
+const ACCOUNT_ID_DIGITS: usize = 12;
+
+/// Prefixes of AWS access key IDs (20 characters) and IAM unique IDs (21),
+/// both upper-case letters and digits.
+const AWS_KEY_ID_PREFIXES: [&str; 12] = [
+    "AKIA", "ASIA", "ABIA", "ACCA", "AGPA", "AIDA", "AIPA", "ANPA", "ANVA", "APKA", "AROA", "ASCA",
+];
+const AWS_KEY_ID_LENS: std::ops::RangeInclusive<usize> = 20..=21;
+
+/// Prefixes of bearer secrets: Bedrock API keys (long-term `ABSK`, short-term
+/// `bedrock-api-key-`), OpenAI-style `sk-` keys and JWTs (`eyJ`).
+const SECRET_PREFIXES: [&str; 4] = ["ABSK", "bedrock-api-key-", "sk-", "eyJ"];
+/// A token with a secret prefix counts from this length on.
+const MIN_PREFIXED_SECRET_LEN: usize = 20;
+
+/// An opaque token (base64 with mixed case and digits, or hex) counts as
+/// key-like from this length on. Model IDs stay shorter or carry `.`/`:`.
+const MIN_OPAQUE_TOKEN_LEN: usize = 32;
+
+/// Replace ARNs, AWS account IDs and key-like tokens in an upstream error
+/// message, keeping the rest (model IDs, IAM actions, URLs, wording) as is.
+///
+/// The message is processed one whitespace-separated word at a time. Quotes,
+/// brackets and punctuation that wrap or end a word stay around the
+/// replacement, so `(arn:aws:...).` becomes `(<arn>).`. Within a word:
+///
+/// - from an `arn:aws` (any partition) to the end of the word → `<arn>`,
+///   and the text before it in the word is cleaned like a word of its own;
+/// - a word after `Bearer`, an AWS access key ID or IAM unique ID, a token
+///   with a secret prefix (`ABSK`, `bedrock-api-key-`, `sk-`, `eyJ`) or a
+///   long opaque token → `<redacted>`, also as the value of a `name=value`
+///   or `name:value` pair;
+/// - a run of exactly 12 digits, or `1234-5678-9012` → `<account-id>`.
+pub(crate) fn sanitize_upstream_reason(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut after_bearer = false;
+    for piece in raw.trim().split_inclusive(char::is_whitespace) {
+        let word = piece.trim_end_matches(char::is_whitespace);
+        let (lead, core, trail) = split_word(word);
+        out.push_str(lead);
+        out.push_str(&sanitize_word_core(core, after_bearer));
+        out.push_str(trail);
+        out.push_str(&piece[word.len()..]);
+        if !word.is_empty() {
+            after_bearer = trail.is_empty() && core.eq_ignore_ascii_case("bearer");
+        }
+    }
+    out
+}
+
+/// Punctuation that can open a word around an identifier.
+const LEADING_PUNCTUATION: [char; 7] = ['"', '\'', '`', '(', '[', '{', '<'];
+/// Punctuation that can close a word, or the sentence, after an identifier.
+const TRAILING_PUNCTUATION: [char; 13] = [
+    '"', '\'', '`', ')', ']', '}', '>', ',', ';', '.', ':', '!', '?',
+];
+
+/// Split a word into its leading punctuation, its core and its trailing
+/// punctuation.
+fn split_word(word: &str) -> (&str, &str, &str) {
+    let rest = word.trim_start_matches(LEADING_PUNCTUATION);
+    let lead = &word[..word.len() - rest.len()];
+    let core = rest.trim_end_matches(TRAILING_PUNCTUATION);
+    (lead, core, &rest[core.len()..])
+}
+
+fn sanitize_word_core(core: &str, after_bearer: bool) -> String {
+    if core.is_empty() {
+        return String::new();
+    }
+    if after_bearer || is_key_like(core) {
+        return SECRET_PLACEHOLDER.to_string();
+    }
+    if let Some(start) = arn_start(core) {
+        // What precedes the ARN is cleaned like a word of its own; the
+        // separator that ends it stays.
+        let head = core[..start].trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
+        return format!(
+            "{}{}{ARN_PLACEHOLDER}",
+            sanitize_word_core(head, false),
+            &core[head.len()..start]
+        );
+    }
+    // `name=value` / `name:value`: look at each part on its own.
+    let mut out = String::with_capacity(core.len());
+    let mut part_start = 0;
+    for (index, c) in core.char_indices() {
+        if matches!(c, ':' | '=') {
+            out.push_str(&sanitize_part(&core[part_start..index]));
+            out.push(c);
+            part_start = index + c.len_utf8();
+        }
+    }
+    out.push_str(&sanitize_part(&core[part_start..]));
+    out
+}
+
+fn sanitize_part(part: &str) -> String {
+    if is_key_like(part) {
+        SECRET_PLACEHOLDER.to_string()
+    } else {
+        replace_account_ids(part)
+    }
+}
+
+/// Byte offset of an `arn:aws` that starts the word or follows a
+/// non-alphanumeric character.
+fn arn_start(core: &str) -> Option<usize> {
+    core.match_indices("arn:aws")
+        .map(|(index, _)| index)
+        .find(|&index| {
+            !core[..index]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric())
+        })
+}
+
+fn is_key_like(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    let has = |test: fn(&u8) -> bool| bytes.iter().any(test);
+
+    let aws_key_id = AWS_KEY_ID_LENS.contains(&token.len())
+        && AWS_KEY_ID_PREFIXES
+            .iter()
+            .any(|prefix| token.starts_with(prefix))
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+    let prefixed_secret = token.len() >= MIN_PREFIXED_SECRET_LEN
+        && SECRET_PREFIXES
+            .iter()
+            .any(|prefix| token.starts_with(prefix));
+    let long = token.len() >= MIN_OPAQUE_TOKEN_LEN;
+    let base64 = long
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'_' | b'-'))
+        && has(u8::is_ascii_uppercase)
+        && has(u8::is_ascii_lowercase)
+        && has(u8::is_ascii_digit);
+    let hex = long
+        && bytes.iter().all(u8::is_ascii_hexdigit)
+        && has(u8::is_ascii_digit)
+        && has(u8::is_ascii_alphabetic);
+    aws_key_id || prefixed_secret || base64 || hex
+}
+
+/// Replace every run of exactly [`ACCOUNT_ID_DIGITS`] digits, and a whole
+/// `1234-5678-9012`, with [`ACCOUNT_ID_PLACEHOLDER`].
+fn replace_account_ids(part: &str) -> String {
+    let bytes = part.as_bytes();
+    let dashed = bytes.len() == 14
+        && bytes.iter().enumerate().all(|(index, b)| match index {
+            4 | 9 => *b == b'-',
+            _ => b.is_ascii_digit(),
+        });
+    if dashed {
+        return ACCOUNT_ID_PLACEHOLDER.to_string();
+    }
+    let mut out = String::with_capacity(part.len());
+    let mut digits_start = None;
+    for (index, c) in part.char_indices() {
+        if c.is_ascii_digit() {
+            if digits_start.is_none() {
+                digits_start = Some(index);
+            }
+            continue;
+        }
+        if let Some(start) = digits_start.take() {
+            push_digits(&mut out, &part[start..index]);
+        }
+        out.push(c);
+    }
+    if let Some(start) = digits_start {
+        push_digits(&mut out, &part[start..]);
+    }
+    out
+}
+
+fn push_digits(out: &mut String, digits: &str) {
+    if digits.len() == ACCOUNT_ID_DIGITS {
+        out.push_str(ACCOUNT_ID_PLACEHOLDER);
+    } else {
+        out.push_str(digits);
+    }
+}
+
 fn is_rate_limit_marker(value: &str) -> bool {
     matches!(
         value.to_ascii_lowercase().as_str(),
@@ -261,6 +491,8 @@ impl IntoResponse for AppError {
 /// - [`AppError::BadRequest`] (Bedrock `ValidationException`, which Bedrock
 ///   raises for context/length violations) → `context_length_exceeded`
 /// - [`AppError::UpstreamOpenAi`] → classification by preserved HTTP status
+/// - [`AppError::UpstreamAccessDenied`] (Bedrock `AccessDeniedException`, a
+///   mantle 401/403) → `permission_denied`, the code of the HTTP envelope
 /// - everything else ([`AppError::Internal`], [`AppError::Unsupported`],
 ///   [`AppError::Unauthorized`]) → `server_error`
 ///
@@ -280,6 +512,7 @@ pub fn responses_error(err: &AppError) -> (&'static str, String) {
             "context_length_exceeded"
         }
         AppError::UpstreamOpenAi { .. } => "server_is_overloaded",
+        AppError::UpstreamAccessDenied(_) => "permission_denied",
         AppError::Unsupported(_) | AppError::Unauthorized | AppError::Internal(_) => "server_error",
     };
     (code, err.message())
@@ -303,7 +536,10 @@ pub fn responses_error(err: &AppError) -> (&'static str, String) {
 /// - `ModelNotReadyException` / `ServiceUnavailableException` /
 ///   `ModelTimeoutException` / `ServiceQuotaExceededException` /
 ///   `InternalServerException` → [`AppError::UpstreamBedrock`] (502)
-/// - `AccessDeniedException` → [`AppError::Unauthorized`] (401)
+/// - `AccessDeniedException` → [`AppError::UpstreamAccessDenied`] (403): Bedrock
+///   denied the gateway's own identity (IAM, or a model not available to the
+///   account), which the client cannot fix with another key, so it is never
+///   the client-key 401
 /// - `ResourceNotFoundException` → [`AppError::BadRequest`] (400)
 /// - anything else → [`AppError::Internal`] (500)
 pub fn from_bedrock_sdk_error<E>(err: &E) -> AppError
@@ -326,7 +562,7 @@ where
         | "ServiceQuotaExceededException"
         | "InternalServerException"
         | "ModelErrorException" => AppError::UpstreamBedrock(msg),
-        "AccessDeniedException" => AppError::Unauthorized,
+        "AccessDeniedException" => AppError::upstream_access_denied(&msg),
         "ResourceNotFoundException" => AppError::BadRequest(msg),
         _ => AppError::Internal(msg),
     }
@@ -486,7 +722,7 @@ mod tests {
             ("ValidationException", StatusCode::BAD_REQUEST),
             ("ModelNotReadyException", StatusCode::BAD_GATEWAY),
             ("ServiceUnavailableException", StatusCode::BAD_GATEWAY),
-            ("AccessDeniedException", StatusCode::UNAUTHORIZED),
+            ("AccessDeniedException", StatusCode::FORBIDDEN),
             ("ResourceNotFoundException", StatusCode::BAD_REQUEST),
             ("SomethingElseException", StatusCode::INTERNAL_SERVER_ERROR),
         ];
@@ -591,5 +827,228 @@ mod tests {
         assert!(!AppError::Unsupported("x".into()).is_server_error());
         assert!(!AppError::Throttled("x".into()).is_server_error());
         assert!(!AppError::Unauthorized.is_server_error());
+        assert!(!AppError::upstream_access_denied("x").is_server_error());
+    }
+
+    /// The reason Bedrock gave for `global.zai.glm-5.3` on 2026-11-20
+    /// (`Converse`, HTTP 403 `AccessDeniedException`).
+    const GLM_5_3_DENIAL: &str = "zai.glm-5.3 is not available for this account. You can explore \
+        other available models on Amazon Bedrock. For additional access options, contact AWS \
+        Sales at https://aws.amazon.com/contact-us/sales-support/";
+
+    /// An IAM denial of the gateway's role, with the ARNs Bedrock puts in it.
+    const IAM_DENIAL: &str = "User: arn:aws:sts::123456789012:assumed-role/GatewayTaskRole/a1b2c3 \
+        is not authorized to perform: bedrock:InvokeModelWithResponseStream on resource: \
+        arn:aws:bedrock:us-east-2:123456789012:inference-profile/global.zai.glm-5.3 because no \
+        identity-based policy allows the bedrock:InvokeModelWithResponseStream action";
+
+    /// The gateway's own client-key check keeps its 401 envelope.
+    #[tokio::test]
+    async fn client_key_failure_still_renders_401_unauthorized() {
+        let (status, value) = body_json(AppError::Unauthorized.into_response()).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(value["error"]["type"], "invalid_request_error");
+        assert_eq!(value["error"]["code"], "unauthorized");
+        assert_eq!(
+            value["error"]["message"],
+            "Incorrect API key provided or missing Authorization header."
+        );
+    }
+
+    /// Bedrock denying the gateway's identity is a 403 `permission_denied`
+    /// carrying Bedrock's reason, not the 401 that blames the client's key.
+    #[tokio::test]
+    async fn bedrock_access_denied_renders_403_with_reason() {
+        let app_err =
+            from_bedrock_sdk_error(&meta_with_code("AccessDeniedException", GLM_5_3_DENIAL));
+
+        assert!(matches!(app_err, AppError::UpstreamAccessDenied(_)));
+        let (status, value) = body_json(app_err.into_response()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(value["error"]["type"], "invalid_request_error");
+        assert_eq!(value["error"]["code"], "permission_denied");
+        assert_eq!(
+            value["error"]["message"],
+            format!("Bedrock denied the gateway access: {GLM_5_3_DENIAL}")
+        );
+        assert!(value["error"].get("param").is_none());
+    }
+
+    /// The rendered reason has its ARNs and account IDs replaced, and the
+    /// error's `Display` (what request-failure logs print) holds no reason.
+    #[tokio::test]
+    async fn bedrock_access_denied_body_is_sanitized_and_display_is_reason_free() {
+        let app_err = from_bedrock_sdk_error(&meta_with_code("AccessDeniedException", IAM_DENIAL));
+
+        assert_eq!(app_err.to_string(), "upstream access denied");
+        let (status, value) = body_json(app_err.into_response()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            value["error"]["message"],
+            "Bedrock denied the gateway access: User: <arn> is not authorized to perform: \
+             bedrock:InvokeModelWithResponseStream on resource: <arn> because no \
+             identity-based policy allows the bedrock:InvokeModelWithResponseStream action"
+        );
+        let body = value.to_string();
+        for leaked in [
+            "123456789012",
+            "arn:aws",
+            "GatewayTaskRole",
+            "Incorrect API key",
+        ] {
+            assert!(!body.contains(leaked), "{leaked} leaked: {body}");
+        }
+    }
+
+    /// A denial without a message still names the denial.
+    #[test]
+    fn upstream_access_denied_without_reason_keeps_the_prefix() {
+        let app_err = AppError::upstream_access_denied("  ");
+        assert_eq!(
+            app_err.envelope().error.message,
+            "Bedrock denied the gateway access"
+        );
+    }
+
+    /// The Responses `response.failed` path gets the same code and message.
+    #[test]
+    fn responses_access_denied_maps_to_permission_denied() {
+        let app_err = from_bedrock_sdk_error(&meta_with_code("AccessDeniedException", IAM_DENIAL));
+        let (code, message) = responses_error(&app_err);
+        assert_eq!(code, "permission_denied");
+        assert_eq!(message, app_err.envelope().error.message);
+        assert!(!message.contains("123456789012"), "{message}");
+    }
+
+    #[test]
+    fn sanitize_replaces_arns_of_every_partition_keeping_punctuation() {
+        let cases = [
+            ("on arn:aws:iam::123456789012:role/x.", "on <arn>."),
+            ("(arn:aws-cn:iam::123456789012:role/x),", "(<arn>),"),
+            (
+                "'arn:aws-us-gov:bedrock:us-gov-west-1:123456789012:foundation-model/m'",
+                "'<arn>'",
+            ),
+            (
+                "principal=arn:aws:iam::123456789012:user/BedrockAPIKey-ab12",
+                "principal=<arn>",
+            ),
+            ("arn:aws:bedrock:::foundation-model/zai.glm-5.3", "<arn>"),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(sanitize_upstream_reason(raw), expected, "{raw}");
+        }
+    }
+
+    /// What precedes an ARN in the same word is sanitized like a word of
+    /// its own.
+    #[test]
+    fn sanitize_cleans_text_before_an_arn_in_the_same_word() {
+        let cases = [
+            (
+                "id=123456789012,arn:aws:iam::123456789012:role/x",
+                "id=<account-id>,<arn>",
+            ),
+            (
+                "principal=123456789012/arn:aws:iam::123456789012:role/x",
+                "principal=<account-id>/<arn>",
+            ),
+            (
+                "AKIAIOSFODNN7EXAMPLE,arn:aws:iam::123456789012:role/x",
+                "<redacted>,<arn>",
+            ),
+            (
+                "resource:arn:aws:bedrock:::foundation-model/m",
+                "resource:<arn>",
+            ),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(sanitize_upstream_reason(raw), expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn sanitize_replaces_account_ids() {
+        let cases = [
+            ("account 123456789012.", "account <account-id>."),
+            ("account 1234-5678-9012", "account <account-id>"),
+            (
+                "https://123456789012.signin.aws.amazon.com/console",
+                "https://<account-id>.signin.aws.amazon.com/console",
+            ),
+            // Only a run of exactly 12 digits is an account ID.
+            (
+                "12345678901 1234567890123 20250929",
+                "12345678901 1234567890123 20250929",
+            ),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(sanitize_upstream_reason(raw), expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn sanitize_redacts_key_like_tokens() {
+        let cases = [
+            ("key AKIAIOSFODNN7EXAMPLE", "key <redacted>"),
+            ("ASIAY34FZKBOKMUTVV7A.", "<redacted>."),
+            (
+                "AROA3XFRBF535PLBIFPI4:gateway-session",
+                "<redacted>:gateway-session",
+            ),
+            (
+                "Invalid key: ABSKQmVkcm9ja0FQSUtleS1leGFtcGxl",
+                "Invalid key: <redacted>",
+            ),
+            ("bedrock-api-key-YmVkcm9jay5hbWF6b25hd3MuY29t", "<redacted>"),
+            ("sk-proj-abcdefghijklmnop1234", "<redacted>"),
+            (
+                "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl",
+                "<redacted>",
+            ),
+            (
+                "Authorization: Bearer  abc123",
+                "Authorization: Bearer  <redacted>",
+            ),
+            (
+                "secret wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                "secret <redacted>",
+            ),
+            (
+                "token:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                "token:<redacted>",
+            ),
+            (
+                "sig 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+                "sig <redacted>",
+            ),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(sanitize_upstream_reason(raw), expected, "{raw}");
+        }
+    }
+
+    /// Model IDs, IAM actions, URLs, request IDs and wording survive, and
+    /// so does the whitespace between words.
+    #[test]
+    fn sanitize_keeps_ordinary_text() {
+        for raw in [
+            GLM_5_3_DENIAL,
+            "anthropic.claude-sonnet-4-5-20250929-v1:0 us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+            "claude-sonnet-4-5-20250929-v1 model-not-available-in-region-us-east-2",
+            "(aws-marketplace:ViewSubscriptions, aws-marketplace:Subscribe)",
+            "request 3fa85f64-5717-4562-b3fc-2c963f66afa6 failed;\n  retry after 15 minutes",
+            "Bearer, then nothing secret",
+            "",
+        ] {
+            assert_eq!(sanitize_upstream_reason(raw), raw);
+        }
+    }
+
+    #[test]
+    fn sanitize_is_idempotent() {
+        let once = sanitize_upstream_reason(IAM_DENIAL);
+        assert_eq!(sanitize_upstream_reason(&once), once);
     }
 }

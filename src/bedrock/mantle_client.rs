@@ -19,15 +19,20 @@
 //! Before any bytes are streamed, a non-2xx response is classified into an
 //! [`AppError`]:
 //!
-//! - `401` → [`AppError::Unauthorized`]
-//! - a valid OpenAI error envelope on `4xx` → [`AppError::UpstreamOpenAi`]
+//! - `401` / `403` → [`AppError::UpstreamAccessDenied`] (403 to the client):
+//!   mantle refused the gateway's own bearer token, since the client's key is
+//!   never forwarded. The message of a valid OpenAI error envelope becomes the
+//!   reason, with ARNs, account IDs and key-like tokens replaced; without one
+//!   the reason is the upstream status
+//! - a valid OpenAI error envelope on another `4xx` → [`AppError::UpstreamOpenAi`]
 //! - an unparseable `429` → [`AppError::Throttled`]
 //! - another unparseable `4xx` → [`AppError::BadRequest`]
 //! - `5xx` → [`AppError::UpstreamBedrock`]
 //!
 //! The raw upstream response body is **never** placed into `Display` or logs.
-//! A size-bounded, valid OpenAI error envelope is returned only to the client
-//! that made the rejected request.
+//! A size-bounded, valid OpenAI error envelope (for a 401/403, only its
+//! sanitized message) is returned only to the client that made the rejected
+//! request.
 
 use async_stream::stream;
 use bytes::Bytes;
@@ -443,8 +448,12 @@ async fn error_for_status(resp: reqwest::Response) -> Result<reqwest::Response, 
     if status.is_success() {
         return Ok(resp);
     }
-    if status == StatusCode::UNAUTHORIZED {
-        return Err(AppError::Unauthorized);
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        let reason = match read_openai_error_envelope(resp).await {
+            Some(envelope) => envelope.error.message,
+            None => format!("upstream status {}", status.as_u16()),
+        };
+        return Err(AppError::upstream_access_denied(&reason));
     }
     if status.is_client_error() {
         let fallback = if status == StatusCode::TOO_MANY_REQUESTS {
