@@ -293,7 +293,8 @@ const MIN_OPAQUE_TOKEN_LEN: usize = 32;
 /// brackets and punctuation that wrap or end a word stay around the
 /// replacement, so `(arn:aws:...).` becomes `(<arn>).`. Within a word:
 ///
-/// - from an `arn:aws` (any partition) to the end of the word → `<arn>`;
+/// - from an `arn:aws` (any partition) to the end of the word → `<arn>`,
+///   and the text before it in the word is cleaned like a word of its own;
 /// - a word after `Bearer`, an AWS access key ID or IAM unique ID, a token
 ///   with a secret prefix (`ABSK`, `bedrock-api-key-`, `sk-`, `eyJ`) or a
 ///   long opaque token → `<redacted>`, also as the value of a `name=value`
@@ -340,7 +341,14 @@ fn sanitize_word_core(core: &str, after_bearer: bool) -> String {
         return SECRET_PLACEHOLDER.to_string();
     }
     if let Some(start) = arn_start(core) {
-        return format!("{}{ARN_PLACEHOLDER}", &core[..start]);
+        // What precedes the ARN is cleaned like a word of its own; the
+        // separator that ends it stays.
+        let head = core[..start].trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
+        return format!(
+            "{}{}{ARN_PLACEHOLDER}",
+            sanitize_word_core(head, false),
+            &core[head.len()..start]
+        );
     }
     // `name=value` / `name:value`: look at each part on its own.
     let mut out = String::with_capacity(core.len());
@@ -927,6 +935,33 @@ mod tests {
                 "principal=<arn>",
             ),
             ("arn:aws:bedrock:::foundation-model/zai.glm-5.3", "<arn>"),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(sanitize_upstream_reason(raw), expected, "{raw}");
+        }
+    }
+
+    /// What precedes an ARN in the same word is sanitized like a word of
+    /// its own.
+    #[test]
+    fn sanitize_cleans_text_before_an_arn_in_the_same_word() {
+        let cases = [
+            (
+                "id=123456789012,arn:aws:iam::123456789012:role/x",
+                "id=<account-id>,<arn>",
+            ),
+            (
+                "principal=123456789012/arn:aws:iam::123456789012:role/x",
+                "principal=<account-id>/<arn>",
+            ),
+            (
+                "AKIAIOSFODNN7EXAMPLE,arn:aws:iam::123456789012:role/x",
+                "<redacted>,<arn>",
+            ),
+            (
+                "resource:arn:aws:bedrock:::foundation-model/m",
+                "resource:<arn>",
+            ),
         ];
         for (raw, expected) in cases {
             assert_eq!(sanitize_upstream_reason(raw), expected, "{raw}");
