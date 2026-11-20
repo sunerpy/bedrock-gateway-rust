@@ -201,7 +201,7 @@ async fn cache_error_without_injection_propagates_no_memoize() {
     )
     .await;
 
-    assert!(matches!(out, Err(AppError::Unauthorized)));
+    assert!(matches!(out, Err(AppError::UpstreamAccessDenied(_))));
     assert!(!retried.get(), "no injection ⇒ no retry");
     assert!(
         !reg.is_unsupported("qwen.qwen3-235b"),
@@ -254,6 +254,6 @@ async fn read_gate_skips_injection_on_second_request() {
     )
     .await;
 
-    assert!(matches!(out, Err(AppError::Unauthorized)));
+    assert!(matches!(out, Err(AppError::UpstreamAccessDenied(_))));
     assert!(!retried.get(), "memoized model never re-injects ⇒ no retry");
 }

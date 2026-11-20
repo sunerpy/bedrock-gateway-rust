@@ -91,7 +91,8 @@ impl CacheSupportRegistry {
 /// negative cache). It must be called on the RAW service error — i.e. the
 /// `into_service_error()` output that still carries `.code()`/`.message()` via
 /// `ProvideErrorMetadata` — BEFORE [`crate::error::from_bedrock_sdk_error`] maps
-/// `AccessDeniedException` to the message-discarding `Unauthorized` unit variant.
+/// `AccessDeniedException` to `UpstreamAccessDenied`, which keeps neither the
+/// exception code nor the raw message.
 ///
 /// ## Contract (refined by live findings)
 ///
@@ -154,9 +155,9 @@ pub(crate) enum SendError<E> {
 /// Each closure yields a [`SendError`] on failure: `Service(e)` carries the raw
 /// service error (the caller maps the `SdkError` with `.into_service_error()` so
 /// `.code()`/`.message()` survive — [`crate::error::from_bedrock_sdk_error`]
-/// collapses `AccessDeniedException` into a message-discarding `Unauthorized`, so
-/// the predicate MUST see the raw service error first); `App(e)` is a
-/// gateway-side failure that propagates unchanged.
+/// turns `AccessDeniedException` into `UpstreamAccessDenied` with a sanitized
+/// message and no code, so the predicate MUST see the raw service error first);
+/// `App(e)` is a gateway-side failure that propagates unchanged.
 ///
 /// On the first error, retry is taken EXACTLY ONCE and ONLY when the failure is
 /// a raw service error AND both `cache_points_injected` and
